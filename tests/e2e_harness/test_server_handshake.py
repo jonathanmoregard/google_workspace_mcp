@@ -7,13 +7,17 @@ credentials exist.
 
 from e2e.mcp_session import ServerSession
 
-# The hand-written curated surface. Native suggestion/comment tools are
-# added by the native-integration redirect (R4), which also restores an
+# The full hand-written docs_preview surface (3 curated read/diagnostic
+# tools + 4 native write tools). The e2e retarget (R4) restores an
 # exact-count assertion here.
 EXPECTED_TOOLS = {
-    "docs_review_capabilities",
-    "docs_review_list_suggestions",
-    "docs_review_read_document",
+    "list_document_suggestions",
+    "get_doc_review_view",
+    "check_docs_review_capabilities",
+    "suggest_doc_edit",
+    "manage_document_suggestion",
+    "reply_to_doc_thread",
+    "create_anchored_doc_comment",
 }
 
 

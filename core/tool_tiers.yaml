@@ -182,9 +182,13 @@ appscript:
   complete: []
 
 docs_preview:
-  core: []
+  core:
+    - list_document_suggestions
+    - get_doc_review_view
+    - suggest_doc_edit
+    - manage_document_suggestion
+    - reply_to_doc_thread
+    - create_anchored_doc_comment
   extended:
-    - docs_review_list_suggestions
-    - docs_review_capabilities
-    - docs_review_read_document
+    - check_docs_review_capabilities
   complete: []

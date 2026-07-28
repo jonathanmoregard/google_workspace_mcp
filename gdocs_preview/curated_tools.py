@@ -2,8 +2,8 @@
 
 Hand-written review ergonomics: suggestion diffing with computed pre/post
 text, a capabilities/preview-availability report, and a reviewer-view read
-tool. Native suggestion/comment tools (insert comment, reply,
-accept/reject/delete suggestion, ...) are added alongside these -- see
+tool. The native suggestion/comment write tools live alongside these in
+:mod:`gdocs_preview.write_tools` -- see
 docs/plans/2026-07-14-native-integration.md and, for the underlying
 preview API semantics, docs/preview-api-reference.md.
 
@@ -31,14 +31,18 @@ VIEW_MODES = (
     "PREVIEW_WITHOUT_SUGGESTIONS",
 )
 
-#: Every hand-written tool this service registers. The capabilities
-#: report's inventory is built from this list -- when the native
-#: suggestion/comment tools land (docs/plans/2026-07-14-native-integration.md),
-#: append their names here so the inventory stays accurate.
-CURATED_TOOL_NAMES = [
-    "docs_review_list_suggestions",
-    "docs_review_capabilities",
-    "docs_review_read_document",
+#: Every hand-written tool this service registers (read/diagnostic tools
+#: here, write tools in :mod:`gdocs_preview.write_tools`). The capabilities
+#: report's inventory is built from this list -- keep it in sync with the
+#: registered surface (docs/plans/2026-07-14-native-integration.md #3).
+REVIEW_TOOL_NAMES = [
+    "list_document_suggestions",
+    "get_doc_review_view",
+    "check_docs_review_capabilities",
+    "suggest_doc_edit",
+    "manage_document_suggestion",
+    "reply_to_doc_thread",
+    "create_anchored_doc_comment",
 ]
 
 #: Deliberately unresolvable suggestion id used by the capabilities probe.
@@ -49,8 +53,8 @@ _PROBE_SUGGESTION_ID = "gdocs-review-capabilities-probe-nonexistent-suggestion"
 def _tool_inventory() -> dict[str, Any]:
     """Static inventory of the service's hand-written tools."""
     return {
-        "total": len(CURATED_TOOL_NAMES),
-        "names": list(CURATED_TOOL_NAMES),
+        "total": len(REVIEW_TOOL_NAMES),
+        "names": list(REVIEW_TOOL_NAMES),
     }
 
 
@@ -62,7 +66,7 @@ async def _get_document(service: Any, document_id: str, view_mode: str) -> dict:
 
 
 @server.tool(
-    title="Docs Review: list suggestions",
+    title="List Document Suggestions",
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -70,11 +74,9 @@ async def _get_document(service: Any, document_id: str, view_mode: str) -> dict:
         openWorldHint=True,
     ),
 )
-@handle_http_errors(
-    "docs_review_list_suggestions", is_read_only=True, service_type="docs"
-)
+@handle_http_errors("list_document_suggestions", is_read_only=True, service_type="docs")
 @require_google_service("docs", "docs_read")
-async def docs_review_list_suggestions(
+async def list_document_suggestions(
     service: Any,
     user_google_email: str,
     document_id: str,
@@ -112,7 +114,7 @@ async def docs_review_list_suggestions(
 
 
 @server.tool(
-    title="Docs Review: capabilities",
+    title="Check Docs Review Capabilities",
     annotations=ToolAnnotations(
         readOnlyHint=False,  # probe=true POSTs a content-safe batchUpdate
         destructiveHint=False,
@@ -120,9 +122,9 @@ async def docs_review_list_suggestions(
         openWorldHint=True,
     ),
 )
-@handle_http_errors("docs_review_capabilities", service_type="docs")
+@handle_http_errors("check_docs_review_capabilities", service_type="docs")
 @require_google_service("docs", "docs_write")
-async def docs_review_capabilities(
+async def check_docs_review_capabilities(
     service: Any,
     user_google_email: str,
     document_id: Optional[str] = None,
@@ -215,7 +217,7 @@ async def docs_review_capabilities(
 
 
 @server.tool(
-    title="Docs Review: read document",
+    title="Get Doc Review View",
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -223,9 +225,9 @@ async def docs_review_capabilities(
         openWorldHint=True,
     ),
 )
-@handle_http_errors("docs_review_read_document", is_read_only=True, service_type="docs")
+@handle_http_errors("get_doc_review_view", is_read_only=True, service_type="docs")
 @require_google_service("docs", "docs_read")
-async def docs_review_read_document(
+async def get_doc_review_view(
     service: Any,
     user_google_email: str,
     document_id: str,
@@ -239,8 +241,8 @@ async def docs_review_read_document(
     style); each paragraph entry lists the suggestion ids touching it.
     PREVIEW_SUGGESTIONS_ACCEPTED / PREVIEW_WITHOUT_SUGGESTIONS return the
     respective clean text. Comments are not part of the documents.get
-    payload -- they are read via the Drive API comment surface (native
-    comment tools land with the 2026-07-14 native-integration design).
+    payload -- list them with ``list_document_comments`` (Drive API
+    comment surface).
 
     Args:
         user_google_email (str): The user's Google email address. Required.

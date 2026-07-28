@@ -194,9 +194,9 @@ SCRIPT_SCOPES = [
     DRIVE_FILE_SCOPE,  # Required for list/delete script projects (uses Drive API)
 ]
 
-# docs_preview generated service (Docs API v1 parity incl. the Developer
-# Preview overlay + Drive v3 comments/replies). Full Drive scope keeps
-# comment operations visible to collaborators (matches core/comments.py);
+# docs_preview review service (hand-written Docs review tools incl. the
+# Developer Preview surface + Drive v3 comments/replies). Full Drive scope
+# keeps comment operations visible to collaborators (matches core/comments.py);
 # DRIVE_FILE_SCOPE mirrors the docs service for file-scoped deployments.
 DOCS_PREVIEW_SCOPES = [
     DOCS_READONLY_SCOPE,

@@ -1,10 +1,10 @@
 """Behavioral tests for the curated docs_preview review tools.
 
 Mocked Google service objects only -- no network. Covers:
-  - docs_review_list_suggestions: view-mode plumbing + analysis output
-  - docs_review_read_document: view-mode validation + rendered output
-  - docs_review_capabilities: probe error-shape classification + process
-    cache semantics (probe=False must never touch the API)
+  - list_document_suggestions: view-mode plumbing + analysis output
+  - get_doc_review_view: view-mode validation + rendered output
+  - check_docs_review_capabilities: probe error-shape classification +
+    process cache semantics (probe=False must never touch the API)
 """
 
 import json
@@ -54,7 +54,7 @@ class TestListSuggestions:
     @pytest.mark.asyncio
     async def test_requests_suggestions_inline_view(self):
         service = _docs_get_service(fx.DOC_PLAIN_INSERTION)
-        fn = _unwrap(curated_tools.docs_review_list_suggestions)
+        fn = _unwrap(curated_tools.list_document_suggestions)
 
         await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
 
@@ -66,7 +66,7 @@ class TestListSuggestions:
     @pytest.mark.asyncio
     async def test_returns_analysis_json(self):
         service = _docs_get_service(fx.DOC_REPLACEMENT)
-        fn = _unwrap(curated_tools.docs_review_list_suggestions)
+        fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
@@ -83,7 +83,7 @@ class TestReadDocument:
     @pytest.mark.asyncio
     async def test_default_view_mode_and_rendering(self):
         service = _docs_get_service(fx.DOC_PLAIN_INSERTION)
-        fn = _unwrap(curated_tools.docs_review_read_document)
+        fn = _unwrap(curated_tools.get_doc_review_view)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
@@ -99,7 +99,7 @@ class TestReadDocument:
     @pytest.mark.asyncio
     async def test_explicit_view_mode_passthrough(self):
         service = _docs_get_service(fx.DOC_EMPTY)
-        fn = _unwrap(curated_tools.docs_review_read_document)
+        fn = _unwrap(curated_tools.get_doc_review_view)
 
         await fn(
             service,
@@ -116,7 +116,7 @@ class TestReadDocument:
     @pytest.mark.asyncio
     async def test_invalid_view_mode_rejected(self):
         service = _docs_get_service(fx.DOC_EMPTY)
-        fn = _unwrap(curated_tools.docs_review_read_document)
+        fn = _unwrap(curated_tools.get_doc_review_view)
 
         with pytest.raises(UserInputError, match="view_mode"):
             await fn(
@@ -171,7 +171,7 @@ class TestCapabilities:
     @pytest.mark.asyncio
     async def test_default_is_side_effect_free(self):
         service = Mock()
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         result = json.loads(await fn(service, user_google_email=EMAIL))
 
@@ -182,24 +182,28 @@ class TestCapabilities:
     @pytest.mark.asyncio
     async def test_inventory_lists_hand_written_tools(self):
         service = Mock()
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         result = json.loads(await fn(service, user_google_email=EMAIL))
 
         tools = result["tools"]
-        assert tools["names"] == list(curated_tools.CURATED_TOOL_NAMES)
+        assert tools["names"] == list(curated_tools.REVIEW_TOOL_NAMES)
         assert tools["total"] == len(tools["names"])
         assert {
-            "docs_review_capabilities",
-            "docs_review_list_suggestions",
-            "docs_review_read_document",
-        } <= set(tools["names"])
+            "list_document_suggestions",
+            "get_doc_review_view",
+            "check_docs_review_capabilities",
+            "suggest_doc_edit",
+            "manage_document_suggestion",
+            "reply_to_doc_thread",
+            "create_anchored_doc_comment",
+        } == set(tools["names"])
         assert result["scopes"]
 
     @pytest.mark.asyncio
     async def test_probe_requires_document_id(self):
         service = Mock()
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         with pytest.raises(UserInputError, match="document_id"):
             await fn(service, user_google_email=EMAIL, probe=True)
@@ -213,7 +217,7 @@ class TestCapabilities:
                 "commentUpdateState": "ALL_FAILED_UNKNOWN_REASON",
             }
         )
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="d1", probe=True)
@@ -239,7 +243,7 @@ class TestCapabilities:
                 b'Unknown name \\"acceptSuggestion\\" at \'requests[0]\'"}}',
             )
         )
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="d1", probe=True)
@@ -264,7 +268,7 @@ class TestCapabilities:
                 403, b'{"error": {"message": "The caller does not have permission"}}'
             )
         )
-        fn = _unwrap(curated_tools.docs_review_capabilities)
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="d1", probe=True)

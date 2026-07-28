@@ -143,6 +143,8 @@ addopts = "--ignore=tests/gappsscript/manual_test.py"
 pythonpath = ["."]
 markers = [
     "integration: marks tests as requiring real external services (deselect with '-m \"not integration\"')",
+    "e2e_ga: blackbox e2e against real Google APIs; needs an OAuth token (see e2e/README.md)",
+    "e2e_preview: e2e additionally needing Workspace Developer Preview enrollment (auto-detected)",
 ]
 filterwarnings = [
     "ignore::authlib.deprecate.AuthlibDeprecationWarning",

@@ -1,0 +1,329 @@
+"""GA-surface e2e scenarios: real Google APIs through the real MCP server.
+
+Everything here needs only an OAuth token (marker: e2e_ga) - no
+Developer Preview enrollment.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from e2e.mcp_session import tool_json, tool_text
+from e2e.run_report import REPORT
+from e2e.util import poll_until
+
+pytestmark = pytest.mark.e2e_ga
+
+VIEW_MODES = (
+    "SUGGESTIONS_INLINE",
+    "PREVIEW_SUGGESTIONS_ACCEPTED",
+    "PREVIEW_WITHOUT_SUGGESTIONS",
+)
+
+
+# ---------------------------------------------------------------------------
+# Happy paths
+# ---------------------------------------------------------------------------
+
+
+def test_create_insert_read_roundtrip(mcp, ga_auth, scratch_doc):
+    """create doc -> docs_api_insert_text -> docs_review_read_document."""
+    sentinel = "Hello from the e2e harness."
+    response = tool_json(
+        mcp.call_tool(
+            "docs_api_insert_text",
+            {
+                "user_google_email": ga_auth.email,
+                "document_id": scratch_doc,
+                "location": {"index": 1},
+                "text": sentinel,
+            },
+        )
+    )
+    assert response["documentId"] == scratch_doc
+
+    read = tool_json(
+        mcp.call_tool(
+            "docs_review_read_document",
+            {"user_google_email": ga_auth.email, "document_id": scratch_doc},
+        )
+    )
+    assert read["view_mode"] == "SUGGESTIONS_INLINE"
+    assert sentinel in read["body_text"]
+    assert read["suggestion_ids"] == []
+
+
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_documents_get_each_suggestions_view_mode(mcp, ga_auth, scratch_doc, view_mode):
+    """documents.get shape sanity per suggestionsViewMode, no suggestions."""
+    document = tool_json(
+        mcp.call_tool(
+            "docs_api_documents_get",
+            {
+                "user_google_email": ga_auth.email,
+                "document_id": scratch_doc,
+                "suggestions_view_mode": view_mode,
+            },
+        )
+    )
+    assert document["documentId"] == scratch_doc
+    assert document["title"].startswith("e2e-gdocs-review-")
+    content = document["body"]["content"]
+    assert isinstance(content, list) and content
+    # A doc without suggestions must not carry suggestion markers in any mode.
+    raw = str(document)
+    assert "suggestedInsertionIds" not in raw
+    assert "suggestedDeletionIds" not in raw
+
+
+def test_capabilities_report_is_side_effect_free(mcp, ga_auth):
+    """Curated capabilities tool: inventory + preview status, no API call."""
+    report = tool_json(
+        mcp.call_tool("docs_review_capabilities", {"user_google_email": ga_auth.email})
+    )
+    assert report["service"] == "docs_preview"
+    assert report["probe_performed"] is False
+
+    inventory = report["generated_tools"]
+    assert inventory["total"] == 61
+    assert inventory["preview"] == 8
+    assert inventory["ga"] == 53
+    assert set(report["curated_tools"]) == {
+        "docs_review_list_suggestions",
+        "docs_review_capabilities",
+        "docs_review_read_document",
+    }
+
+    scopes = set(report["scopes"])
+    assert "https://www.googleapis.com/auth/documents" in scopes
+    assert "https://www.googleapis.com/auth/drive" in scopes
+
+    preview = report["preview"]
+    assert preview["availability"] in {"unknown", "available", "unavailable"}
+    # Evidence must accompany any non-unknown verdict.
+    if preview["availability"] != "unknown":
+        assert preview["evidence"] is not None
+
+
+def test_drive_comment_lifecycle(mcp, ga_auth, scratch_doc):
+    """Unanchored Drive comment: create -> list -> reply -> resolve -> delete.
+
+    Every object must carry id + author (the client requirement).
+    """
+    args = {"user_google_email": ga_auth.email, "file_id": scratch_doc}
+
+    # create (unanchored) - response shape + id + author
+    comment = tool_json(
+        mcp.call_tool(
+            "drive_api_comments_create",
+            {
+                **args,
+                "body": {
+                    "content": "e2e unanchored comment",
+                    "quotedFileContent": {
+                        "mimeType": "text/plain",
+                        "value": "e2e quoted text",
+                    },
+                },
+            },
+        )
+    )
+    comment_id = comment["id"]
+    assert comment_id
+    assert comment["author"]["displayName"]
+    assert comment["author"].get("me") is True
+    assert comment["content"] == "e2e unanchored comment"
+
+    # list - id/author/content/quotedFileContent fields present
+    def _find_comment():
+        listing = tool_json(mcp.call_tool("drive_api_comments_list", dict(args)))
+        return next(
+            (c for c in listing.get("comments", []) if c["id"] == comment_id),
+            None,
+        )
+
+    listed = poll_until(_find_comment, timeout=20, description="comment listed")
+    for required_field in ("id", "author", "content", "quotedFileContent"):
+        assert required_field in listed, f"missing {required_field}: {listed}"
+    assert listed["quotedFileContent"]["value"] == "e2e quoted text"
+
+    # reply - id + author
+    reply = tool_json(
+        mcp.call_tool(
+            "drive_api_replies_create",
+            {**args, "comment_id": comment_id, "body": {"content": "e2e reply"}},
+        )
+    )
+    assert reply["id"]
+    assert reply["author"]["displayName"]
+    assert reply["content"] == "e2e reply"
+
+    # resolve via reply action
+    resolve_reply = tool_json(
+        mcp.call_tool(
+            "drive_api_replies_create",
+            {**args, "comment_id": comment_id, "body": {"action": "resolve"}},
+        )
+    )
+    assert resolve_reply["id"]
+    assert resolve_reply["action"] == "resolve"
+
+    resolved = tool_json(
+        mcp.call_tool("drive_api_comments_get", {**args, "comment_id": comment_id})
+    )
+    assert resolved["resolved"] is True
+    assert resolved["author"]["displayName"]
+
+    # delete, then verify it is gone (404 through @handle_http_errors)
+    mcp.call_tool("drive_api_comments_delete", {**args, "comment_id": comment_id})
+    error_text = mcp.expect_tool_error(
+        "drive_api_comments_get", {**args, "comment_id": comment_id}
+    )
+    assert "404" in error_text
+
+
+# ---------------------------------------------------------------------------
+# Preview probe + classifier consistency (works enrolled or not)
+# ---------------------------------------------------------------------------
+
+
+def test_preview_probe_classification_matches_reality(preview_probe):
+    """The live probe's verdict must agree with the offline classifier.
+
+    This is the empirical check chunk 3 asked for: the 400-unknown-field
+    vs semantic-400 distinction is message-based, so we assert the real
+    error message (whatever enrollment state we're in) classifies to the
+    verdict the server recorded. Fails here => fix the patterns in
+    gdocs_preview/preview_status.py (in-scope for the e2e chunk).
+    """
+    from gdocs_preview.preview_status import classify_preview_error
+
+    preview = preview_probe["preview"]
+    assert preview["source"] == "probe"
+    assert preview["availability"] in {"available", "unavailable", "unknown"}
+    evidence = preview["evidence"]
+    assert evidence is not None
+    assert "http_status" in evidence and "reason" in evidence
+
+    REPORT.record_error_shape(
+        "capabilities-probe (acceptSuggestion, bogus id)",
+        evidence.get("http_status"),
+        str(evidence.get("message") or evidence.get("reason")),
+        classification=preview["availability"],
+    )
+
+    if evidence.get("http_status") == 200:
+        # Probe request was accepted outright: preview must be available.
+        assert preview["availability"] == "available"
+    else:
+        availability, reason = classify_preview_error(
+            evidence["http_status"], evidence.get("message") or ""
+        )
+        assert availability == preview["availability"], (
+            "classify_preview_error disagrees with the recorded live verdict; "
+            f"real message was: {evidence.get('message')!r}"
+        )
+        assert reason == evidence["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Sad paths
+# ---------------------------------------------------------------------------
+
+
+def test_get_nonexistent_document_maps_404(mcp, ga_auth):
+    error_text = mcp.expect_tool_error(
+        "docs_api_documents_get",
+        {
+            "user_google_email": ga_auth.email,
+            "document_id": "e2e-nonexistent-document-id",
+        },
+    )
+    assert "API error in docs_api_documents_get" in error_text
+    assert "404" in error_text
+
+
+def test_insert_text_invalid_range_maps_400(mcp, ga_auth, scratch_doc):
+    error_text = mcp.expect_tool_error(
+        "docs_api_insert_text",
+        {
+            "user_google_email": ga_auth.email,
+            "document_id": scratch_doc,
+            "location": {"index": 999_999},
+            "text": "out of range",
+        },
+    )
+    assert "API error in docs_api_insert_text" in error_text
+    assert "400" in error_text
+
+
+def test_comment_ops_on_trashed_doc(mcp, ga_auth, make_scratch_doc, doc_tracker):
+    """Comment operations against a trashed (not deleted) document.
+
+    Drive's documented behavior for trashed files is soft: reads keep
+    working. We assert list still succeeds and RECORD what create does -
+    the first real run pins the create expectation down (close-out
+    reviews the recorded shape).
+    """
+    doc_id = make_scratch_doc("-trashed")
+    args = {"user_google_email": ga_auth.email, "file_id": doc_id}
+
+    pre_trash = tool_json(
+        mcp.call_tool(
+            "drive_api_comments_create",
+            {**args, "body": {"content": "comment before trash"}},
+        )
+    )
+    doc_tracker.cleanup(doc_id)  # trash it NOW, mid-test
+
+    listing = tool_json(mcp.call_tool("drive_api_comments_list", dict(args)))
+    listed_ids = {c["id"] for c in listing.get("comments", [])}
+    assert pre_trash["id"] in listed_ids
+
+    create_result = mcp.call_tool_raw(
+        "drive_api_comments_create",
+        {**args, "body": {"content": "comment after trash"}},
+    )
+    outcome_text = tool_text(create_result)
+    if create_result.is_error:
+        assert "403" in outcome_text or "404" in outcome_text
+        REPORT.record_error_shape("comments.create on trashed doc", None, outcome_text)
+    else:
+        created = tool_json(create_result)
+        assert created["id"]
+        REPORT.note(
+            "comments.create on a TRASHED doc succeeds "
+            f"(id {created['id']}) - trash is soft for comment ops."
+        )
+
+
+def test_comment_ops_on_deleted_doc_map_404(
+    mcp, ga_auth, make_scratch_doc, doc_tracker, harness_drive
+):
+    """Permanently deleted doc: comment ops must surface 404."""
+    doc_id = make_scratch_doc("-deleted")
+    harness_drive.files().delete(fileId=doc_id).execute()
+    doc_tracker.mark_cleaned(doc_id, "delete")
+
+    args = {"user_google_email": ga_auth.email, "file_id": doc_id}
+    error_text = mcp.expect_tool_error("drive_api_comments_list", dict(args))
+    assert "404" in error_text
+
+    error_text = mcp.expect_tool_error(
+        "drive_api_comments_create",
+        {**args, "body": {"content": "should not land"}},
+    )
+    assert "404" in error_text
+
+
+def test_delete_nonexistent_comment_maps_404(mcp, ga_auth, scratch_doc):
+    error_text = mcp.expect_tool_error(
+        "drive_api_comments_delete",
+        {
+            "user_google_email": ga_auth.email,
+            "file_id": scratch_doc,
+            "comment_id": "AAAA-e2e-nonexistent-comment",
+        },
+    )
+    assert "API error in drive_api_comments_delete" in error_text
+    assert "404" in error_text

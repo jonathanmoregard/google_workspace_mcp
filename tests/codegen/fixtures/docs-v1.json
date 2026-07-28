@@ -1,0 +1,176 @@
+{
+  "kind": "discovery#restDescription",
+  "id": "docs:v1",
+  "name": "docs",
+  "version": "v1",
+  "title": "Google Docs API (test fixture subset)",
+  "resources": {
+    "documents": {
+      "methods": {
+        "get": {
+          "id": "docs.documents.get",
+          "path": "v1/documents/{documentId}",
+          "httpMethod": "GET",
+          "description": "Gets the latest version of the specified document.",
+          "parameters": {
+            "documentId": {
+              "type": "string",
+              "required": true,
+              "location": "path",
+              "description": "The ID of the document to retrieve."
+            },
+            "suggestionsViewMode": {
+              "type": "string",
+              "location": "query",
+              "description": "The suggestions view mode to apply to the document.",
+              "enum": [
+                "DEFAULT_FOR_CURRENT_ACCESS",
+                "SUGGESTIONS_INLINE"
+              ]
+            }
+          },
+          "parameterOrder": [
+            "documentId"
+          ],
+          "response": {
+            "$ref": "Document"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents.readonly"
+          ]
+        },
+        "batchUpdate": {
+          "id": "docs.documents.batchUpdate",
+          "path": "v1/documents/{documentId}:batchUpdate",
+          "httpMethod": "POST",
+          "description": "Applies one or more updates to the document.",
+          "parameters": {
+            "documentId": {
+              "type": "string",
+              "required": true,
+              "location": "path",
+              "description": "The ID of the document to update."
+            }
+          },
+          "parameterOrder": [
+            "documentId"
+          ],
+          "request": {
+            "$ref": "BatchUpdateDocumentRequest"
+          },
+          "response": {
+            "$ref": "BatchUpdateDocumentResponse"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ]
+        }
+      }
+    }
+  },
+  "schemas": {
+    "Request": {
+      "id": "Request",
+      "type": "object",
+      "description": "A single update to apply to a document.",
+      "properties": {
+        "insertText": {
+          "$ref": "InsertTextRequest",
+          "description": "Inserts text at the specified location."
+        }
+      }
+    },
+    "InsertTextRequest": {
+      "id": "InsertTextRequest",
+      "type": "object",
+      "description": "Inserts text at the specified location.",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The text to be inserted. Trailing detail that should be trimmed from param docs."
+        },
+        "location": {
+          "$ref": "Location",
+          "description": "Inserts the text at a specific index in the document."
+        }
+      }
+    },
+    "Location": {
+      "id": "Location",
+      "type": "object",
+      "description": "A particular location in the document.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "The zero-based index, in UTF-16 code units."
+        },
+        "segmentId": {
+          "type": "string",
+          "description": "The ID of the header, footer or footnote."
+        }
+      }
+    },
+    "BatchUpdateDocumentRequest": {
+      "id": "BatchUpdateDocumentRequest",
+      "type": "object",
+      "description": "Request message for BatchUpdateDocument.",
+      "properties": {
+        "requests": {
+          "type": "array",
+          "description": "A list of updates to apply to the document.",
+          "items": {
+            "$ref": "Request"
+          }
+        },
+        "writeControl": {
+          "$ref": "WriteControl",
+          "description": "Provides control over how write requests are executed."
+        }
+      }
+    },
+    "BatchUpdateDocumentResponse": {
+      "id": "BatchUpdateDocumentResponse",
+      "type": "object",
+      "description": "Response message from a BatchUpdateDocument request.",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "description": "The ID of the document to which the updates were applied to."
+        },
+        "replies": {
+          "type": "array",
+          "description": "The reply of the updates.",
+          "items": {
+            "$ref": "Response"
+          }
+        }
+      }
+    },
+    "WriteControl": {
+      "id": "WriteControl",
+      "type": "object",
+      "description": "Provides control over how write requests are executed.",
+      "properties": {
+        "requiredRevisionId": {
+          "type": "string",
+          "description": "The optional revision ID of the document the write request is applied to."
+        }
+      }
+    },
+    "Document": {
+      "id": "Document",
+      "type": "object",
+      "description": "A Google Docs document.",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "description": "Output only. The ID of the document."
+        },
+        "title": {
+          "type": "string",
+          "description": "The title of the document."
+        }
+      }
+    }
+  }
+}

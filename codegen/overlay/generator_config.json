@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Generator-owned configuration, deliberately kept OUTSIDE docs_preview_overlay.json so that",
+    "the overlay can be replaced wholesale by real discovery output (post preview enrollment)",
+    "without losing this metadata and without generator changes.",
+    "suggest_mode_unsupported: batchUpdate Request-union members that must NOT get a write_mode",
+    "parameter. The first eight are the official 'Unsupported requests in suggest mode' list from",
+    "https://developers.google.com/workspace/docs/api/how-tos/suggestions (fetched 2026-07-13).",
+    "The comment/suggestion thread operations are also excluded: they act on threads directly and",
+    "are not content edits, so SUGGEST write mode does not apply to them (overlay decision,",
+    "unverified against the live preview API).",
+    "suggest_mode_partial: members that accept SUGGEST but with restrictions, noted in docstrings."
+  ],
+  "suggest_mode_unsupported": [
+    "acceptSuggestion",
+    "addCommentReply",
+    "addDocumentTab",
+    "createNamedRange",
+    "deleteComment",
+    "deleteCommentReply",
+    "deleteFooter",
+    "deleteHeader",
+    "deleteNamedRange",
+    "deleteSuggestion",
+    "deleteTab",
+    "insertComment",
+    "rejectSuggestion",
+    "updateCommentPost",
+    "updateDocumentTabProperties",
+    "updateTableColumnProperties"
+  ],
+  "suggest_mode_partial": {
+    "updateDocumentStyle": "SUGGEST mode does not support the documentFormat, useEvenPageHeaderFooter, or useFirstPageHeaderFooter style fields."
+  }
+}

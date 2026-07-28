@@ -1,0 +1,6 @@
+{
+  "suggest_mode_unsupported": [
+    "acceptSuggestion"
+  ],
+  "suggest_mode_partial": {}
+}

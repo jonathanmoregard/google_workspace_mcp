@@ -45,3 +45,7 @@ ecosystem.config.cjs
 
 # ---- Fork-local (gdocs-review-mcp) -------------------------------------
 credentials/
+
+# ---- e2e artifacts -----------------------------------------------------
+e2e/last_run.md
+e2e/_artifacts/

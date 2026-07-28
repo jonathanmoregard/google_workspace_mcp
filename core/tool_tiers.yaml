@@ -183,7 +183,10 @@ appscript:
 
 docs_preview:
   core: []
-  extended: []
+  extended:
+    - docs_review_list_suggestions
+    - docs_review_capabilities
+    - docs_review_read_document
   complete:
     - docs_api_accept_suggestion
     - docs_api_add_comment_reply

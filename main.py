@@ -189,7 +189,7 @@ SERVICE_MODULES = {
     "contacts": "gcontacts.contacts_tools",
     "search": "gsearch.search_tools",
     "appscript": "gappsscript.apps_script_tools",
-    "docs_preview": "gdocs_preview.generated",
+    "docs_preview": "gdocs_preview",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 

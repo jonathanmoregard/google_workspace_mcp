@@ -102,13 +102,17 @@ class TestIntegrationPoints:
         )
         assert "docs_preview" in tiers
         assert tiers["docs_preview"]["core"] == []
-        assert tiers["docs_preview"]["extended"] == []
+        assert tiers["docs_preview"]["extended"] == [
+            "docs_review_list_suggestions",
+            "docs_review_capabilities",
+            "docs_review_read_document",
+        ]
         assert sorted(tiers["docs_preview"]["complete"]) == expected
 
     def test_service_modules_entry(self):
         from main import SERVICE_MODULES, VALID_SERVICES
 
-        assert SERVICE_MODULES["docs_preview"] == "gdocs_preview.generated"
+        assert SERVICE_MODULES["docs_preview"] == "gdocs_preview"
         assert "docs_preview" in VALID_SERVICES
 
     def test_scope_maps_entries(self):

@@ -151,6 +151,7 @@ filterwarnings = [
 
 [tool.setuptools.package-data]
 core = ["tool_tiers.yaml"]
+"gdocs_preview.generated" = ["manifest.json"]
 
 [tool.uv]
 # Security floors for transitively-pulled deps (not direct dependencies).

@@ -28,7 +28,7 @@ READ_COMMENT_ANNOTATIONS = ToolAnnotations(
 
 MANAGE_COMMENT_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False,
-    destructiveHint=False,
+    destructiveHint=True,  # delete/update actions can destroy or alter existing comments
     idempotentHint=False,
     openWorldHint=True,
 )
@@ -60,9 +60,21 @@ async def _manage_comment_dispatch(
         if not comment_id:
             raise ValueError("comment_id is required for resolve action")
         return await _resolve_comment_impl(service, app_name, file_id, comment_id)
+    elif action_lower == "update":
+        if not comment_id or not comment_content:
+            raise ValueError(
+                "comment_id and comment_content are required for update action"
+            )
+        return await _update_comment_impl(
+            service, app_name, file_id, comment_id, comment_content
+        )
+    elif action_lower == "delete":
+        if not comment_id:
+            raise ValueError("comment_id is required for delete action")
+        return await _delete_comment_impl(service, app_name, file_id, comment_id)
     else:
         raise ValueError(
-            f"Invalid action '{action_lower}'. Must be 'create', 'reply', or 'resolve'."
+            f"Invalid action '{action_lower}'. Must be 'create', 'reply', 'resolve', 'update', or 'delete'."
         )
 
 
@@ -117,6 +129,8 @@ def create_comment_tools(app_name: str, file_id_param: str):
                 the Google Docs UI can do that.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
+              - update: Update a comment's text. Requires comment_id and comment_content.
+              - delete: Permanently delete a comment and its replies. Requires comment_id.
             """
             return await _manage_comment_dispatch(
                 service, app_name, document_id, action, comment_content, comment_id
@@ -156,6 +170,8 @@ def create_comment_tools(app_name: str, file_id_param: str):
                 Sheets comments are cell-scoped via the API.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
+              - update: Update a comment's text. Requires comment_id and comment_content.
+              - delete: Permanently delete a comment and its replies. Requires comment_id.
             """
             return await _manage_comment_dispatch(
                 service, app_name, spreadsheet_id, action, comment_content, comment_id
@@ -195,6 +211,8 @@ def create_comment_tools(app_name: str, file_id_param: str):
                 Slides comments are element-scoped via the API.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
+              - update: Update a comment's text. Requires comment_id and comment_content.
+              - delete: Permanently delete a comment and its replies. Requires comment_id.
             """
             return await _manage_comment_dispatch(
                 service, app_name, presentation_id, action, comment_content, comment_id
@@ -383,3 +401,44 @@ async def _resolve_comment_impl(
     created = reply.get("createdTime", "")
 
     return f"Comment {comment_id} has been resolved successfully.\\nResolve reply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}"
+
+
+async def _update_comment_impl(
+    service, app_name: str, file_id: str, comment_id: str, comment_content: str
+) -> str:
+    """Implementation for updating a comment's text on any Google Workspace file."""
+    logger.info(
+        f"[update_{app_name}_comment] Updating comment {comment_id} in {app_name} {file_id}"
+    )
+
+    body = {"content": comment_content}
+
+    comment = await asyncio.to_thread(
+        service.comments()
+        .update(
+            fileId=file_id,
+            commentId=comment_id,
+            body=body,
+            fields="id,content,author,createdTime,modifiedTime",
+        )
+        .execute
+    )
+
+    modified = comment.get("modifiedTime", "")
+
+    return f"Comment updated successfully!\\nComment ID: {comment_id}\\nModified: {modified}\\nContent: {comment_content}"
+
+
+async def _delete_comment_impl(
+    service, app_name: str, file_id: str, comment_id: str
+) -> str:
+    """Implementation for permanently deleting a comment on any Google Workspace file."""
+    logger.info(
+        f"[delete_{app_name}_comment] Deleting comment {comment_id} in {app_name} {file_id}"
+    )
+
+    await asyncio.to_thread(
+        service.comments().delete(fileId=file_id, commentId=comment_id).execute
+    )
+
+    return f"Comment {comment_id} deleted from {app_name} {file_id}."

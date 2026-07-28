@@ -3,7 +3,7 @@
 The preview batchUpdate surface (acceptSuggestion, insertComment, ...) is
 only usable after Workspace Developer Preview enrollment, and enrollment
 cannot be verified offline. This module keeps the last-known availability
-verdict (populated by the ``docs_review_capabilities`` probe) so that
+verdict (populated by the ``check_docs_review_capabilities`` probe) so that
 side-effect-free capability reports can reuse real evidence instead of
 re-probing.
 """

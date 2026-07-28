@@ -42,3 +42,6 @@ ecosystem.config.cjs
 
 # ---- Agent instructions (not for distribution) -------------------------
 .github/instructions/
+
+# ---- Fork-local (gdocs-review-mcp) -------------------------------------
+credentials/

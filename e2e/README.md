@@ -1,7 +1,7 @@
 # Blackbox e2e suite (docs_preview)
 
 Exercises the **real Google APIs through the real MCP server**: the suite
-spawns `python main.py --transport stdio --single-user --tools docs_preview`
+spawns `python main.py --transport stdio --single-user --tools docs docs_preview`
 as a subprocess and talks MCP protocol to it with the fastmcp client
 (`e2e/mcp_session.py`). Nothing is mocked; the server process is the same
 one an MCP client would launch.
@@ -16,7 +16,7 @@ one an MCP client would launch.
 
 The token store is the server's own: `~/.google_workspace_mcp/credentials`
 (override with `WORKSPACE_MCP_CREDENTIALS_DIR`). Preview enrollment is
-auto-detected once per session by the curated `docs_review_capabilities`
+auto-detected once per session by the `check_docs_review_capabilities`
 probe against a scratch doc; unenrolled runs skip the preview block with
 the probe's classification evidence in the skip message.
 

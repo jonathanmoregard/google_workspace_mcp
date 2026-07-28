@@ -4,13 +4,14 @@ from e2e.mcp_session import build_server_args, build_server_env
 
 
 class TestBuildServerArgs:
-    def test_stdio_single_user_docs_preview(self):
+    def test_stdio_single_user_docs_and_docs_preview(self):
         assert build_server_args() == [
             "main.py",
             "--transport",
             "stdio",
             "--single-user",
             "--tools",
+            "docs",
             "docs_preview",
         ]
 

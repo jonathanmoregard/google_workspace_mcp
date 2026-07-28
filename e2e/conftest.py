@@ -15,6 +15,7 @@ test failed or the server died). test_zz_teardown_audit.py verifies it.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -26,17 +27,34 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from e2e import gating
-from e2e.mcp_session import ServerSession, tool_json
+from e2e.mcp_session import ServerSession, tool_json, tool_text
 from e2e.run_report import REPORT
 
 E2E_DIR = Path(__file__).resolve().parent
 SCRATCH_PREFIX = "e2e-gdocs-review"
 E2E_MARKERS = {"e2e_ga", "e2e_preview"}
 
+#: create_doc confirms with "Created Google Doc '<title>' (ID: <id>) ..."
+#: (human-readable, not JSON) - the doc id is parsed out of it.
+_DOC_ID_RE = re.compile(r"\(ID: ([^)\s]+)\)")
+
 
 def new_scratch_title(suffix: str = "") -> str:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     return f"{SCRATCH_PREFIX}-{stamp}-{secrets.token_hex(4)}{suffix}"
+
+
+def create_doc_via_mcp(mcp, email: str, title: str, content: str = "") -> str:
+    """Create a doc through the MCP surface (upstream ``create_doc``)."""
+    args: dict[str, Any] = {"user_google_email": email, "title": title}
+    if content:
+        args["content"] = content
+    confirmation = tool_text(mcp.call_tool("create_doc", args))
+    match = _DOC_ID_RE.search(confirmation)
+    assert match, (
+        f"create_doc confirmation carries no '(ID: ...)': {confirmation[:300]!r}"
+    )
+    return match.group(1)
 
 
 # ---------------------------------------------------------------------------
@@ -223,15 +241,9 @@ def make_scratch_doc(mcp, ga_auth, doc_tracker):
     """
     created: list[str] = []
 
-    def factory(title_suffix: str = "") -> str:
+    def factory(title_suffix: str = "", content: str = "") -> str:
         title = new_scratch_title(title_suffix)
-        doc = tool_json(
-            mcp.call_tool(
-                "docs_api_documents_create",
-                {"user_google_email": ga_auth.email, "body": {"title": title}},
-            )
-        )
-        doc_id = doc["documentId"]
+        doc_id = create_doc_via_mcp(mcp, ga_auth.email, title, content=content)
         doc_tracker.register(doc_id, title)
         created.append(doc_id)
         return doc_id
@@ -253,24 +265,18 @@ def scratch_doc(make_scratch_doc) -> str:
 
 @pytest.fixture(scope="session")
 def preview_probe(mcp, ga_auth, doc_tracker) -> dict[str, Any]:
-    """One live docs_review_capabilities probe per session.
+    """One live check_docs_review_capabilities probe per session.
 
     Uses its own scratch doc, trashed immediately after the probe so the
     teardown audit sees no long-lived documents.
     """
     title = new_scratch_title("-probe")
-    doc = tool_json(
-        mcp.call_tool(
-            "docs_api_documents_create",
-            {"user_google_email": ga_auth.email, "body": {"title": title}},
-        )
-    )
-    doc_id = doc["documentId"]
+    doc_id = create_doc_via_mcp(mcp, ga_auth.email, title)
     doc_tracker.register(doc_id, title)
     try:
         report = tool_json(
             mcp.call_tool(
-                "docs_review_capabilities",
+                "check_docs_review_capabilities",
                 {
                     "user_google_email": ga_auth.email,
                     "document_id": doc_id,

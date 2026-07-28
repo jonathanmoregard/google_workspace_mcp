@@ -1,11 +1,13 @@
 """Spawn the real MCP server as a stdio subprocess and drive it as a client.
 
 TRUE blackbox: the server is ``python main.py --transport stdio
---single-user --tools docs_preview`` (the docs_preview service module
-registers all 61 generated tools - including the Drive v3 comment/reply
-wrappers - plus the 3 curated review tools; no other service flag is
-needed). We talk MCP protocol through the fastmcp client (already a
-repo dependency, fastmcp>=3.4.4).
+--single-user --tools docs docs_preview``. The GA ``docs`` service
+provides scratch-doc creation (``create_doc``), text modification
+(``modify_doc_text``) and the Drive-backed comment factory tools
+(``list_document_comments`` / ``manage_document_comment``); the
+``docs_preview`` service registers the 7 hand-written review tools. We
+talk MCP protocol through the fastmcp client (already a repo
+dependency, fastmcp>=3.4.4).
 
 The fastmcp client is async; tests are plain sync functions. A dedicated
 background event loop per session keeps pytest free of event-loop-scope
@@ -45,7 +47,9 @@ _CONFLICTING_ENV_VARS = (
 )
 
 
-def build_server_args(tools: tuple[str, ...] = ("docs_preview",)) -> list[str]:
+def build_server_args(
+    tools: tuple[str, ...] = ("docs", "docs_preview"),
+) -> list[str]:
     """CLI args for the server subprocess (pure; unit-tested)."""
     return ["main.py", "--transport", "stdio", "--single-user", "--tools", *tools]
 
@@ -76,7 +80,12 @@ def tool_text(result: CallToolResult) -> str:
 
 
 def tool_json(result: CallToolResult) -> Any:
-    """Parse the tool result text as JSON (all docs_preview tools emit JSON)."""
+    """Parse the tool result text as JSON.
+
+    The docs_preview review tools emit JSON strings; the GA docs-service
+    tools return human-readable confirmations - read those with
+    :func:`tool_text` instead.
+    """
     text = tool_text(result)
     try:
         return json.loads(text)
@@ -91,7 +100,7 @@ class ServerSession:
         self,
         credentials_dir: str,
         user_email: str,
-        tools: tuple[str, ...] = ("docs_preview",),
+        tools: tuple[str, ...] = ("docs", "docs_preview"),
     ) -> None:
         self.credentials_dir = credentials_dir
         self.user_email = user_email

@@ -1,9 +1,11 @@
 """Curated review tools for the docs_preview service.
 
-Hand-written ergonomics layered on top of the generated API-parity surface
-in :mod:`gdocs_preview.generated`: suggestion diffing with computed pre/post
+Hand-written review ergonomics: suggestion diffing with computed pre/post
 text, a capabilities/preview-availability report, and a reviewer-view read
-tool. Additive only -- these never replace generated tools.
+tool. Native suggestion/comment tools (insert comment, reply,
+accept/reject/delete suggestion, ...) are added alongside these -- see
+docs/plans/2026-07-14-native-integration.md and, for the underlying
+preview API semantics, docs/preview-api-reference.md.
 
 The heavy lifting lives in the pure functions of
 :mod:`gdocs_preview.analysis`; tools here are thin API-call wrappers.
@@ -11,9 +13,6 @@ The heavy lifting lives in the pure functions of
 
 import asyncio
 import json
-from collections import Counter
-from functools import lru_cache
-from pathlib import Path
 from typing import Any, Optional
 
 from googleapiclient.errors import HttpError
@@ -32,6 +31,10 @@ VIEW_MODES = (
     "PREVIEW_WITHOUT_SUGGESTIONS",
 )
 
+#: Every hand-written tool this service registers. The capabilities
+#: report's inventory is built from this list -- when the native
+#: suggestion/comment tools land (docs/plans/2026-07-14-native-integration.md),
+#: append their names here so the inventory stays accurate.
 CURATED_TOOL_NAMES = [
     "docs_review_list_suggestions",
     "docs_review_capabilities",
@@ -43,17 +46,11 @@ CURATED_TOOL_NAMES = [
 _PROBE_SUGGESTION_ID = "gdocs-review-capabilities-probe-nonexistent-suggestion"
 
 
-@lru_cache(maxsize=1)
-def _manifest_summary() -> dict[str, Any]:
-    manifest_path = Path(__file__).resolve().parent / "generated" / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    tools = manifest["tools"]
+def _tool_inventory() -> dict[str, Any]:
+    """Static inventory of the service's hand-written tools."""
     return {
-        "total": len(tools),
-        "preview": sum(1 for t in tools if t["preview"]),
-        "ga": sum(1 for t in tools if not t["preview"]),
-        "write_mode_capable": sum(1 for t in tools if t["write_mode"]),
-        "by_kind": dict(Counter(t["kind"] for t in tools)),
+        "total": len(CURATED_TOOL_NAMES),
+        "names": list(CURATED_TOOL_NAMES),
     }
 
 
@@ -134,7 +131,7 @@ async def docs_review_capabilities(
     """Report what the docs_preview service can do with the current
     credentials, including Developer Preview availability.
 
-    Side-effect free by default: reports configured scopes, the generated
+    Side-effect free by default: reports configured scopes, the service's
     tool inventory, and the cached (last-known) preview availability
     verdict. No API call is made unless ``probe=true``.
 
@@ -161,7 +158,7 @@ async def docs_review_capabilities(
             above. Defaults to False (no API call).
 
     Returns:
-        str: JSON report: scopes, generated_tools summary, curated_tools,
+        str: JSON report: scopes, tools {total, names},
             preview {availability, evidence, source, checked_at},
             probe_performed.
     """
@@ -210,8 +207,7 @@ async def docs_review_capabilities(
     report = {
         "service": "docs_preview",
         "scopes": list(DOCS_PREVIEW_SCOPES),
-        "generated_tools": _manifest_summary(),
-        "curated_tools": list(CURATED_TOOL_NAMES),
+        "tools": _tool_inventory(),
         "preview": preview_status.get_status(),
         "probe_performed": bool(probe),
     }
@@ -243,8 +239,8 @@ async def docs_review_read_document(
     style); each paragraph entry lists the suggestion ids touching it.
     PREVIEW_SUGGESTIONS_ACCEPTED / PREVIEW_WITHOUT_SUGGESTIONS return the
     respective clean text. Comments are not part of the documents.get
-    payload -- list them with the Drive comment tools
-    (``drive_api_comments_list``).
+    payload -- they are read via the Drive API comment surface (native
+    comment tools land with the 2026-07-14 native-integration design).
 
     Args:
         user_google_email (str): The user's Google email address. Required.

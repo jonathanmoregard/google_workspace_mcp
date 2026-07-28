@@ -27,7 +27,7 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from e2e.gating import (
+from e2e.gating import (  # noqa: E402 - needs the sys.path bootstrap above
     OAUTH_CLIENT_PATH,
     REQUIRED_SCOPES,
     resolve_credentials_dir,

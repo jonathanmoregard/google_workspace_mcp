@@ -180,21 +180,20 @@ class TestCapabilities:
         assert result["preview"]["availability"] == "unknown"
 
     @pytest.mark.asyncio
-    async def test_inventory_summary_from_manifest(self):
+    async def test_inventory_lists_hand_written_tools(self):
         service = Mock()
         fn = _unwrap(curated_tools.docs_review_capabilities)
 
         result = json.loads(await fn(service, user_google_email=EMAIL))
 
-        gen = result["generated_tools"]
-        assert gen["total"] == 61
-        assert gen["preview"] == 8
-        assert gen["ga"] == 53
-        assert sorted(result["curated_tools"]) == [
+        tools = result["tools"]
+        assert tools["names"] == list(curated_tools.CURATED_TOOL_NAMES)
+        assert tools["total"] == len(tools["names"])
+        assert {
             "docs_review_capabilities",
             "docs_review_list_suggestions",
             "docs_review_read_document",
-        ]
+        } <= set(tools["names"])
         assert result["scopes"]
 
     @pytest.mark.asyncio

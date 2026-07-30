@@ -23,6 +23,10 @@ Environment:
                             Preview enrollment (preview requests 400 with
                             "Unknown name")
     MOCKDOCS_FAIL_COMMENTS  "1" to force commentUpdateState=ALL_FAILED_...
+    MOCKDOCS_STATE_DUMP     path to keep a JSON snapshot of the backend at
+                            (see mockdocs.state) -- refreshed after every API
+                            call and on shutdown, so an out-of-process harness
+                            can grade the end state of a run.
 """
 
 from __future__ import annotations
@@ -97,10 +101,22 @@ def prepare_environment() -> None:
         )
 
 
+def install_state_dump_if_requested(backend: FakeBackend) -> Optional[str]:
+    """Honour ``MOCKDOCS_STATE_DUMP``; no-op (and no import) when unset."""
+    path = os.getenv("MOCKDOCS_STATE_DUMP")
+    if not path:
+        return None
+    from mockdocs.state import install_state_dump
+
+    install_state_dump(backend, path)
+    return path
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     prepare_environment()
     backend = build_backend()
     install(backend)
+    install_state_dump_if_requested(backend)
 
     import main as server_main
 

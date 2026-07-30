@@ -11,6 +11,35 @@ choke point that classifies not-enrolled failures into an actionable
 ``UserInputError``, feeds :mod:`gdocs_preview.preview_status`, and (for
 thread operations) enforces ``commentUpdateState`` -- a batch can return
 HTTP 200 while the thread update silently fails.
+
+**Every write echoes a verifiable post-state.** 26 of 32 headless-agent runs
+made writes and never read the document back
+(``llmux/runner/reports/20260730-211540.md``, class
+``no_end_state_verification``). The cause was on this side: the batchUpdate
+response carries ids and nothing else, so "did my replacement do what I
+meant" cost the agent a whole extra turn -- and it skipped it. Each tool now
+answers that question inline, in a ``verification`` block. Where the echo is
+free it is taken from the batchUpdate response; where it is not, ONE extra
+read is made:
+
+===========================  ==============================================
+tool                         verification source
+===========================  ==============================================
+``suggest_doc_edit``         one post-write read (``verify``, default true)
+``manage_document_suggestion``  one post-write read (``verify``, default true)
+``reply_to_doc_thread``      free -- the response carries the whole Post
+``create_anchored_doc_comment``  free -- the response carries the whole
+                             CommentThread, ``plainTextQuote`` included
+===========================  ==============================================
+
+The two thread tools therefore have no ``verify`` parameter: there is no
+extra call to switch off. Verification NEVER fails a landed write -- a read
+that dies comes back as ``verification.source = "unavailable"``.
+
+The same post-write read powers :mod:`gdocs_preview.suggestion_ledger`: its
+before/after diff is how accept/reject reports the OTHER suggestions it
+garbage-collected, and how a later "that id does not exist" error can name
+the write that removed it.
 """
 
 import asyncio
@@ -24,14 +53,117 @@ from mcp.types import ToolAnnotations
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_status
-from gdocs_preview.preview_read import normalize_author
+from gdocs_preview import preview_status, suggestion_ledger
+from gdocs_preview.analysis import (
+    CONTEXT_WINDOW,
+    extract_suggestions_from_tabs,
+    render_tabs,
+)
+from gdocs_preview.preview_read import normalize_author, read_for_review
 
 logger = logging.getLogger(__name__)
+
+#: Echoed text is trimmed to this many characters. The verification block
+#: lands in an LLM's context window on every single write, so it is a
+#: receipt, not a debug dump.
+ECHO_MAX_CHARS = 200
+
+TRUNCATION_MARKER = "…"
 
 
 def _doc_link(document_id: str) -> str:
     return f"https://docs.google.com/document/d/{document_id}/edit"
+
+
+def _clip(text: Optional[str], limit: int = ECHO_MAX_CHARS) -> Optional[str]:
+    """Trim for display, marking the cut. ``None`` stays ``None``."""
+    if text is None:
+        return None
+    return text if len(text) <= limit else text[:limit] + TRUNCATION_MARKER
+
+
+def _echo_suggestion(record: dict[str, Any]) -> dict[str, Any]:
+    """One analysis record, trimmed to what "did my edit land?" needs.
+
+    ``pre_text``/``post_text`` carry :mod:`gdocs_preview.analysis`'s
+    semantics unchanged -- the base text of the affected range, and that
+    range with this suggestion (and only this one) applied -- which is
+    exactly the before/after an agent would otherwise have to re-read for.
+    """
+    return {
+        "suggestion_id": record.get("suggestion_id"),
+        "type": record.get("type"),
+        "pre_text": _clip(record.get("pre_text")),
+        "post_text": _clip(record.get("post_text")),
+        "context_before": record.get("context_before"),
+        "context_after": record.get("context_after"),
+        "start_index": record.get("start_index"),
+        "end_index": record.get("end_index"),
+        "summary_text": record.get("summary_text"),
+        "status": record.get("status"),
+    }
+
+
+class _PostWriteRead:
+    """The one read a write tool makes to verify itself.
+
+    Not a dataclass because ``records`` and ``body_text`` are derived from
+    the same payload and must not drift apart.
+    """
+
+    def __init__(self, read: Any) -> None:
+        self.source: str = read.source
+        analysed = extract_suggestions_from_tabs(read.tabs, read.threads)
+        self.records: dict[str, dict[str, Any]] = {
+            r["suggestion_id"]: r for r in analysed["suggestions"]
+        }
+        self.body_text: str = render_tabs(read.tabs)["body_text"]
+
+    @property
+    def live_ids(self) -> frozenset[str]:
+        return frozenset(self.records)
+
+
+async def _post_write_read(
+    service: Any, document_id: str
+) -> tuple[Optional[_PostWriteRead], Optional[str]]:
+    """Read the document back once, in SUGGESTIONS_INLINE view.
+
+    Returns ``(read, None)`` or ``(None, reason)``. Failures are RETURNED,
+    never raised: the write already landed, and a verification problem must
+    not turn a successful mutation into an error the agent will try to
+    "fix" by writing again. The broad ``except`` is deliberate for the same
+    reason -- there is no failure mode here worth failing the tool over.
+    """
+    try:
+        read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+        return _PostWriteRead(read), None
+    except Exception as error:  # noqa: BLE001 - see docstring
+        logger.info(
+            f"[docs_preview] post-write verification read failed for "
+            f"{document_id}: {error}"
+        )
+        return None, f"{type(error).__name__}: {error}"[:200]
+
+
+def _locate(body_text: str, anchor: Optional[str], expected: str) -> Optional[str]:
+    """The post-write text around a resolved range, located by its context.
+
+    ``anchor`` is the suggestion's ``context_before`` -- base text, so
+    accepting or rejecting leaves it untouched and it still identifies the
+    spot after the write. Returns a window starting at that anchor, or
+    ``None`` when the anchor cannot be found (a concurrent edit, or a range
+    at the very start of a segment with no preceding text).
+    """
+    if not body_text:
+        return None
+    if not anchor:
+        return _clip(body_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW])
+    position = body_text.find(anchor)
+    if position < 0:
+        return None
+    end = position + len(anchor) + len(expected) + CONTEXT_WINDOW
+    return _clip(body_text[position:end])
 
 
 def _location(
@@ -136,6 +268,54 @@ async def _execute_preview_batch_update(
     return response
 
 
+#: Message fragments (lowercased) that mean "the API resolved the request
+#: type and could not find that suggestion". Both observed shapes are here:
+#: the real API answers HTTP 404 ``Suggestion with ID <id> does not exist.``
+#: (e2e/last_run.md, 2026-07-30), the mock a 400 ``the suggestion ID <id> is
+#: invalid or the suggestion no longer exists.`` -- and neither says WHY.
+_MISSING_SUGGESTION_MARKERS = ("suggestion with id", "suggestion id")
+
+
+def _http_error_message(error: HttpError) -> tuple[Optional[int], str]:
+    status = getattr(getattr(error, "resp", None), "status", None)
+    content = getattr(error, "content", b"") or b""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    return status, f"{error} {content}"
+
+
+def _missing_suggestion_error(
+    error: HttpError,
+    *,
+    tool_name: str,
+    user_google_email: str,
+    document_id: str,
+    suggestion_id: str,
+) -> Optional[UserInputError]:
+    """Turn "that suggestion does not exist" into "and here is why".
+
+    Returns ``None`` for any other failure, so nothing else is swallowed.
+    The cause comes from :func:`gdocs_preview.suggestion_ledger.explain_missing`,
+    which only claims what it observed.
+    """
+    status, message = _http_error_message(error)
+    if status not in (400, 404):
+        return None
+    lowered = message.lower()
+    if not any(marker in lowered for marker in _MISSING_SUGGESTION_MARKERS):
+        return None
+    if suggestion_id and suggestion_id.lower() not in lowered:
+        return None
+    cause = suggestion_ledger.explain_missing(
+        user_google_email, document_id, suggestion_id
+    )
+    return UserInputError(
+        f"{tool_name}: suggestion {suggestion_id!r} no longer exists in "
+        f"document {document_id}. {cause} (API said: "
+        f"{' '.join(message.split())[:200]})"
+    )
+
+
 @server.tool(
     title="Suggest Doc Edit",
     annotations=ToolAnnotations(
@@ -156,9 +336,10 @@ async def suggest_doc_edit(
     text: Optional[str] = None,
     tab_id: Optional[str] = None,
     segment_id: Optional[str] = None,
+    verify: bool = True,
 ) -> str:
     """Create a suggested insertion, deletion, or replacement as a pending
-    suggestion (SUGGEST write mode).
+    suggestion (SUGGEST write mode), and report the suggestion it created.
 
     The mode is inferred from the params: text only -> insertion at
     start_index; end_index only -> deletion of [start_index, end_index);
@@ -169,6 +350,14 @@ async def suggest_doc_edit(
     as a *pending suggestion*: nothing is applied to the document until it
     is accepted; it is visible to list_document_suggestions and in the
     Docs UI.
+
+    With verify=true (the default) the tool makes ONE extra read after the
+    write and returns the created suggestion's computed pre/post text, its
+    context windows and its resulting index range -- so "did my replacement
+    do what I meant, at the place I meant?" is answerable from this
+    response, without a follow-up list_document_suggestions call. Stale
+    indexes surface here: a replacement whose pre_text is not the text you
+    aimed at landed in the wrong place.
 
     Requires Google Workspace Developer Preview enrollment (verify with
     check_docs_review_capabilities probe=true).
@@ -183,10 +372,18 @@ async def suggest_doc_edit(
         tab_id (str): Optional document tab ID to target.
         segment_id (str): Optional header/footer/footnote segment ID;
             omitted means the document body.
+        verify (bool): Read the document back once and echo the created
+            suggestion. Defaults to True; set False only to save the extra
+            read in a batch of edits you will verify at the end.
 
     Returns:
         str: JSON with document_id, mode (insertion|deletion|replacement),
-            created_suggestion_ids, requests_applied, and link.
+            created_suggestion_ids, requests_applied, link, and
+            verification {source, read_source, created_suggestions
+            [suggestion_id, type, pre_text, post_text, context_before,
+            context_after, start_index, end_index, summary_text, status],
+            pending_suggestion_count, and -- only when non-empty --
+            also_removed_suggestion_ids + notes}.
     """
     if start_index < 1:
         raise UserInputError(
@@ -251,6 +448,7 @@ async def suggest_doc_edit(
         f"[suggest_doc_edit] Doc={document_id}, mode={mode}, "
         f"start={start_index}, end={end_index}"
     )
+    known_before = suggestion_ledger.known_ids(user_google_email, document_id)
     response = await _execute_preview_batch_update(
         service, "suggest_doc_edit", document_id, requests, write_mode="SUGGEST"
     )
@@ -261,14 +459,75 @@ async def suggest_doc_edit(
             if sid not in created_ids:
                 created_ids.append(sid)
 
-    result = {
+    result: dict[str, Any] = {
         "document_id": document_id,
         "mode": mode,
         "created_suggestion_ids": created_ids,
         "requests_applied": len(requests),
+        "verification": await _verify_suggest(
+            service,
+            user_google_email=user_google_email,
+            document_id=document_id,
+            created_ids=created_ids,
+            known_before=known_before,
+            verify=verify,
+        ),
         "link": _doc_link(document_id),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+async def _verify_suggest(
+    service: Any,
+    *,
+    user_google_email: str,
+    document_id: str,
+    created_ids: list[str],
+    known_before: Optional[frozenset[str]],
+    verify: bool,
+) -> dict[str, Any]:
+    """Post-write echo for :func:`suggest_doc_edit`.
+
+    ``createdSuggestionIds`` is the primary join key, but it is not
+    trustworthy on its own: the API may omit it, and a same-author adjacent
+    suggestion merges (SPEC §6), which can retire an id the response just
+    named. So the ids are intersected with what the read actually found, and
+    anything new since the last read is added -- the diff answers even when
+    the response says nothing.
+    """
+    if not verify:
+        return {"source": "skipped", "reason": "verify=false"}
+    read, failure = await _post_write_read(service, document_id)
+    if read is None:
+        return {"source": "unavailable", "reason": failure}
+
+    echoed_ids = [sid for sid in created_ids if sid in read.records]
+    if known_before is not None:
+        for sid in read.records:
+            if sid not in known_before and sid not in echoed_ids:
+                echoed_ids.append(sid)
+
+    verification: dict[str, Any] = {
+        "source": "post_write_read",
+        "read_source": read.source,
+        "created_suggestions": [_echo_suggestion(read.records[s]) for s in echoed_ids],
+        "pending_suggestion_count": len(read.records),
+    }
+    vanished = sorted(known_before - read.live_ids) if known_before is not None else []
+    if vanished:
+        resolutions = suggestion_ledger.record_resolution(
+            user_google_email,
+            document_id,
+            "suggest_doc_edit",
+            echoed_ids[0] if echoed_ids else "",
+            vanished,
+        )
+        verification["also_removed_suggestion_ids"] = vanished
+        verification["notes"] = [
+            suggestion_ledger.collateral_note(r) for r in resolutions if r.cause
+        ]
+    suggestion_ledger.observe(user_google_email, document_id, read.records.values())
+    return verification
 
 
 @server.tool(
@@ -288,14 +547,26 @@ async def manage_document_suggestion(
     document_id: str,
     action: str,
     suggestion_id: str,
+    verify: bool = True,
 ) -> str:
-    """Accept or reject a pending suggestion by id.
+    """Accept or reject a pending suggestion by id, and report what changed
+    -- including the OTHER suggestions the resolution removed.
+
+    Resolving a suggestion deletes any other suggestion whose last marked
+    character disappears with it (and that suggestion's comment thread).
+    With verify=true (the default) the tool makes ONE extra read after the
+    write and names those in
+    ``verification.also_removed_suggestion_ids``, so the next call never has
+    to discover them as an unexplained "that id does not exist" error. It
+    also reports whether the target is really gone, the text the range now
+    reads, and the ids still pending.
 
     Permission rules (preview API): accept requires edit access to the
     document; reject requires edit access OR being the suggestion's
-    author. A nonexistent suggestion id may surface as a 400 error OR as
-    an HTTP 200 no-op carrying a commentUpdateState -- when the API sends
-    that state it is included in the response JSON.
+    author. A nonexistent suggestion id may surface as an error OR as an
+    HTTP 200 no-op carrying a commentUpdateState -- when the API sends
+    that state it is included in the response JSON. When it errors, the
+    message says whether one of your own earlier writes removed the id.
 
     Requires Google Workspace Developer Preview enrollment (verify with
     check_docs_review_capabilities probe=true).
@@ -306,10 +577,19 @@ async def manage_document_suggestion(
         action (str): One of "accept" or "reject".
         suggestion_id (str): The suggestion to act on (from
             list_document_suggestions).
+        verify (bool): Read the document back once and echo the resulting
+            state. Defaults to True; set False only to save the extra read
+            when resolving a batch you will verify at the end -- collateral
+            removals then go unreported.
 
     Returns:
         str: JSON with document_id, action, suggestion_id,
-            accepted_suggestion_ids or rejected_suggestion_ids, and link.
+            accepted_suggestion_ids or rejected_suggestion_ids,
+            comment_update_state (when sent), link, and verification
+            {source, read_source, still_pending, resolved_suggestion,
+            expected_text, resulting_text, matches_expectation,
+            pending_suggestion_count, pending_suggestion_ids, and -- only
+            when non-empty -- also_removed_suggestion_ids + notes}.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":
@@ -330,9 +610,27 @@ async def manage_document_suggestion(
         f"action={action_normalized}, suggestion={suggestion_id}"
     )
     requests = [{request_key: {"suggestionId": suggestion_id}}]
-    response = await _execute_preview_batch_update(
-        service, "manage_document_suggestion", document_id, requests
+    # Snapshot BEFORE the write: the diff against the post-write read is the
+    # only evidence that this resolution took other suggestions with it.
+    known_before = suggestion_ledger.known_ids(user_google_email, document_id)
+    resolved_record = suggestion_ledger.record_of(
+        user_google_email, document_id, suggestion_id
     )
+    try:
+        response = await _execute_preview_batch_update(
+            service, "manage_document_suggestion", document_id, requests
+        )
+    except HttpError as error:
+        explained = _missing_suggestion_error(
+            error,
+            tool_name="manage_document_suggestion",
+            user_google_email=user_google_email,
+            document_id=document_id,
+            suggestion_id=suggestion_id,
+        )
+        if explained is not None:
+            raise explained from error
+        raise
 
     affected_ids: list[str] = []
     for suggestion_response in response.get("suggestionResponses") or []:
@@ -340,17 +638,125 @@ async def manage_document_suggestion(
             if sid not in affected_ids:
                 affected_ids.append(sid)
 
-    result = {
+    result: dict[str, Any] = {
         "document_id": document_id,
         "action": action_normalized,
         "suggestion_id": suggestion_id,
         result_key: affected_ids,
-        "link": _doc_link(document_id),
     }
     comment_update_state = response.get("commentUpdateState")
     if comment_update_state is not None:
         result["comment_update_state"] = comment_update_state
+    result["verification"] = await _verify_resolution(
+        service,
+        user_google_email=user_google_email,
+        document_id=document_id,
+        action=action_normalized,
+        suggestion_id=suggestion_id,
+        resolved_record=resolved_record,
+        known_before=known_before,
+        verify=verify,
+    )
+    result["link"] = _doc_link(document_id)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+async def _verify_resolution(
+    service: Any,
+    *,
+    user_google_email: str,
+    document_id: str,
+    action: str,
+    suggestion_id: str,
+    resolved_record: Optional[dict[str, Any]],
+    known_before: Optional[frozenset[str]],
+    verify: bool,
+) -> dict[str, Any]:
+    """Post-write echo for :func:`manage_document_suggestion`.
+
+    Three questions, answered from one read: is the target gone, does the
+    document now read the way the suggestion promised, and what else
+    disappeared. ``expected_text`` is the analysis layer's ``post_text``
+    for an accept and ``pre_text`` for a reject -- the definition of what
+    resolving that suggestion means -- taken from the last listing, so it is
+    ``None`` when the caller resolved an id it never listed.
+
+    ``matches_expectation`` reads the OTHER half when ``expected_text`` is
+    empty: accepting a pure deletion (or rejecting a pure insertion) leaves
+    nothing to find, so the check becomes "is the text that should be gone
+    actually gone from that window". Both are scoped to the located window,
+    never the whole document, so an identical word elsewhere cannot fake a
+    verdict.
+    """
+    if not verify:
+        # Still remember the resolution: a later "does not exist" for this id
+        # must be explainable even when the caller opted out of the read.
+        suggestion_ledger.record_resolution(
+            user_google_email, document_id, action, suggestion_id
+        )
+        return {"source": "skipped", "reason": "verify=false"}
+
+    read, failure = await _post_write_read(service, document_id)
+    if read is None:
+        suggestion_ledger.record_resolution(
+            user_google_email, document_id, action, suggestion_id
+        )
+        return {"source": "unavailable", "reason": failure}
+
+    expected_text: Optional[str] = None
+    resulting_text: Optional[str] = None
+    matches: Optional[bool] = None
+    if resolved_record is not None:
+        kept, dropped = (
+            ("post_text", "pre_text")
+            if action == "accept"
+            else (
+                "pre_text",
+                "post_text",
+            )
+        )
+        expected_text = resolved_record.get(kept)
+        removed_text = resolved_record.get(dropped)
+        resulting_text = _locate(
+            read.body_text,
+            resolved_record.get("context_before"),
+            expected_text or removed_text or "",
+        )
+        if resulting_text is not None:
+            if expected_text:
+                matches = expected_text in resulting_text
+            elif removed_text:
+                matches = removed_text not in resulting_text
+
+    verification: dict[str, Any] = {
+        "source": "post_write_read",
+        "read_source": read.source,
+        "still_pending": suggestion_id in read.records,
+        "resolved_suggestion": (
+            _echo_suggestion(resolved_record) if resolved_record else None
+        ),
+        "expected_text": _clip(expected_text),
+        "resulting_text": resulting_text,
+        "matches_expectation": matches,
+        "pending_suggestion_count": len(read.records),
+        "pending_suggestion_ids": sorted(read.records),
+    }
+
+    collateral = (
+        sorted((known_before - read.live_ids) - {suggestion_id})
+        if known_before is not None
+        else []
+    )
+    resolutions = suggestion_ledger.record_resolution(
+        user_google_email, document_id, action, suggestion_id, collateral
+    )
+    if collateral:
+        verification["also_removed_suggestion_ids"] = collateral
+        verification["notes"] = [
+            suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
+        ]
+    suggestion_ledger.observe(user_google_email, document_id, read.records.values())
+    return verification
 
 
 @server.tool(
@@ -380,6 +786,13 @@ async def reply_to_doc_thread(
     list_document_comments. The reply content must be non-empty (the API
     additionally caps it at 2048 UTF-8 code units).
 
+    Self-verifying at no extra cost: the batchUpdate response carries the
+    whole stored Post, so the return echoes the content the API actually
+    saved, its author and its post id, plus commentUpdateState -- no
+    follow-up read is needed to confirm the reply landed. (An HTTP 200 that
+    reports ALL_FAILED_UNKNOWN_REASON is raised as an error, never returned
+    as success.)
+
     Requires Google Workspace Developer Preview enrollment (verify with
     check_docs_review_capabilities probe=true).
 
@@ -395,7 +808,10 @@ async def reply_to_doc_thread(
     Returns:
         str: JSON with document_id, thread_type (comment|suggestion), the
             target thread id, post_id, author (the reply's PostAuthor as
-            the API recorded it), comment_update_state, and link.
+            the API recorded it), content (as stored), create_time,
+            comment_update_state, link, and verification {source:
+            "batch_update_response", saved, stored_content,
+            matches_request}.
     """
     if (comment_id is None) == (suggestion_id is None):
         raise UserInputError("Provide exactly one of comment_id or suggestion_id.")
@@ -418,13 +834,29 @@ async def reply_to_doc_thread(
         f"[reply_to_doc_thread] Doc={document_id}, {thread_type} thread={thread_id}"
     )
     requests = [{"addCommentReply": add_comment_reply}]
-    response = await _execute_preview_batch_update(
-        service,
-        "reply_to_doc_thread",
-        document_id,
-        requests,
-        enforce_comment_update=True,
-    )
+    try:
+        response = await _execute_preview_batch_update(
+            service,
+            "reply_to_doc_thread",
+            document_id,
+            requests,
+            enforce_comment_update=True,
+        )
+    except HttpError as error:
+        explained = (
+            _missing_suggestion_error(
+                error,
+                tool_name="reply_to_doc_thread",
+                user_google_email=user_google_email,
+                document_id=document_id,
+                suggestion_id=suggestion_id,
+            )
+            if suggestion_id is not None
+            else None
+        )
+        if explained is not None:
+            raise explained from error
+        raise
 
     # Verified 2026-07-30 against the real API: the batchUpdate Response
     # union does carry an ``addCommentReply`` member holding the new Post,
@@ -435,14 +867,27 @@ async def reply_to_doc_thread(
         reply_payload = (replies[0] or {}).get("addCommentReply") or {}
         post = reply_payload.get("post") or {}
 
+    stored_content = post.get("content")
+    comment_update_state = response.get("commentUpdateState")
     result = {
         "document_id": document_id,
         "thread_type": thread_type,
         thread_id_key: thread_id,
         "post_id": post.get("postId"),
         "author": normalize_author(post.get("author")),
+        "content": _clip(stored_content),
         "create_time": post.get("createTime"),
-        "comment_update_state": response.get("commentUpdateState"),
+        "comment_update_state": comment_update_state,
+        "verification": {
+            # No extra read: the batchUpdate response already carries the
+            # stored Post, so the echo costs nothing.
+            "source": "batch_update_response",
+            "saved": comment_update_state == "ALL_SAVED",
+            "stored_content": _clip(stored_content),
+            "matches_request": (
+                stored_content == reply_content if stored_content is not None else None
+            ),
+        },
         "link": _doc_link(document_id),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -479,6 +924,12 @@ async def create_anchored_doc_comment(
     manage_document_comment action="create" (Drive API). Use
     list_document_comments to enumerate comments afterwards.
 
+    Self-verifying at no extra cost: the batchUpdate response carries the
+    whole stored CommentThread, so the return echoes quoted_text -- the text
+    the comment ACTUALLY anchored to. Compare it with the text you meant to
+    comment on; an off-by-one range shows up there immediately, without a
+    follow-up read.
+
     Requires Google Workspace Developer Preview enrollment (verify with
     check_docs_review_capabilities probe=true).
 
@@ -499,8 +950,11 @@ async def create_anchored_doc_comment(
 
     Returns:
         str: JSON with document_id, comment_id, post_id, author (the
-            thread head post's PostAuthor as the API recorded it),
-            anchor_id, quoted_text, status, comment_update_state, and link.
+            thread head post's PostAuthor as the API recorded it), content
+            (as stored), create_time, anchor_id, quoted_text, status,
+            comment_update_state, link, and verification {source:
+            "batch_update_response", saved, anchored_range, anchored_text,
+            stored_content, matches_request}.
     """
     if not content or not content.strip():
         raise UserInputError("content must be non-empty.")
@@ -541,16 +995,37 @@ async def create_anchored_doc_comment(
         ) or {}
     head_post = thread.get("headPost") or {}
 
+    quoted_text = thread.get("plainTextQuote")
+    stored_content = head_post.get("content")
+    comment_update_state = response.get("commentUpdateState")
     result = {
         "document_id": document_id,
         "comment_id": thread.get("commentId"),
         "post_id": head_post.get("postId"),
         "author": normalize_author(head_post.get("author")),
+        "content": _clip(stored_content),
         "create_time": head_post.get("createTime"),
         "anchor_id": thread.get("anchorId"),
-        "quoted_text": thread.get("plainTextQuote"),
+        "quoted_text": _clip(quoted_text),
         "status": thread.get("status"),
-        "comment_update_state": response.get("commentUpdateState"),
+        "comment_update_state": comment_update_state,
+        "verification": {
+            # No extra read: InsertCommentResponse carries the CommentThread,
+            # plainTextQuote included -- the anchored text for free.
+            "source": "batch_update_response",
+            "saved": comment_update_state == "ALL_SAVED",
+            "anchored_range": {
+                "start_index": start_index,
+                "end_index": end_index,
+                "segment_id": segment_id,
+                "tab_id": tab_id,
+            },
+            "anchored_text": _clip(quoted_text),
+            "stored_content": _clip(stored_content),
+            "matches_request": (
+                stored_content == content if stored_content is not None else None
+            ),
+        },
         "link": _doc_link(document_id),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)

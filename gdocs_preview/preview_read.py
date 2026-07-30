@@ -1,5 +1,11 @@
 """Developer Preview document read: tabs + comment/suggestion threads.
 
+Also the home of :func:`read_for_review`, the ONE read every docs_preview
+tool performs: the thread-bearing preview read, degrading to the GA
+``documents.get`` when the preview surface is unavailable. Read tools call it
+to answer the request; write tools call it once after a mutation to echo a
+verifiable post-state (see :mod:`gdocs_preview.write_tools`).
+
 ``documents.get`` returns comment and suggestion **threads** -- and with them
 the ``author`` every review record needs -- only when asked for them:
 
@@ -310,3 +316,82 @@ def tab_documents(payload: dict[str, Any]) -> list[TabDocument]:
 
     walk(tabs)
     return flattened
+
+
+# ---------------------------------------------------------------------------
+# One read, normalized for every review tool
+# ---------------------------------------------------------------------------
+
+#: ``read_source`` values reported by the review tools.
+READ_SOURCE_PREVIEW = "preview_threads"
+READ_SOURCE_GA = "ga_documents_get"
+
+
+@dataclass
+class ReviewRead:
+    """One document read, normalized for the review tools.
+
+    ``tabs`` is ``(tab_id, GA-shaped Document)`` per tab -- a single
+    ``(None, document)`` entry for the GA fallback -- so the analysis layer
+    has exactly one input shape to walk.
+    """
+
+    tabs: list[tuple[Optional[str], dict[str, Any]]]
+    tab_metadata: list[dict[str, Any]] = field(default_factory=list)
+    threads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    comments: list[dict[str, Any]] = field(default_factory=list)
+    source: str = READ_SOURCE_GA
+    degraded_reason: Optional[str] = None
+
+
+async def fetch_ga_document(
+    service: Any, document_id: str, view_mode: str
+) -> dict[str, Any]:
+    """Plain ``documents.get`` -- no tabs, no threads, always available."""
+    api_call = service.documents().get(
+        documentId=document_id, suggestionsViewMode=view_mode
+    )
+    return await asyncio.to_thread(api_call.execute)
+
+
+async def read_for_review(service: Any, document_id: str, view_mode: str) -> ReviewRead:
+    """Read a document with its comment/suggestion threads, degrading to the
+    GA read when the Developer Preview surface is unavailable.
+
+    Authors, thread status and Google's own suggestion summaries live only
+    on the preview payload (docs/preview-api-reference.md). Enrollment is a
+    property of the caller's GCP project, not of the document, so a failure
+    here must never fail the read: the GA payload still carries the full
+    suggestion algebra, just without authorship.
+    """
+    from googleapiclient.errors import HttpError
+
+    from gdocs_preview import preview_status
+
+    try:
+        payload = await fetch_document_with_threads(service, document_id, view_mode)
+    except (PreviewReadError, HttpError) as error:
+        logger.info(
+            f"[docs_preview] thread-bearing read unavailable for {document_id}; "
+            f"falling back to the GA documents.get read: {error}"
+        )
+        document = await fetch_ga_document(service, document_id, view_mode)
+        return ReviewRead(
+            tabs=[(None, document)],
+            source=READ_SOURCE_GA,
+            degraded_reason=str(error)[:300],
+        )
+
+    tabs = tab_documents(payload)
+    preview_status.record(
+        "available",
+        {"http_status": 200, "reason": "preview_read_succeeded"},
+        source="tool_call",
+    )
+    return ReviewRead(
+        tabs=[(tab.tab_id, tab.document) for tab in tabs],
+        tab_metadata=[tab.metadata for tab in tabs],
+        threads=suggestion_threads_by_id(payload),
+        comments=comment_threads(payload),
+        source=READ_SOURCE_PREVIEW,
+    )

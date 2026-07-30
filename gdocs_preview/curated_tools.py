@@ -16,7 +16,6 @@ thread-bearing (author-carrying) document read.
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from googleapiclient.errors import HttpError
@@ -26,8 +25,22 @@ from auth.scopes import DOCS_PREVIEW_SCOPES
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_read, preview_status
+from gdocs_preview import preview_status, suggestion_ledger
 from gdocs_preview.analysis import extract_suggestions_from_tabs, render_tabs
+from gdocs_preview.preview_read import (
+    READ_SOURCE_GA,
+    READ_SOURCE_PREVIEW,
+    ReviewRead,
+    read_for_review,
+)
+
+__all__ = [
+    "READ_SOURCE_GA",
+    "READ_SOURCE_PREVIEW",
+    "REVIEW_TOOL_NAMES",
+    "ReviewRead",
+    "read_for_review",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -62,78 +75,6 @@ def _tool_inventory() -> dict[str, Any]:
         "total": len(REVIEW_TOOL_NAMES),
         "names": list(REVIEW_TOOL_NAMES),
     }
-
-
-async def _get_document(service: Any, document_id: str, view_mode: str) -> dict:
-    api_call = service.documents().get(
-        documentId=document_id, suggestionsViewMode=view_mode
-    )
-    return await asyncio.to_thread(api_call.execute)
-
-
-#: ``read_source`` values reported by the review tools.
-READ_SOURCE_PREVIEW = "preview_threads"
-READ_SOURCE_GA = "ga_documents_get"
-
-
-@dataclass
-class ReviewRead:
-    """One document read, normalized for the review tools.
-
-    ``tabs`` is ``(tab_id, GA-shaped Document)`` per tab -- a single
-    ``(None, document)`` entry for the GA fallback -- so the analysis layer
-    has exactly one input shape to walk.
-    """
-
-    tabs: list[tuple[Optional[str], dict[str, Any]]]
-    tab_metadata: list[dict[str, Any]] = field(default_factory=list)
-    threads: dict[str, dict[str, Any]] = field(default_factory=dict)
-    comments: list[dict[str, Any]] = field(default_factory=list)
-    source: str = READ_SOURCE_GA
-    degraded_reason: Optional[str] = None
-
-
-async def _read_for_review(
-    service: Any, document_id: str, view_mode: str
-) -> ReviewRead:
-    """Read a document with its comment/suggestion threads, degrading to the
-    GA read when the Developer Preview surface is unavailable.
-
-    Authors, thread status and Google's own suggestion summaries live only
-    on the preview payload (docs/preview-api-reference.md). Enrollment is a
-    property of the caller's GCP project, not of the document, so a failure
-    here must never fail the read: the GA payload still carries the full
-    suggestion algebra, just without authorship.
-    """
-    try:
-        payload = await preview_read.fetch_document_with_threads(
-            service, document_id, view_mode
-        )
-    except (preview_read.PreviewReadError, HttpError) as error:
-        logger.info(
-            f"[docs_preview] thread-bearing read unavailable for {document_id}; "
-            f"falling back to the GA documents.get read: {error}"
-        )
-        document = await _get_document(service, document_id, view_mode)
-        return ReviewRead(
-            tabs=[(None, document)],
-            source=READ_SOURCE_GA,
-            degraded_reason=str(error)[:300],
-        )
-
-    tabs = preview_read.tab_documents(payload)
-    preview_status.record(
-        "available",
-        {"http_status": 200, "reason": "preview_read_succeeded"},
-        source="tool_call",
-    )
-    return ReviewRead(
-        tabs=[(tab.tab_id, tab.document) for tab in tabs],
-        tab_metadata=[tab.metadata for tab in tabs],
-        threads=preview_read.suggestion_threads_by_id(payload),
-        comments=preview_read.comment_threads(payload),
-        source=READ_SOURCE_PREVIEW,
-    )
 
 
 @server.tool(
@@ -184,8 +125,14 @@ async def list_document_suggestions(
         str: JSON with document_id, title, suggestion_count, read_source,
             tabs and the per-suggestion records described above.
     """
-    read = await _read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+    read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
     result = extract_suggestions_from_tabs(read.tabs, read.threads)
+    # Feed the ledger: this listing is the "before" picture that lets a later
+    # accept/reject name the suggestions its own resolution took with it
+    # (gdocs_preview/suggestion_ledger.py).
+    suggestion_ledger.observe(
+        user_google_email, document_id, result.get("suggestions") or []
+    )
     result["read_source"] = read.source
     result["tabs"] = read.tab_metadata
     if read.degraded_reason:
@@ -346,8 +293,17 @@ async def get_doc_review_view(
         raise UserInputError(
             f"Invalid view_mode '{view_mode}'. Must be one of: {', '.join(VIEW_MODES)}."
         )
-    read = await _read_for_review(service, document_id, view_mode)
+    read = await read_for_review(service, document_id, view_mode)
     rendered = render_tabs(read.tabs)
+    if view_mode == "SUGGESTIONS_INLINE":
+        # Same "before" picture as list_document_suggestions; only the inline
+        # view carries the pending suggestions, so the other two modes must
+        # not be mistaken for "the document has no suggestions".
+        suggestion_ledger.observe(
+            user_google_email,
+            document_id,
+            extract_suggestions_from_tabs(read.tabs, read.threads)["suggestions"],
+        )
     result = {
         "view_mode": view_mode,
         "read_source": read.source,

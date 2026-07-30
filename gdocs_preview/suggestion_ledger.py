@@ -1,0 +1,305 @@
+"""Process-wide memory of what our own writes did to a document's suggestions.
+
+Why this exists (empirical, ``llmux/runner/reports/20260730-211540.md``):
+accepting or rejecting a suggestion garbage-collects **others**. SPEC §7 plus
+invariant §11.1 I2: a suggestion whose last marked character disappears must
+leave the registry, and accepting a deletion removes exactly such characters.
+The next call naming a collaterally removed id then fails with
+
+    the suggestion ID sug.bob.1 is invalid or the suggestion no longer exists
+    Suggestion with ID sug.bob.1 does not exist.
+
+which is indistinguishable from a typo'd id. The agent gets no signal that its
+OWN prior action caused the invalidation, so it cannot learn the rule.
+
+This module is the missing memory. Every review read feeds it the live
+suggestion records (:func:`observe`); every resolution records what it removed
+and -- by diffing the last observation against the read taken immediately
+after the write -- which OTHER ids vanished alongside
+(:func:`record_resolution`). :func:`explain_missing` then turns a bare "does
+not exist" into a cause, and the write tools additionally report the collateral
+in the accept/reject response so the error never has to happen at all.
+
+**Honesty ladder.** :func:`explain_missing` answers with the strongest
+evidence it actually has, and never more:
+
+1. *resolved directly* -- we called accept/reject on that very id. Proven.
+2. *collateral* -- the id was in the read taken before our resolution and
+   absent from the read taken immediately after it. **Observed, not proven**:
+   a concurrent editor could have removed it inside that window, so the
+   wording states the observation first and offers the GC rule as the
+   explanation.
+3. *may have been removed* -- never seen to disappear, but we did resolve
+   something on this document and resolving can remove others.
+4. *never seen* -- no record at all; most likely a wrong id.
+
+State is keyed by ``(user_google_email, document_id)`` so a multi-user HTTP
+deployment never attributes one caller's resolution to another, and is bounded
+to :data:`MAX_DOCUMENTS` entries (oldest-touched evicted first) so a long-lived
+server cannot grow without limit.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Optional
+
+#: Documents tracked at once, per process. Eviction is oldest-touched-first.
+MAX_DOCUMENTS = 64
+
+#: Resolutions remembered per document. Older entries are dropped; their ids
+#: then answer with the weaker "may have been removed" wording rather than a
+#: fabricated cause.
+MAX_RESOLUTIONS = 128
+
+#: Record fields kept for the echo. Everything else the analysis layer
+#: produces (replies, author blocks, tab/segment ids) is dropped here -- this
+#: cache exists to answer "what did the suggestion I just resolved say?", and
+#: it is copied straight into an LLM's context window.
+_KEPT_FIELDS = (
+    "suggestion_id",
+    "type",
+    "pre_text",
+    "post_text",
+    "context_before",
+    "context_after",
+    "start_index",
+    "end_index",
+    "summary_text",
+    "status",
+)
+
+
+@dataclass
+class Resolution:
+    """How one suggestion id left the document, as far as we can tell."""
+
+    suggestion_id: str
+    #: The tool action that removed it: ``accept``, ``reject`` or
+    #: ``suggest_doc_edit`` (a new same-author edit can absorb a neighbour
+    #: by merge).
+    action: str
+    at: str
+    #: The id WE acted on, when it is known. Only meaningful for collateral.
+    cause: Optional[str] = None
+    #: True: this id IS the one we acted on (proven). False: it disappeared
+    #: alongside our write (observed) -- ``cause`` names that write's id when
+    #: the API reported one.
+    direct: bool = True
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "suggestion_id": self.suggestion_id,
+            "action": self.action,
+            "at": self.at,
+            "cause": self.cause,
+            "direct": self.direct,
+        }
+
+
+@dataclass
+class _Entry:
+    #: suggestion id -> compact record, as of the most recent read.
+    records: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: suggestion id -> how it went away.
+    resolutions: dict[str, Resolution] = field(default_factory=dict)
+    #: True once any read has been observed, so "we have never looked" is
+    #: distinguishable from "we looked and it was not there".
+    observed: bool = False
+
+
+_entries: dict[tuple[str, str], _Entry] = {}
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _key(user_google_email: str, document_id: str) -> tuple[str, str]:
+    return (user_google_email or "", document_id or "")
+
+
+def _entry(user_google_email: str, document_id: str) -> _Entry:
+    key = _key(user_google_email, document_id)
+    entry = _entries.pop(key, None)
+    if entry is None:
+        entry = _Entry()
+        while len(_entries) >= MAX_DOCUMENTS:
+            _entries.pop(next(iter(_entries)))
+    _entries[key] = entry  # re-insert: dict order is the LRU order
+    return entry
+
+
+def _compact(record: dict[str, Any]) -> dict[str, Any]:
+    return {k: record.get(k) for k in _KEPT_FIELDS if k in record}
+
+
+def observe(
+    user_google_email: str,
+    document_id: str,
+    suggestions: Iterable[dict[str, Any]],
+) -> None:
+    """Record the live suggestions a read just returned (replaces the set).
+
+    Every read tool and every post-write verification read calls this, which
+    is what keeps the "before" picture fresh enough for the diff in
+    :func:`record_resolution` to mean something.
+    """
+    entry = _entry(user_google_email, document_id)
+    records: dict[str, dict[str, Any]] = {}
+    for record in suggestions or []:
+        sid = (record or {}).get("suggestion_id")
+        if sid:
+            records[str(sid)] = _compact(record)
+    entry.records = records
+    entry.observed = True
+
+
+def known_ids(user_google_email: str, document_id: str) -> Optional[frozenset[str]]:
+    """Suggestion ids as of the last read, or ``None`` if we never looked."""
+    entry = _entries.get(_key(user_google_email, document_id))
+    if entry is None or not entry.observed:
+        return None
+    return frozenset(entry.records)
+
+
+def record_of(
+    user_google_email: str, document_id: str, suggestion_id: str
+) -> Optional[dict[str, Any]]:
+    """The compact record of one suggestion as of the last read."""
+    entry = _entries.get(_key(user_google_email, document_id))
+    if entry is None:
+        return None
+    record = entry.records.get(suggestion_id)
+    return dict(record) if record else None
+
+
+def record_resolution(
+    user_google_email: str,
+    document_id: str,
+    action: str,
+    suggestion_id: str,
+    collateral: Iterable[str] = (),
+) -> list[Resolution]:
+    """Remember that ``action`` on ``suggestion_id`` removed those ids.
+
+    ``collateral`` is the caller's before/after diff (ids listed before the
+    write and missing from the read right after it), minus ``suggestion_id``
+    itself. An empty ``suggestion_id`` records the collateral without naming
+    a cause -- an edit whose own id the API never reported still removed
+    something, and inventing an id for it would be a lie.
+
+    Returns every :class:`Resolution` recorded by this call, the directly
+    resolved one first, so the caller can render the same facts into its
+    response.
+    """
+    entry = _entry(user_google_email, document_id)
+    at = _now()
+    recorded = [Resolution(suggestion_id, action, at)] if suggestion_id else []
+    for sid in collateral:
+        if sid and sid != suggestion_id:
+            recorded.append(
+                Resolution(sid, action, at, cause=suggestion_id or None, direct=False)
+            )
+    for resolution in recorded:
+        entry.resolutions[resolution.suggestion_id] = resolution
+        entry.records.pop(resolution.suggestion_id, None)
+    while len(entry.resolutions) > MAX_RESOLUTIONS:
+        entry.resolutions.pop(next(iter(entry.resolutions)))
+    return recorded
+
+
+def collateral_note(resolution: Resolution) -> str:
+    """One sentence naming a collaterally removed suggestion, for a response."""
+    if resolution.action == "suggest_doc_edit":
+        merged = f" into {resolution.cause!r}" if resolution.cause else ""
+        return (
+            f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+            f"before this edit and absent right after it -- an adjacent "
+            f"same-author suggestion merges{merged}."
+        )
+    cause = (
+        repr(resolution.cause) if resolution.cause else "the suggestion you resolved"
+    )
+    return (
+        f"suggestion {resolution.suggestion_id!r} is gone: {resolution.action}ing "
+        f"{cause} also removed it, because that removed the last character it "
+        f"marked. Its comment thread went with it."
+    )
+
+
+def explain_missing(
+    user_google_email: str, document_id: str, suggestion_id: str
+) -> str:
+    """Why ``suggestion_id`` no longer exists -- with the evidence we have.
+
+    Always returns a sentence: the module docstring's honesty ladder decides
+    which one. Causation is only claimed where it was observed, and the
+    weaker branches say so in words.
+    """
+    entry = _entries.get(_key(user_google_email, document_id))
+    reread = "Re-read the current ids with list_document_suggestions."
+
+    if entry is None or not entry.observed:
+        return (
+            "This session has not read this document, so there is no record "
+            "of the id. It may never have existed, or another editor (or an "
+            f"earlier session) may have resolved it. {reread}"
+        )
+
+    resolution = entry.resolutions.get(suggestion_id)
+    if resolution is not None and resolution.direct:
+        return (
+            f"You {resolution.action}ed it yourself at {resolution.at}; "
+            f"resolving a suggestion removes it. {reread}"
+        )
+    if resolution is not None:
+        if resolution.action == "suggest_doc_edit":
+            merged = f", which created {resolution.cause!r}" if resolution.cause else ""
+            return (
+                f"It was still listed before your suggest_doc_edit at "
+                f"{resolution.at}{merged} and gone from the read right after -- "
+                f"an adjacent same-author suggestion merges into the new one. "
+                f"{reread}"
+            )
+        cause = repr(resolution.cause) if resolution.cause else "another suggestion"
+        return (
+            f"It was still listed before you {resolution.action}ed {cause} at "
+            f"{resolution.at} and gone from the read right after, so that "
+            f"{resolution.action} removed it: {resolution.action}ing a "
+            f"suggestion also deletes any other suggestion whose last marked "
+            f"character disappears with it. {reread}"
+        )
+
+    if entry.resolutions:
+        others = ", ".join(
+            f"{r.suggestion_id!r} ({r.action}, {r.at})"
+            for r in list(entry.resolutions.values())[-3:]
+            if r.direct
+        )
+        if others:
+            return (
+                "No record of it being removed, so this is not proven -- but "
+                f"you resolved {others} on this document in this session, and "
+                "resolving a suggestion also deletes any other suggestion "
+                "whose last marked character disappears with it. One of those "
+                f"MAY have removed it. {reread}"
+            )
+
+    if suggestion_id in entry.records:
+        return (
+            "It WAS present in the last read of this document, so it was "
+            "removed between that read and this call -- most likely by another "
+            f"editor. {reread}"
+        )
+    return (
+        "It was not in the last read of this document either, and no write of "
+        "ours removed it: most likely the id is wrong. Ids come from "
+        f"list_document_suggestions. {reread}"
+    )
+
+
+def reset() -> None:
+    """Forget everything (used by tests)."""
+    _entries.clear()

@@ -1,0 +1,15 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "fx-doc-typo",
+      "title": "Launch Note (fixture)",
+      "text": "Our teem shipped the feature on Friday.\nEveryone was relieved.\n",
+      "suggestions": [
+        {"op": "delete", "start": 28, "end": 38, "author": "carol"},
+        {"op": "replace", "start": 4, "end": 8, "text": "team", "author": "bob"}
+      ],
+      "comments": []
+    }
+  ]
+}

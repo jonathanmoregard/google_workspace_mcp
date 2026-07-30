@@ -1,0 +1,12 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "fx-doc-utf16",
+      "title": "Release Notes (fixture)",
+      "text": "Release 🎉 notes: the colour picker now remembers your last choice.\n",
+      "suggestions": [],
+      "comments": []
+    }
+  ]
+}

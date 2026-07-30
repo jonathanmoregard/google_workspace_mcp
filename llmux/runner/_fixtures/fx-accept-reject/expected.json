@@ -1,0 +1,8 @@
+{
+  "document_id": "fx-doc-typo",
+  "final_text": "Our team shipped the feature on Friday.\nEveryone was relieved.\n",
+  "pending_suggestions": 0,
+  "accept": ["sug.bob.2"],
+  "reject": ["sug.carol.1"],
+  "notes": "bob's typo fix is accepted; carol's deletion of ' on Friday' is rejected. bob's replace lands as sug.bob.2: the delete half (sug.bob.1) is absorbed by the insert half under the same-author merge rule."
+}

@@ -1,0 +1,8 @@
+{
+  "document_id": "fx-doc-utf16",
+  "original_text": "Release 🎉 notes: the colour picker now remembers your last choice.\n",
+  "final_text": "Release 🎉 notes: the color picker now remembers your last choice.\n",
+  "pending_suggestions": 1,
+  "suggestion_author": "mockuser",
+  "notes": "The astral emoji makes UTF-16 API indexes diverge from code-point indexes by one from position 9 onwards; 'colour' starts at UTF-16 index 23."
+}

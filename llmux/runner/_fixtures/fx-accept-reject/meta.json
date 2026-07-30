@@ -1,0 +1,8 @@
+{
+  "id": "fx-accept-reject",
+  "difficulty": "easy",
+  "steps": 3,
+  "tags": ["suggestions", "accept", "reject", "fixture"],
+  "authors": ["bob", "carol"],
+  "n_suggestions": 2
+}

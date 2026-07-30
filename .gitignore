@@ -49,3 +49,6 @@ credentials/
 # ---- e2e artifacts -----------------------------------------------------
 e2e/last_run.md
 e2e/_artifacts/
+
+# ---- llmux runner output (transcripts, state dumps, reports) -----------
+llmux/runner/reports/

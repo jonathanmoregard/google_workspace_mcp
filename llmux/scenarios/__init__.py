@@ -17,4 +17,14 @@ Layout::
     oracle.py      replay a solution through the real tools    (the prover)
     validate.py    every scenario is solvable and graded right (the gate)
     generated/     the committed corpus
+    stressgen/     the Monte-Carlo stress corpus generator
+    stress/        the committed stress corpus (30/60/90/120 suggestions)
+
+``stressgen`` reuses all of the above -- same primitives, same steps, same
+``generate.build`` cross-check, same ``validate`` gate -- and adds three
+things the hand-written ladder does not need: real 1,500-1,800 word
+articles to review, a seeded random walk that samples realistic editorial
+edits at linguistically meaningful positions, and per-suggestion grading
+derived from SPEC L5 so a 120-card task scores as a curve rather than a
+cliff.
 """

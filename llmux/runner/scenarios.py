@@ -27,7 +27,10 @@ REQUIRED_FILES = ("seed.json", "brief.md", "expected.json", "grade.py", "meta.js
 
 #: Ordering used whenever difficulty needs to be sorted or bucketed.
 #: ``--limit`` truncates from the right, so cheap buckets come first.
-DIFFICULTY_ORDER = ("easy", "medium", "hard", "adversarial", "unknown")
+#: ``stress`` sits last on purpose: those scenarios carry 30-120 suggestions
+#: each and cost several times an ordinary run, so a truncated batch should
+#: reach for them only when explicitly asked.
+DIFFICULTY_ORDER = ("easy", "medium", "hard", "adversarial", "stress", "unknown")
 
 #: The corpus carries difficulty two ways: a ``tier`` string and a 1-5
 #: ``difficulty`` number. ``tier`` wins when present; the number is the

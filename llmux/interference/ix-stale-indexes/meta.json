@@ -1,0 +1,28 @@
+{
+  "id": "ix-stale-indexes",
+  "difficulty": "hard",
+  "steps": 3,
+  "tags": ["suggestions", "suggest-edit", "indexes", "concurrency", "interference"],
+  "authors": ["dana"],
+  "n_suggestions": 0,
+  "interferences": [
+    {
+      "name": "dana-prepends-a-banner",
+      "kind": "shift_indexes",
+      "editor": "dana",
+      "document_id": "ix-doc-pilot",
+      "trigger": {
+        "when": "after",
+        "tool": [
+          "list_document_suggestions",
+          "get_doc_review_view",
+          "get_doc_content",
+          "get_doc_as_markdown",
+          "inspect_doc_structure"
+        ],
+        "nth": 1
+      },
+      "params": {"mode": "insert", "at": 0, "text": "DRAFT 🚧 do not circulate.\n"}
+    }
+  ]
+}

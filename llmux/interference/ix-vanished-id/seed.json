@@ -1,0 +1,15 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "ix-doc-launch",
+      "title": "Launch Note",
+      "text": "Our teem shipped the feature on Friday.\nEveryone was relieved.\n",
+      "suggestions": [
+        {"op": "delete", "start": 28, "end": 38, "author": "carol"},
+        {"op": "replace", "start": 4, "end": 8, "text": "team", "author": "bob"}
+      ],
+      "comments": []
+    }
+  ]
+}

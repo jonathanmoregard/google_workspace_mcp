@@ -1,0 +1,28 @@
+{
+  "id": "ix-overlap-both-marks",
+  "difficulty": "hard",
+  "steps": 3,
+  "tags": ["suggestions", "suggest-edit", "overlap", "concurrency", "interference"],
+  "authors": ["frank"],
+  "n_suggestions": 0,
+  "interferences": [
+    {
+      "name": "frank-suggests-cutting-the-line",
+      "kind": "overlapping_suggestion",
+      "editor": "frank",
+      "document_id": "ix-doc-vision",
+      "trigger": {
+        "when": "after",
+        "tool": [
+          "list_document_suggestions",
+          "get_doc_review_view",
+          "get_doc_content",
+          "get_doc_as_markdown",
+          "inspect_doc_structure"
+        ],
+        "nth": 1
+      },
+      "params": {"anchor_text": "The brave new plan ships in March."}
+    }
+  ]
+}

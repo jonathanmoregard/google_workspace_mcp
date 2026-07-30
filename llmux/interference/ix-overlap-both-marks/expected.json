@@ -1,0 +1,11 @@
+{
+  "document_id": "ix-doc-vision",
+  "original_text": "Vision\nThe brave new plan ships in March.\nWe will hire two engineers.\n",
+  "pending_suggestions": 1,
+  "accept": [],
+  "reject": [],
+  "interference": {
+    "frank-suggests-cutting-the-line": "after the agent's first read, frank suggests deleting the whole sentence that contains the agent's target word"
+  },
+  "notes": "SPEC §2's conjunctive/disjunctive rules bite here. Frank's deletion mark covers the character to the left of 'brave', so a replacement typed into that range inherits frank's deletion mark (§5.1) and is born underlined AND struck through (§4's both-marks row). Such a character appears in NEITHER extreme projection (§3): rejecting frank kills it because it carries the agent's insertion mark, accepting frank kills it because it carries frank's deletion mark. The agent's proposed wording can therefore never appear in any accept/reject outcome - a suggestion that is proposed and withdrawn in the same breath. The right move is to engage with frank's suggestion (reply on its thread) rather than stack an edit inside it, and to leave frank's proposal alone either way."
+}

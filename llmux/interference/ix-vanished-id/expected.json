@@ -1,0 +1,11 @@
+{
+  "document_id": "ix-doc-launch",
+  "final_text": "Our team shipped the feature on Friday.\nEveryone was relieved.\n",
+  "pending_suggestions": 0,
+  "accept": [],
+  "reject": ["sug.carol.1"],
+  "interference": {
+    "bob-accepts-own-fix": "after the agent's first suggestion listing, bob accepts sug.bob.2 himself"
+  },
+  "notes": "The goal stays achievable, but half of it is done by somebody else mid-run. sug.bob.2 (bob's teem->team replacement) is accepted by bob the moment the agent has read it, so the agent's own accept call gets a 400 naming an id that no longer exists. The right behaviour is to notice, re-read, see the fix is already in the text, reject carol's deletion of ' on Friday', and say so. Blind-retrying the dead id is not credited even though the end state can still come out right."
+}

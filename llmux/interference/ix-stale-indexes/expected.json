@@ -1,0 +1,12 @@
+{
+  "document_id": "ix-doc-pilot",
+  "final_text": "DRAFT 🚧 do not circulate.\nPilot brief\nWe expect the pilot to reach 2,000 users by Q3.\nRisks are unchanged.\n",
+  "original_text": "DRAFT 🚧 do not circulate.\nPilot brief\nWe expect the pilot to reach 200 users by Q3.\nRisks are unchanged.\n",
+  "pending_suggestions": 1,
+  "accept": [],
+  "reject": [],
+  "interference": {
+    "dana-prepends-a-banner": "after the agent's first read, dana types a 26-grapheme / 27-UTF-16-unit banner at the very top of the document"
+  },
+  "notes": "The dangerous class, and the reason this scenario exists. Nothing 400s. The banner is base text, so it does not appear in any suggestion listing, and it moves every index in the document by +27 UTF-16 code units (the construction sign is one grapheme and two code units, so a naive character count is also wrong). An agent that reuses the indexes from its first read writes SUCCESSFULLY into the banner instead of the figure. Passing requires re-reading between the change and the write, which is exactly what suggest_doc_edit's own verification block reports but cannot prevent."
+}

@@ -1,0 +1,12 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "ix-doc-data",
+      "title": "Data Policy",
+      "text": "Data policy\nWe will release the model weights.\nContact the team for access.\n",
+      "suggestions": [],
+      "comments": []
+    }
+  ]
+}

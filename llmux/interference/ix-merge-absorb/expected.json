@@ -1,0 +1,12 @@
+{
+  "document_id": "ix-doc-data",
+  "final_text": "Data policy\nWe will release the model weights. We will publish the raw data too. (pending legal review)\nContact the team for access.\n",
+  "original_text": "Data policy\nWe will release the model weights.\nContact the team for access.\n",
+  "pending_suggestions": 1,
+  "accept": [],
+  "reject": [],
+  "interference": {
+    "second-session-extends-the-edit": "immediately after the agent's suggest_doc_edit lands, the same account edits adjacent text from another session, and spec §6 merges the two - survivor is the newer one, so the id the agent is holding is the one that gets absorbed"
+  },
+  "notes": "CONFIRMED REAL IN PRODUCTION: a merged write returns no createdSuggestionIds, and the id a caller remembers from before a merge stops existing. Merge is same-author only (§6), so the other writer here is the agent's own account on another device - the one case where §6's protection does not apply. Survivor selection is greatest touchedAt, so the later edit wins and the agent's remembered id is absorbed. Its reply then 400s with 'the suggestion ID ... is invalid'. Passing means re-reading, finding the single surviving card that now covers both pieces of text, and replying to that - the agent's own edit is still there, it is just no longer called what the agent thinks it is called."
+}

@@ -9,10 +9,12 @@ e2e/last_run.md, resolving unknowns the plan flagged:
 - the response-union extraction paths R3 guessed for the native tools
   (``replies[0].insertComment.commentThread`` and
   ``replies[0].addCommentReply.post``) - surfaced through the tools'
-  ``comment_id`` / ``post_id`` JSON fields
+  ``comment_id`` / ``post_id`` / ``author`` JSON fields
 - whether Docs preview thread ids interoperate with the Drive GA comment
   surface (list/update/delete/resolve)
 - how many suggestion ids a SUGGEST replacement (delete+insert) yields
+- the exact grammar of ``SuggestionThread.summaryText`` for each edit kind
+  (the mock's §8 ``label()`` must match it - prod is the oracle)
 - real error message shapes feeding preview_status.classify_preview_error
 """
 
@@ -86,18 +88,24 @@ def _create_anchored_comment(
         )
     )
     REPORT.note(
-        "create_anchored_doc_comment extraction (guessed path "
-        "replies[0].insertComment.commentThread): "
+        "create_anchored_doc_comment extraction "
+        "(replies[0].insertComment.commentThread): "
         f"comment_id={created['comment_id']!r}, "
+        f"post_id={created['post_id']!r}, "
+        f"author={created['author']!r}, "
         f"anchor_id={created['anchor_id']!r}, "
         f"quoted_text={created['quoted_text']!r}, "
         f"comment_update_state={created['comment_update_state']!r}"
     )
     assert created["comment_id"], (
         "comment_id is null: the InsertCommentResponse union member differs "
-        "from the guessed 'insertComment.commentThread' path - fix the "
+        "from the 'insertComment.commentThread' path - fix the "
         f"extraction in gdocs_preview/write_tools.py. Full response: {created}"
     )
+    # Requirement: every comment object carries an id AND an author.
+    assert created["post_id"], created
+    assert created["author"] and created["author"]["display_name"], created
+    assert created["author"]["me"] is True, created
     return created
 
 
@@ -110,7 +118,7 @@ def test_suggest_edit_creates_listable_suggestion(
     preview_ready, mcp, ga_auth, base_doc
 ):
     """suggest_doc_edit insertion -> list_document_suggestions pre/post +
-    author."""
+    a REAL author, end to end."""
     response = _suggest_insert(mcp, ga_auth.email, base_doc, "very ", index=5)
     assert response["mode"] == "insertion"
     assert response["requests_applied"] == 1
@@ -128,13 +136,144 @@ def test_suggest_edit_creates_listable_suggestion(
     assert "very" not in record["pre_text"]
     if response["created_suggestion_ids"]:
         assert record["suggestion_id"] in response["created_suggestion_ids"]
-    # Preview exposes Post.author on SuggestionThread.headPost (chunk 2
-    # finding); enrolled runs record what actually surfaces.
-    assert "author" in record
+
+    # The thread-bearing read (tabs + commentsViewMode) must be the one used,
+    # and it must yield the real author of the suggestion we just made.
     REPORT.note(
-        f"list_document_suggestions author field (enrolled): {record['author']!r} "
-        f"(source: {record.get('author_source')!r})"
+        f"list_document_suggestions read_source={listing['read_source']!r}, "
+        f"tabs={listing['tabs']!r}, author={record['author']!r}, "
+        f"status={record['status']!r}, summary_text={record['summary_text']!r}"
     )
+    assert listing["read_source"] == "preview_threads", (
+        "the preview (tabs + threads) read degraded to the GA read: "
+        f"{listing.get('degraded_reason')!r}"
+    )
+    assert record["author_source"] == "suggestion_thread"
+    author = record["author"]
+    assert author, f"author is null on an enrolled run: {record}"
+    assert author["display_name"], author
+    assert author["me"] is True, author
+    assert (author["user"] or "").startswith("users/"), author
+    assert record["status"] == "OPEN"
+    assert record["create_time"]
+    assert record["summary_text"], record
+    # Every tab carries a real id in the preview read.
+    assert record["tab_id"], record
+    assert listing["tabs"] and listing["tabs"][0]["tab_id"] == record["tab_id"]
+
+
+def test_summary_text_grammar_matches_the_mock_labels(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """RECORD + pin Google's ``SuggestionThread.summaryText`` grammar.
+
+    The mock's SPEC §8 ``label()`` claims the same grammar; prod is the
+    oracle, so a divergence here means mockdocs/model.py must change.
+    Verified 2026-07-30: typographic quotes, and
+    ``Replace: "<struck>" with "<added>"`` for a replacement.
+    """
+    from mockdocs.model import MockDoc
+
+    doc_id = make_scratch_doc("-summary", content="Hello brave world.")
+    email = ga_auth.email
+
+    # Replacement at the HIGHER index first so the pending suggestions do not
+    # merge: "brave" is [7, 12), "Hello" is [1, 6).
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+                "text": "bold",
+            },
+        )
+    )
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    summaries = [r["summary_text"] for r in listing["suggestions"]]
+    REPORT.note(f"SuggestionThread.summaryText (replacement): {summaries!r}")
+    assert summaries and summaries[0] == "Replace: “brave” with “bold”", summaries
+
+    # The mock's label() must produce the identical string.
+    mock_doc = MockDoc(text="Hello brave world.")
+    mock_sid = mock_doc.replace(6, 11, "bold", "alice")
+    assert mock_doc.label(mock_sid)["text"] == summaries[0], (
+        "mockdocs label() diverged from prod summaryText - prod is the oracle"
+    )
+
+    # Pure deletion and pure insertion, on their own documents.
+    delete_doc = make_scratch_doc("-summary-del", content="Hello brave world.")
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": delete_doc,
+                "start_index": 7,
+                "end_index": 12,
+            },
+        )
+    )
+    delete_summary = _wait_for_suggestions(mcp, email, delete_doc)["suggestions"][0][
+        "summary_text"
+    ]
+    REPORT.note(f"SuggestionThread.summaryText (deletion): {delete_summary!r}")
+    assert delete_summary == "Delete: “brave”"
+
+    insert_doc = make_scratch_doc("-summary-add", content="Hello world.")
+    _suggest_insert(mcp, email, insert_doc, "Say ", index=1)
+    insert_summary = _wait_for_suggestions(mcp, email, insert_doc)["suggestions"][0][
+        "summary_text"
+    ]
+    REPORT.note(f"SuggestionThread.summaryText (insertion): {insert_summary!r}")
+    assert insert_summary == "Add: “Say”"
+
+
+def test_review_view_exposes_comment_threads_with_authors(
+    preview_ready, mcp, ga_auth, base_doc
+):
+    """get_doc_review_view must surface the Docs-side comment threads with
+    an id and an author on every thread AND every reply."""
+    args = {"user_google_email": ga_auth.email, "document_id": base_doc}
+    created = _create_anchored_comment(
+        mcp, ga_auth.email, base_doc, "Who wrote this?", 1, 6
+    )
+    reply = tool_json(
+        mcp.call_tool(
+            "reply_to_doc_thread",
+            {**args, "reply_content": "I did.", "comment_id": created["comment_id"]},
+        )
+    )
+
+    def _thread_visible():
+        view = tool_json(mcp.call_tool("get_doc_review_view", dict(args)))
+        for comment in view.get("comments", []):
+            if comment["comment_id"] == created["comment_id"] and comment["replies"]:
+                return view, comment
+        return None
+
+    view, comment = poll_until(
+        _thread_visible,
+        timeout=30,
+        description="anchored comment + reply in get_doc_review_view",
+    )
+    REPORT.note(
+        f"get_doc_review_view read_source={view['read_source']!r}, "
+        f"comment author={comment['author']!r}, "
+        f"reply author={comment['replies'][0]['author']!r}, "
+        f"anchor_id={comment['anchor_id']!r}, status={comment['status']!r}"
+    )
+    assert view["read_source"] == "preview_threads", view.get("degraded_reason")
+    assert comment["author"] and comment["author"]["display_name"]
+    assert comment["post_id"]
+    assert comment["anchor_id"]
+    assert comment["quoted_text"] == "The q"
+    assert comment["status"] == "OPEN"
+    (thread_reply,) = comment["replies"]
+    assert thread_reply["post_id"] == reply["post_id"]
+    assert thread_reply["author"] and thread_reply["author"]["display_name"]
 
 
 def test_suggest_replacement_records_id_count(preview_ready, mcp, ga_auth, base_doc):
@@ -167,6 +306,10 @@ def test_suggest_replacement_records_id_count(preview_ready, mcp, ga_auth, base_
     listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
     joined_post = " ".join(r["post_text"] for r in listing["suggestions"])
     assert "sluggish" in joined_post
+    REPORT.note(
+        "replacement summary_text(s): "
+        f"{[r['summary_text'] for r in listing['suggestions']]!r}"
+    )
 
 
 def test_anchored_comment_thread_lifecycle(preview_ready, mcp, ga_auth, base_doc):
@@ -218,16 +361,16 @@ def test_anchored_comment_thread_lifecycle(preview_ready, mcp, ga_auth, base_doc
     assert reply["thread_type"] == "comment"
     assert reply["comment_id"] == comment_id
     REPORT.note(
-        "reply_to_doc_thread extraction (guessed path "
-        "replies[0].addCommentReply.post.postId): "
-        f"post_id={reply['post_id']!r}, "
+        "reply_to_doc_thread extraction (replies[0].addCommentReply.post): "
+        f"post_id={reply['post_id']!r}, author={reply['author']!r}, "
         f"comment_update_state={reply['comment_update_state']!r}"
     )
     assert reply["post_id"], (
         "post_id is null: the AddCommentReplyResponse union member differs "
-        "from the guessed 'addCommentReply.post' path - fix the extraction "
+        "from the 'addCommentReply.post' path - fix the extraction "
         f"in gdocs_preview/write_tools.py. Full response: {reply}"
     )
+    assert reply["author"] and reply["author"]["display_name"], reply
 
     # Update, then delete, through the Drive GA factory tool (id interop).
     update_result = mcp.call_tool_raw(
@@ -286,14 +429,29 @@ def test_reply_to_suggestion_thread(preview_ready, mcp, ga_auth, base_doc):
     assert reply["suggestion_id"] == suggestion_id
     REPORT.note(
         "reply on suggestion thread: "
-        f"post_id={reply['post_id']!r}, "
+        f"post_id={reply['post_id']!r}, author={reply['author']!r}, "
         f"comment_update_state={reply['comment_update_state']!r}"
     )
     assert reply["post_id"], (
         "post_id is null on a suggestion-thread reply - either the "
-        "AddCommentReplyResponse union member differs from the guessed "
+        "AddCommentReplyResponse union member differs from the expected "
         f"path or suggestion replies omit the post. Full response: {reply}"
     )
+    assert reply["author"] and reply["author"]["display_name"], reply
+
+    # The reply must come back on the suggestion thread, with its author.
+    def _reply_listed():
+        record = _list_suggestions(mcp, ga_auth.email, base_doc)["suggestions"][0]
+        return record if record["replies"] else None
+
+    record = poll_until(
+        _reply_listed, timeout=30, description="suggestion-thread reply listed"
+    )
+    (listed,) = record["replies"]
+    REPORT.note(f"list_document_suggestions suggestion-thread reply: {listed!r}")
+    assert listed["post_id"] == reply["post_id"]
+    assert listed["content"] == "e2e suggestion-thread reply"
+    assert listed["author"] and listed["author"]["display_name"]
 
 
 def test_accept_and_reject_collapse_pre_post(

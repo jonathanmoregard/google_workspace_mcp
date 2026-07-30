@@ -62,7 +62,7 @@ CLASSES: dict[str, str] = {
         "Made writes and never read the document back, so the run could not "
         "know whether its edits landed. NOTE: the rule counts read TOOL "
         "CALLS after the last write and nothing else, deliberately -- see "
-        "SELF_VERIFYING_WRITE_MARKER."
+        "SELF_VERIFYING_WRITE_MARKERS."
     ),
     "harness_mcp_unavailable": (
         "HARNESS FAULT, not an agent mistake: the mock MCP server never "
@@ -83,14 +83,26 @@ REPEAT_RUN_SHARE = 0.30
 #: judged on. What the marker does instead is annotate the finding, so a
 #: reader can tell "flew blind" apart from "the write answered in-band".
 #: Judge the fix on the annotated split, not on the headline count alone.
-SELF_VERIFYING_WRITE_MARKER = '"source": "post_write_read"'
+#:
+#: Matched as bare tokens, not as JSON fragments: the CLI hands back the
+#: tool's JSON *string-escaped* inside its own envelope, so the quotes in
+#: ``"source": "post_write_read"`` are backslashed by the time this sees
+#: them. The values are distinctive enough to stand alone.
+#:
+#: Both ``verification.source`` values count. They differ in strength, not
+#: in kind: ``post_write_read`` re-read the document, ``batch_update_response``
+#: echoed what the API said it stored (the reply's Post, the comment's
+#: ``plainTextQuote``). Either one puts the landed state in front of the run.
+SELF_VERIFYING_WRITE_MARKERS = ("post_write_read", "batch_update_response")
 
 _HALLUCINATED_PATTERNS = (
     re.compile(r"no such tool", re.I),
     re.compile(r"tool .*(?:not found|does not exist|is not available)", re.I),
     re.compile(r"unknown tool", re.I),
     re.compile(r"unexpected keyword argument", re.I),
-    re.compile(r"(?:unexpected|unrecognized|unknown) (?:parameter|argument|field)", re.I),
+    re.compile(
+        r"(?:unexpected|unrecognized|unknown) (?:parameter|argument|field)", re.I
+    ),
     re.compile(r"got an unexpected", re.I),
 )
 
@@ -127,7 +139,10 @@ _STALE_PATTERNS = (
 )
 
 _GAVE_UP_PATTERNS = (
-    re.compile(r"\b(?:i (?:was )?(?:could not|couldn't|cannot|can't|am unable|was unable))", re.I),
+    re.compile(
+        r"\b(?:i (?:was )?(?:could not|couldn't|cannot|can't|am unable|was unable))",
+        re.I,
+    ),
     re.compile(r"unable to (?:complete|finish|do this|proceed)", re.I),
     re.compile(r"no (?:suitable )?tool (?:is )?available", re.I),
     re.compile(r"i don'?t have (?:a|the|any) tool", re.I),
@@ -291,7 +306,9 @@ def _unknown_tool_findings(transcript: Transcript) -> list[Finding]:
     ]
 
 
-def _ignored_error_findings(calls: Sequence[ToolCall], succeeded: bool) -> list[Finding]:
+def _ignored_error_findings(
+    calls: Sequence[ToolCall], succeeded: bool
+) -> list[Finding]:
     out: list[Finding] = []
     for position, call in enumerate(calls):
         if not call.failed:
@@ -464,12 +481,13 @@ def classify(
         last_write = writes[-1].index
         if not any(c.is_read and c.index > last_write and not c.failed for c in calls):
             detail = "the run never read the document back after its last write"
-            if SELF_VERIFYING_WRITE_MARKER in (writes[-1].result_text or ""):
+            result_text = writes[-1].result_text or ""
+            if any(m in result_text for m in SELF_VERIFYING_WRITE_MARKERS):
                 detail += (
-                    " -- but that write's own response carried a post-write "
-                    "read-back, so the end state was in front of the run "
-                    "anyway (rule unchanged on purpose: see "
-                    "SELF_VERIFYING_WRITE_MARKER)"
+                    " -- but that write's own response carried a verification "
+                    "block, so the end state was in front of the run anyway "
+                    "(rule unchanged on purpose: see "
+                    "SELF_VERIFYING_WRITE_MARKERS)"
                 )
             findings.append(
                 Finding(
@@ -495,7 +513,12 @@ def classify(
         hit = _first_match(transcript.final_text, _GAVE_UP_PATTERNS)
         if hit and not passed:
             gave_up_reason = f"final message says {hit!r}"
-    if gave_up_reason is None and not passed and not writes and transcript.mcp_connected:
+    if (
+        gave_up_reason is None
+        and not passed
+        and not writes
+        and transcript.mcp_connected
+    ):
         gave_up_reason = "failed without making a single successful write call"
     if gave_up_reason:
         findings.append(Finding("gave_up_early", gave_up_reason, source="transcript"))

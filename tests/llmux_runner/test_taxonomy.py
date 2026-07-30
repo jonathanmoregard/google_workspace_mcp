@@ -7,6 +7,8 @@ classes are reproducible from its tool calls.
 
 from __future__ import annotations
 
+import json
+
 from llmux.runner.taxonomy import (
     CLASSES,
     Finding,
@@ -194,13 +196,17 @@ def test_hallucinated_param_from_the_error_text():
             )
         ]
     )
-    assert "hallucinated_tool" in codes(classify(SUGGESTION_FACTS, transcript, passed=False))
+    assert "hallucinated_tool" in codes(
+        classify(SUGGESTION_FACTS, transcript, passed=False)
+    )
 
 
 def test_ignored_error_when_a_failure_is_never_retried():
     transcript = make_transcript(
         [
-            make_call(0, "create_anchored_doc_comment", error="end_index must be greater"),
+            make_call(
+                0, "create_anchored_doc_comment", error="end_index must be greater"
+            ),
             make_call(1, "get_doc_review_view"),
         ]
     )
@@ -209,19 +215,27 @@ def test_ignored_error_when_a_failure_is_never_retried():
 
     retried = make_transcript(
         [
-            make_call(0, "create_anchored_doc_comment", error="end_index must be greater"),
-            make_call(1, "create_anchored_doc_comment", {"start_index": 1, "end_index": 4}),
+            make_call(
+                0, "create_anchored_doc_comment", error="end_index must be greater"
+            ),
+            make_call(
+                1, "create_anchored_doc_comment", {"start_index": 1, "end_index": 4}
+            ),
             make_call(2, "get_doc_review_view"),
         ]
     )
-    assert "ignored_error" not in codes(classify(SUGGESTION_FACTS, retried, passed=True))
+    assert "ignored_error" not in codes(
+        classify(SUGGESTION_FACTS, retried, passed=True)
+    )
 
 
 def test_wrong_tool_for_intent_when_a_suggestion_task_edits_directly():
     transcript = make_transcript(
         [
             make_call(0, "get_doc_content"),
-            make_call(1, "modify_doc_text", {"document_id": "d", "replacement_text": "color"}),
+            make_call(
+                1, "modify_doc_text", {"document_id": "d", "replacement_text": "color"}
+            ),
         ]
     )
     findings = classify(SUGGESTION_FACTS, transcript, passed=False)
@@ -283,9 +297,20 @@ def test_a_self_verifying_write_is_annotated_but_still_counted():
     document back for itself still fires the class (so batches stay
     comparable) and says so in the detail."""
     self_verifying = make_call(1, "suggest_doc_edit", {"start_index": 5, "text": "x"})
-    self_verifying.result_text = (
-        '{\n  "mode": "insertion",\n  "verification": {\n'
-        '    "source": "post_write_read",\n    "created_suggestions": []\n  }\n}'
+    # The CLI escapes the tool's JSON into its own envelope, which is
+    # exactly what the classifier has to cope with.
+    self_verifying.result_text = json.dumps(
+        {
+            "result": json.dumps(
+                {
+                    "mode": "insertion",
+                    "verification": {
+                        "source": "post_write_read",
+                        "created_suggestions": [],
+                    },
+                }
+            )
+        }
     )
     findings = classify(
         SUGGESTION_FACTS,
@@ -293,7 +318,7 @@ def test_a_self_verifying_write_is_annotated_but_still_counted():
         passed=True,
     )
     (finding,) = [f for f in findings if f.code == "no_end_state_verification"]
-    assert "post-write read-back" in finding.detail
+    assert "carried a verification block" in finding.detail
 
     blind = make_call(1, "suggest_doc_edit", {"start_index": 5, "text": "x"})
     (bare,) = [
@@ -305,7 +330,7 @@ def test_a_self_verifying_write_is_annotated_but_still_counted():
         )
         if f.code == "no_end_state_verification"
     ]
-    assert "post-write read-back" not in bare.detail
+    assert "carried a verification block" not in bare.detail
 
 
 def test_gave_up_early_on_timeout_budget_and_prose():
@@ -314,7 +339,9 @@ def test_gave_up_early_on_timeout_budget_and_prose():
         classify(SUGGESTION_FACTS, timed_out, passed=False, timed_out=True)
     )
 
-    budget = make_transcript([make_call(0, "get_doc_review_view")], subtype="error_max_budget")
+    budget = make_transcript(
+        [make_call(0, "get_doc_review_view")], subtype="error_max_budget"
+    )
     assert "gave_up_early" in codes(classify(SUGGESTION_FACTS, budget, passed=False))
 
     prose = make_transcript(

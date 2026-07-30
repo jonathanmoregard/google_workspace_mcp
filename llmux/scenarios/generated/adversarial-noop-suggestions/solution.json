@@ -1,0 +1,46 @@
+[
+  {
+    "tool": "create_anchored_doc_comment",
+    "args": {
+      "content": "No-op: this suggestion changes nothing.",
+      "start_index": 14,
+      "end_index": 20
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.carol.2"
+    }
+  },
+  {
+    "tool": "create_anchored_doc_comment",
+    "args": {
+      "content": "No-op: this suggestion changes nothing.",
+      "start_index": 34,
+      "end_index": 41
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.alice.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.bob.2"
+    }
+  }
+]

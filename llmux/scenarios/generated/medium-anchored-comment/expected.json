@@ -1,0 +1,45 @@
+{
+  "document_id": "mockdoc-m4-anchor",
+  "final_text": "Launch checklist 🎉\nThe revenue forecast needs a second quarterly pass.\nOps sign-off is pending.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.carol.1": "rejected",
+    "sug.alice.1": "accepted",
+    "sug.bob.1": "rejected"
+  },
+  "thread_expectations": [
+    {
+      "kind": "comment_thread",
+      "quote": "revenue forecast",
+      "content_contains": "Confirm the source",
+      "min_count": 1
+    }
+  ],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Launch checklist 🎉\nThe revenue forecast needs a second quarterly pass.\nOps sign-off is pending.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Launch checklist 🎉\nThe revenue forecast needs a second quarterly pass.\nOps sign-off is pending.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "comment_count",
+      "equals": 1
+    },
+    {
+      "check": "text_present",
+      "text": "quarterly pass"
+    }
+  ]
+}

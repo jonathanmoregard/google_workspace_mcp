@@ -1,0 +1,51 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-m1-author-split",
+      "title": "Quarterly update",
+      "text": "Quarterly update\nRevenue grew by 12 percent this quarter.\nThe support backlog shrank.\nWe hired two engineers in March.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 16,
+          "text": " — internal",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 54,
+          "end": 67,
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 89,
+          "end": 95,
+          "text": "shrank by half",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 120,
+          "text": "exactly ",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 141,
+          "end": 150,
+          "author": "bob"
+        },
+        {
+          "op": "replace",
+          "start": 44,
+          "end": 46,
+          "text": "twelve",
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "hard-multi-phase-review",
+  "difficulty": 4,
+  "steps": 12,
+  "tags": [
+    "multi-author",
+    "threads",
+    "two-phase",
+    "replacement",
+    "reply"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 12,
+  "tier": "hard",
+  "document_id": "mockdoc-h4-phases",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

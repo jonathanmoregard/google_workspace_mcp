@@ -1,0 +1,70 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-h3-utf16",
+      "title": "Release notes",
+      "text": "Release 🎉 notes for the platform team 👨‍👩‍👧\nThe café rollout reached 40 percent of users.\nLatency improved after the cache rewrite.\nOwner: José Nunez.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 65,
+          "end": 67,
+          "text": "45",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 15,
+          "end": 37,
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 128,
+          "text": " and the index rebuild",
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 152,
+          "text": "Primary ",
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 172,
+          "end": 177,
+          "text": "Nuñez",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 77,
+          "end": 86,
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 9,
+          "text": " v2",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 91,
+          "text": "Measured: ",
+          "author": "bob"
+        },
+        {
+          "op": "replace",
+          "start": 47,
+          "end": 51,
+          "text": "coffee",
+          "author": "carol"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

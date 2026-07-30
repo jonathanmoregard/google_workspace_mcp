@@ -1,0 +1,31 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-e1-accept-all",
+      "title": "Project Orion status",
+      "text": "Project Orion status\nThe launch window is on track.\nRisks are documented in the appendix.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 20,
+          "text": " (draft)",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 50,
+          "text": "currently ",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 106,
+          "text": " and the tracker",
+          "author": "alice"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

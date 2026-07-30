@@ -1,0 +1,23 @@
+[
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.3"
+    }
+  }
+]

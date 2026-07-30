@@ -1,0 +1,38 @@
+{
+  "document_id": "mockdoc-e2-reject-all",
+  "final_text": "Meeting notes for the weekly sync.\nAttendees: Ana, Ben, Cara.\nAction items are listed below.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.bob.1": "rejected",
+    "sug.bob.2": "rejected",
+    "sug.bob.3": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Meeting notes for the weekly sync.\nAttendees: Ana, Ben, Cara.\nAction items are listed below.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Meeting notes for the weekly sync.\nAttendees: Ana, Ben, Cara.\nAction items are listed below.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_present",
+      "text": "Ana, Ben, Cara"
+    },
+    {
+      "check": "text_present",
+      "text": "listed below"
+    }
+  ]
+}

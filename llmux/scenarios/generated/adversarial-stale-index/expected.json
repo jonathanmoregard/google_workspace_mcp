@@ -1,0 +1,54 @@
+{
+  "document_id": "mockdoc-a1-stale-index",
+  "final_text": "Section 1: Overview\nThe pipeline is deprecated.\nSection 2: Plan (approved)\nMigrate the remaining jobs by the end of the month.\n",
+  "surviving_suggestion_ids": [
+    "sug.reviewer.1"
+  ],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.bob.1": "rejected",
+    "sug.alice.2": "accepted",
+    "sug.carol.1": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Section 1: Overview\nThe pipeline is deprecated.\nSection 2: Plan\nMigrate the remaining jobs by the end of the month.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Section 1: Overview\nThe pipeline is deprecated.\nSection 2: Plan (approved)\nMigrate the remaining jobs by the end of the month.\n"
+    },
+    {
+      "check": "authored_suggestion_count",
+      "author": "reviewer",
+      "equals": 1
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 1
+    },
+    {
+      "check": "text_present",
+      "text": "Section 2: Plan (approved)\n"
+    },
+    {
+      "check": "text_absent",
+      "text": "legacy"
+    },
+    {
+      "check": "text_absent",
+      "text": "(2024)"
+    },
+    {
+      "check": "text_absent",
+      "text": "First,"
+    }
+  ]
+}

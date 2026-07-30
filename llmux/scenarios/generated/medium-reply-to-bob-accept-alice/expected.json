@@ -1,0 +1,65 @@
+{
+  "document_id": "mockdoc-m3-reply",
+  "final_text": "Sprint review notes\nThe API migration finished ahead of schedule with no rollbacks.\nThreeTwo tests remain in the suite and are being triaged.\nDocumentation was not updated.\n",
+  "surviving_suggestion_ids": [
+    "sug.bob.2",
+    "sug.bob.3",
+    "sug.bob.4"
+  ],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.alice.2": "accepted"
+  },
+  "thread_expectations": [
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.bob.4",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    },
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.bob.2",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    },
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.bob.3",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    }
+  ],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Sprint review notes\nThe API migration finished ahead of schedule with no rollbacks.\nTwo tests remain in the suite.\nDocumentation was not updated.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Sprint reviewes\nThe API migration finished ahead of schedule with no rollbacks.\nThree tests remain in the suite and are being triaged.\nDocumentation was not updated.\n"
+    },
+    {
+      "check": "authored_suggestion_count",
+      "author": "bob",
+      "equals": 3
+    },
+    {
+      "check": "authored_suggestion_count",
+      "author": "alice",
+      "equals": 0
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 3
+    }
+  ]
+}

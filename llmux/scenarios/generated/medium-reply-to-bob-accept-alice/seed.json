@@ -1,0 +1,44 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-m3-reply",
+      "title": "Sprint review notes",
+      "text": "Sprint review notes\nThe API migration finished ahead of schedule.\nTwo flaky tests remain in the suite.\nDocumentation was not updated.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 64,
+          "text": " with no rollbacks",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 87,
+          "end": 93,
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 84,
+          "end": 87,
+          "text": "Three",
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 124,
+          "text": " and are being triaged",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 13,
+          "end": 17,
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

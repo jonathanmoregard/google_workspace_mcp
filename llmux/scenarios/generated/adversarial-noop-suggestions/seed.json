@@ -1,0 +1,41 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-a2-noop",
+      "title": "Review request",
+      "text": "Please review the attached summary before Friday and share feedback.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 27,
+          "end": 34,
+          "text": "summary",
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 49,
+          "end": 55,
+          "text": "Friday,",
+          "author": "bob"
+        },
+        {
+          "op": "replace",
+          "start": 7,
+          "end": 13,
+          "text": "review",
+          "author": "carol"
+        },
+        {
+          "op": "replace",
+          "start": 0,
+          "end": 6,
+          "text": "please",
+          "author": "alice"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

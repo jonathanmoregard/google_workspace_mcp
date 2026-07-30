@@ -1,0 +1,59 @@
+{
+  "document_id": "mockdoc-h2-overlap",
+  "final_text": "The jumps dog.\nThis paragraph contains guidance.\nKeep the final sentence intact.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.bob.1": "accepted",
+    "sug.alice.3": "accepted",
+    "sug.alice.2": "rejected",
+    "sug.carol.1": "accepted",
+    "sug.carol.3": "rejected",
+    "sug.bob.3": "rejected",
+    "sug.alice.4": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "The jumps dog.\nThis paragraph contains guidance.\nKeep the final sentence intact.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "The jumps dog.\nThis paragraph contains guidance.\nKeep the final sentence intact.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_absent",
+      "text": "quick"
+    },
+    {
+      "check": "text_absent",
+      "text": "brown"
+    },
+    {
+      "check": "text_absent",
+      "text": "fox"
+    },
+    {
+      "check": "text_absent",
+      "text": "stale"
+    },
+    {
+      "check": "text_present",
+      "text": "guidance"
+    },
+    {
+      "check": "text_present",
+      "text": "Keep the final sentence intact"
+    }
+  ]
+}

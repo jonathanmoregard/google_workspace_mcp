@@ -1,0 +1,24 @@
+{
+  "id": "medium-anchored-comment",
+  "difficulty": 3,
+  "steps": 4,
+  "tags": [
+    "multi-author",
+    "comments",
+    "anchor",
+    "utf16",
+    "emoji"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 3,
+  "tier": "medium",
+  "document_id": "mockdoc-m4-anchor",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

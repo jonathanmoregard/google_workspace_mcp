@@ -1,0 +1,21 @@
+{
+  "id": "medium-accept-replacements",
+  "difficulty": 3,
+  "steps": 4,
+  "tags": [
+    "multi-author",
+    "replacement",
+    "predicate"
+  ],
+  "authors": [
+    "alice",
+    "bob"
+  ],
+  "n_suggestions": 4,
+  "tier": "medium",
+  "document_id": "mockdoc-m5-replacements",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

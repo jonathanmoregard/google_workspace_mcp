@@ -1,0 +1,23 @@
+{
+  "id": "medium-author-split",
+  "difficulty": 3,
+  "steps": 6,
+  "tags": [
+    "multi-author",
+    "replacement",
+    "accept",
+    "reject",
+    "predicate"
+  ],
+  "authors": [
+    "alice",
+    "bob"
+  ],
+  "n_suggestions": 6,
+  "tier": "medium",
+  "document_id": "mockdoc-m1-author-split",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-h4-phases",
+      "title": "Incident review",
+      "text": "Incident review\nThe outage began at 03:12 and lasted 47 minutes.\nRoot cause was a bad config push.\nCustomer impact was limited to the EU region.\nFollow-up actions are tracked in the incident doc.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 53,
+          "end": 55,
+          "text": "52",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 99,
+          "text": " to the edge tier",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 137,
+          "end": 148,
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 164,
+          "text": "Open ",
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 36,
+          "end": 41,
+          "text": "03:15",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 203,
+          "end": 223,
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 167,
+          "text": " and the UK",
+          "author": "bob"
+        },
+        {
+          "op": "replace",
+          "start": 89,
+          "end": 104,
+          "text": "misapplied config push",
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 15,
+          "text": " (draft 2)",
+          "author": "carol"
+        },
+        {
+          "op": "delete",
+          "start": 36,
+          "end": 42,
+          "author": "carol"
+        },
+        {
+          "op": "replace",
+          "start": 190,
+          "end": 192,
+          "text": "European",
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 82,
+          "text": "Suspected ",
+          "author": "carol"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

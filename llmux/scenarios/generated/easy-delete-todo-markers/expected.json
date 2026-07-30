@@ -1,0 +1,43 @@
+{
+  "document_id": "mockdoc-e4-todo",
+  "final_text": "Draft outline.\nconfirm the venue.\nThe agenda is fixed.\nbook the caterer.\nSend invitations next week.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.4": "rejected",
+    "sug.alice.1": "accepted",
+    "sug.alice.2": "accepted",
+    "sug.alice.3": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Draft outline.\nconfirm the venue.\nThe agenda is fixed.\nbook the caterer.\nSend invitations next week.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Draft outline.\nconfirm the venue.\nThe agenda is fixed.\nbook the caterer.\nSend invitations next week.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_absent",
+      "text": "TODO"
+    },
+    {
+      "check": "text_present",
+      "text": "next week"
+    },
+    {
+      "check": "text_present",
+      "text": "Draft outline"
+    }
+  ]
+}

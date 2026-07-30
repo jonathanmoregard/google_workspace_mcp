@@ -1,0 +1,23 @@
+{
+  "id": "medium-reply-to-bob-accept-alice",
+  "difficulty": 3,
+  "steps": 5,
+  "tags": [
+    "multi-author",
+    "threads",
+    "reply",
+    "accept",
+    "two-phase"
+  ],
+  "authors": [
+    "alice",
+    "bob"
+  ],
+  "n_suggestions": 5,
+  "tier": "medium",
+  "document_id": "mockdoc-m3-reply",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

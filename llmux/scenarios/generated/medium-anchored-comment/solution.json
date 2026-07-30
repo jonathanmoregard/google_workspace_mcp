@@ -1,0 +1,31 @@
+[
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.carol.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.1"
+    }
+  },
+  {
+    "tool": "create_anchored_doc_comment",
+    "args": {
+      "content": "Confirm the source before sign-off.",
+      "start_index": 25,
+      "end_index": 41
+    }
+  }
+]

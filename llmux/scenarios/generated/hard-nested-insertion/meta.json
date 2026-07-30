@@ -1,0 +1,24 @@
+{
+  "id": "hard-nested-insertion",
+  "difficulty": 4,
+  "steps": 8,
+  "tags": [
+    "multi-author",
+    "nested-insertion",
+    "conjunctive",
+    "gc",
+    "trap"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 8,
+  "tier": "hard",
+  "document_id": "mockdoc-h1-nested",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

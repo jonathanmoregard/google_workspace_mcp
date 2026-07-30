@@ -1,0 +1,69 @@
+{
+  "document_id": "mockdoc-h3-utf16",
+  "final_text": "Release 🎉 v2 notes for the platform team 👨‍👩‍👧\nThe coffee rollout reached 45 percent.\nLatency improved after the cache rewrite and the index rebuild.\nPrimary Owner: José Nunez.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.4": "accepted",
+    "sug.bob.1": "rejected",
+    "sug.carol.4": "accepted",
+    "sug.alice.2": "accepted",
+    "sug.carol.2": "accepted",
+    "sug.bob.4": "rejected",
+    "sug.carol.1": "accepted",
+    "sug.alice.3": "accepted",
+    "sug.bob.3": "rejected"
+  },
+  "thread_expectations": [
+    {
+      "kind": "comment_thread",
+      "quote": "index rebuild",
+      "content_contains": "Anchored by the reviewer",
+      "min_count": 1
+    },
+    {
+      "kind": "comment_thread",
+      "quote": "Primary",
+      "content_contains": "Anchored by the reviewer",
+      "min_count": 1
+    }
+  ],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Release 🎉 v2 notes for the platform team 👨‍👩‍👧\nThe coffee rollout reached 45 percent.\nLatency improved after the cache rewrite and the index rebuild.\nPrimary Owner: José Nunez.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Release 🎉 v2 notes for the platform team 👨‍👩‍👧\nThe coffee rollout reached 45 percent.\nLatency improved after the cache rewrite and the index rebuild.\nPrimary Owner: José Nunez.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "comment_count",
+      "equals": 2
+    },
+    {
+      "check": "text_present",
+      "text": "45 percent"
+    },
+    {
+      "check": "text_present",
+      "text": "for the platform team"
+    },
+    {
+      "check": "text_absent",
+      "text": "Measured:"
+    },
+    {
+      "check": "text_present",
+      "text": "coffee rollout"
+    }
+  ]
+}

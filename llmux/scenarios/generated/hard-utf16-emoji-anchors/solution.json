@@ -1,0 +1,81 @@
+[
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.carol.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.carol.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.carol.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.3"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.3"
+    }
+  },
+  {
+    "tool": "create_anchored_doc_comment",
+    "args": {
+      "content": "Anchored by the reviewer.",
+      "start_index": 140,
+      "end_index": 153
+    }
+  },
+  {
+    "tool": "create_anchored_doc_comment",
+    "args": {
+      "content": "Anchored by the reviewer.",
+      "start_index": 155,
+      "end_index": 162
+    }
+  }
+]

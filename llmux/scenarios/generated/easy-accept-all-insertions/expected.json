@@ -1,0 +1,30 @@
+{
+  "document_id": "mockdoc-e1-accept-all",
+  "final_text": "Project Orion status (draft)\nThe launch window is currently on track.\nRisks are documented in the appendix and the tracker.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.alice.2": "accepted",
+    "sug.alice.3": "accepted"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Project Orion status (draft)\nThe launch window is currently on track.\nRisks are documented in the appendix and the tracker.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Project Orion status (draft)\nThe launch window is currently on track.\nRisks are documented in the appendix and the tracker.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    }
+  ]
+}

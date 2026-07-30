@@ -1,0 +1,32 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-a3-both-marks",
+      "title": "Wording pass",
+      "text": "The popular greeting is short. The unclear wording is worse.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 9,
+          "text": "ular",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 4,
+          "end": 9,
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 39,
+          "end": 46,
+          "text": "clear",
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

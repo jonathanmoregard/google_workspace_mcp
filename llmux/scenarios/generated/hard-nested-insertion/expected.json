@@ -1,0 +1,55 @@
+{
+  "document_id": "mockdoc-h1-nested",
+  "final_text": "Status: green.\nRight now, The pipeline under load.\nNext steps.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.bob.1": "accepted",
+    "sug.bob.3": "accepted",
+    "sug.bob.2": "accepted",
+    "sug.alice.4": "rejected",
+    "sug.alice.1": "rejected",
+    "sug.carol.1": "accepted",
+    "sug.alice.2": "rejected",
+    "sug.carol.2": "accepted"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Status: green.\nRight now, The pipeline under load.\nNext steps.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Status: green.\nRight now, The pipeline under load.\nNext steps.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_absent",
+      "text": "comfortably"
+    },
+    {
+      "check": "text_absent",
+      "text": "ahead of schedule"
+    },
+    {
+      "check": "text_present",
+      "text": "under load"
+    },
+    {
+      "check": "text_present",
+      "text": "Right now,"
+    },
+    {
+      "check": "text_present",
+      "text": "Status: green."
+    }
+  ]
+}

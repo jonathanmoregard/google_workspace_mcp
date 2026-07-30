@@ -1,0 +1,31 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-e2-reject-all",
+      "title": "Weekly sync notes",
+      "text": "Meeting notes for the weekly sync.\nAttendees: Ana, Ben, Cara.\nAction items are listed below.\n",
+      "suggestions": [
+        {
+          "op": "delete",
+          "start": 13,
+          "end": 33,
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 54,
+          "end": 60,
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 85,
+          "end": 91,
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

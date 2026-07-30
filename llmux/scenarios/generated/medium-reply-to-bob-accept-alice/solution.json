@@ -1,0 +1,37 @@
+[
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.bob.4",
+      "reply_content": "Could you say what evidence this is based on?"
+    }
+  },
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.bob.2",
+      "reply_content": "Could you say what evidence this is based on?"
+    }
+  },
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.bob.3",
+      "reply_content": "Could you say what evidence this is based on?"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.1"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.2"
+    }
+  }
+]

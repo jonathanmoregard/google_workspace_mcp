@@ -1,0 +1,21 @@
+{
+  "id": "easy-reject-all-deletions",
+  "difficulty": 1,
+  "steps": 3,
+  "tags": [
+    "reject",
+    "deletion",
+    "single-author",
+    "reject-all"
+  ],
+  "authors": [
+    "bob"
+  ],
+  "n_suggestions": 3,
+  "tier": "easy",
+  "document_id": "mockdoc-e2-reject-all",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

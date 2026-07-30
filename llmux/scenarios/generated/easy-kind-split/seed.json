@@ -1,0 +1,37 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-e3-kind-split",
+      "title": "Quarter report note",
+      "text": "The report covers the first quarter.\nWe expect a maybe positive outcome.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 10,
+          "text": " (final)",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 72,
+          "text": "clearly ",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 56,
+          "end": 62,
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 29,
+          "end": 35,
+          "author": "alice"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

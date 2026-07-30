@@ -1,0 +1,39 @@
+{
+  "document_id": "mockdoc-e3-kind-split",
+  "final_text": "The report (final) covers the first quarter.\nWe expect a maybe positive clearly outcome.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.alice.4": "rejected",
+    "sug.alice.3": "rejected",
+    "sug.alice.2": "accepted"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "The report (final) covers the first quarter.\nWe expect a maybe positive clearly outcome.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "The report (final) covers the first quarter.\nWe expect a maybe positive clearly outcome.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_present",
+      "text": "maybe"
+    },
+    {
+      "check": "text_present",
+      "text": "first quarter"
+    }
+  ]
+}

@@ -26,10 +26,15 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from mockdocs.concurrency import ConcurrencyRecord
 from mockdocs.fake_services import FakeBackend
 from mockdocs.model import Char, Comment, MockDoc, Suggestion
 
 #: Bumped when the snapshot shape changes incompatibly.
+#:
+#: The ``concurrency`` key added for interleaved runs is deliberately NOT a
+#: version bump: it is optional and absent from every single-writer snapshot,
+#: so old dumps still load and batches stay comparable.
 SCHEMA_VERSION = 1
 
 
@@ -90,8 +95,16 @@ def dump_document(doc: MockDoc) -> dict[str, Any]:
 
 
 def dump_backend(backend: FakeBackend) -> dict[str, Any]:
-    """Whole-backend snapshot: documents, comment threads, identity, flags."""
-    return {
+    """Whole-backend snapshot: documents, comment threads, identity, flags.
+
+    Under interference the snapshot also carries the interleaving itself
+    (``concurrency``): the agent's call log, which interference fired at
+    which call, and any invariant violation. The grader runs in the harness
+    process and the interleaving happened in the server's, so this is the
+    only way it can tell "the agent's target was accepted away by someone
+    else" from "the agent got it wrong".
+    """
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "me": backend.me,
         "not_enrolled": backend.not_enrolled,
@@ -100,6 +113,10 @@ def dump_backend(backend: FakeBackend) -> dict[str, Any]:
         "documents": [dump_document(d) for d in backend.documents.values()],
         "comments": {k: v for k, v in backend.comments.items()},
     }
+    record = getattr(backend, "concurrency", None)
+    if record is not None:
+        payload["concurrency"] = record.as_dict()
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +182,8 @@ def load_backend(state: dict[str, Any]) -> FakeBackend:
     for doc_id, threads in (state.get("comments") or {}).items():
         backend.comments[doc_id] = list(threads)
     backend._counters = dict(state.get("counters") or {})
+    if "concurrency" in state:
+        backend.concurrency = ConcurrencyRecord.from_dict(state["concurrency"])
     return backend
 
 

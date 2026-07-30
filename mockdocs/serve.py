@@ -27,6 +27,10 @@ Environment:
                             (see mockdocs.state) -- refreshed after every API
                             call and on shutdown, so an out-of-process harness
                             can grade the end state of a run.
+    MOCKDOCS_INTERFERENCE   path to an interference script (see
+                            mockdocs.concurrency): a scripted second editor
+                            whose operations fire at deterministic points in
+                            the agent's own call sequence.
 """
 
 from __future__ import annotations
@@ -112,11 +116,31 @@ def install_state_dump_if_requested(backend: FakeBackend) -> Optional[str]:
     return path
 
 
+def install_interference_if_requested(backend: FakeBackend) -> Optional[Any]:
+    """Honour ``MOCKDOCS_INTERFERENCE``; no-op (and no import) when unset."""
+    path = os.getenv("MOCKDOCS_INTERFERENCE")
+    if not path:
+        return None
+    from mockdocs.concurrency import install_interference, load_script
+
+    return install_interference(backend, load_script(path))
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     prepare_environment()
     backend = build_backend()
     install(backend)
-    install_state_dump_if_requested(backend)
+    engine = install_interference_if_requested(backend)
+    dump_path = install_state_dump_if_requested(backend)
+    if engine is not None and dump_path:
+        # An interference fires between API calls, so nothing would otherwise
+        # rewrite the snapshot until the agent's next call -- and a run whose
+        # last event is an interference would grade against a state that
+        # predates it.
+        from mockdocs.state import write_state
+
+        engine.on_change = lambda: write_state(backend, dump_path)
+        engine.on_change()
 
     import main as server_main
 

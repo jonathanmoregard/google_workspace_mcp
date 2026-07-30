@@ -8,11 +8,15 @@ docs/plans/2026-07-14-native-integration.md and, for the underlying
 preview API semantics, docs/preview-api-reference.md.
 
 The heavy lifting lives in the pure functions of
-:mod:`gdocs_preview.analysis`; tools here are thin API-call wrappers.
+:mod:`gdocs_preview.analysis`; tools here are thin API-call wrappers around
+those plus :mod:`gdocs_preview.preview_read`, which supplies the
+thread-bearing (author-carrying) document read.
 """
 
 import asyncio
 import json
+import logging
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from googleapiclient.errors import HttpError
@@ -22,8 +26,10 @@ from auth.scopes import DOCS_PREVIEW_SCOPES
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_status
-from gdocs_preview.analysis import extract_suggestions, render_document
+from gdocs_preview import preview_read, preview_status
+from gdocs_preview.analysis import extract_suggestions_from_tabs, render_tabs
+
+logger = logging.getLogger(__name__)
 
 VIEW_MODES = (
     "SUGGESTIONS_INLINE",
@@ -65,6 +71,71 @@ async def _get_document(service: Any, document_id: str, view_mode: str) -> dict:
     return await asyncio.to_thread(api_call.execute)
 
 
+#: ``read_source`` values reported by the review tools.
+READ_SOURCE_PREVIEW = "preview_threads"
+READ_SOURCE_GA = "ga_documents_get"
+
+
+@dataclass
+class ReviewRead:
+    """One document read, normalized for the review tools.
+
+    ``tabs`` is ``(tab_id, GA-shaped Document)`` per tab -- a single
+    ``(None, document)`` entry for the GA fallback -- so the analysis layer
+    has exactly one input shape to walk.
+    """
+
+    tabs: list[tuple[Optional[str], dict[str, Any]]]
+    tab_metadata: list[dict[str, Any]] = field(default_factory=list)
+    threads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    comments: list[dict[str, Any]] = field(default_factory=list)
+    source: str = READ_SOURCE_GA
+    degraded_reason: Optional[str] = None
+
+
+async def _read_for_review(
+    service: Any, document_id: str, view_mode: str
+) -> ReviewRead:
+    """Read a document with its comment/suggestion threads, degrading to the
+    GA read when the Developer Preview surface is unavailable.
+
+    Authors, thread status and Google's own suggestion summaries live only
+    on the preview payload (docs/preview-api-reference.md). Enrollment is a
+    property of the caller's GCP project, not of the document, so a failure
+    here must never fail the read: the GA payload still carries the full
+    suggestion algebra, just without authorship.
+    """
+    try:
+        payload = await preview_read.fetch_document_with_threads(
+            service, document_id, view_mode
+        )
+    except (preview_read.PreviewReadError, HttpError) as error:
+        logger.info(
+            f"[docs_preview] thread-bearing read unavailable for {document_id}; "
+            f"falling back to the GA documents.get read: {error}"
+        )
+        document = await _get_document(service, document_id, view_mode)
+        return ReviewRead(
+            tabs=[(None, document)],
+            source=READ_SOURCE_GA,
+            degraded_reason=str(error)[:300],
+        )
+
+    tabs = preview_read.tab_documents(payload)
+    preview_status.record(
+        "available",
+        {"http_status": 200, "reason": "preview_read_succeeded"},
+        source="tool_call",
+    )
+    return ReviewRead(
+        tabs=[(tab.tab_id, tab.document) for tab in tabs],
+        tab_metadata=[tab.metadata for tab in tabs],
+        threads=preview_read.suggestion_threads_by_id(payload),
+        comments=preview_read.comment_threads(payload),
+        source=READ_SOURCE_PREVIEW,
+    )
+
+
 @server.tool(
     title="List Document Suggestions",
     annotations=ToolAnnotations(
@@ -81,8 +152,8 @@ async def list_document_suggestions(
     user_google_email: str,
     document_id: str,
 ) -> str:
-    """List every pending edit suggestion in a document, with computed
-    pre/post text.
+    """List every pending edit suggestion in a document, with its author and
+    computed pre/post text.
 
     Reads the document in SUGGESTIONS_INLINE view and returns one record per
     suggestion id: type (insertion/deletion/replacement/style/mixed),
@@ -90,26 +161,35 @@ async def list_document_suggestions(
     deletions kept), post_text (the range with this suggestion -- and only
     this one -- applied), ~40-char context windows computed on the base
     text, segment location (body/header/footer/footnote incl. segment id),
-    table flag, and start/end indexes.
+    tab id, table flag, and start/end indexes.
 
     Indexes are UTF-16 code units relative to the SUGGESTIONS_INLINE view,
     passed through from the API verbatim -- exactly what batchUpdate
     requests computed against that view expect.
 
-    Authors are only available from Developer Preview suggestion-thread
-    objects; when those are absent the record carries ``author: null`` and
-    ``author_source: "unavailable"`` (never guessed).
+    Each record also carries the suggestion thread joined on its id:
+    ``author`` (display_name/me/anonymous/user), ``status``,
+    ``create_time``, Google's own ``summary_text`` (e.g. ``Replace: "x" with
+    "y"``) and the thread's ``replies`` (each with post_id and author).
+    Threads come from the Developer Preview read; if that is unavailable the
+    tool still returns every suggestion, with ``author: null`` and
+    ``author_source: "unavailable"`` (never guessed) and ``read_source:
+    "ga_documents_get"``.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         document_id (str): The ID of the document to analyse.
 
     Returns:
-        str: JSON with document_id, title, suggestion_count and the
-            per-suggestion records described above.
+        str: JSON with document_id, title, suggestion_count, read_source,
+            tabs and the per-suggestion records described above.
     """
-    document = await _get_document(service, document_id, "SUGGESTIONS_INLINE")
-    result = extract_suggestions(document)
+    read = await _read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+    result = extract_suggestions_from_tabs(read.tabs, read.threads)
+    result["read_source"] = read.source
+    result["tabs"] = read.tab_metadata
+    if read.degraded_reason:
+        result["degraded_reason"] = read.degraded_reason
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -234,15 +314,22 @@ async def get_doc_review_view(
     view_mode: str = "SUGGESTIONS_INLINE",
 ) -> str:
     """Read a document the way a reviewer sees it: plain text with inline
-    suggestion markers plus a paragraph map.
+    suggestion markers, a paragraph map, and the comment threads.
 
     In SUGGESTIONS_INLINE view (default), pending insertions render as
     ``{+text+}`` and pending deletions as ``{-text-}`` (CriticMarkup
     style); each paragraph entry lists the suggestion ids touching it.
     PREVIEW_SUGGESTIONS_ACCEPTED / PREVIEW_WITHOUT_SUGGESTIONS return the
-    respective clean text. Comments are not part of the documents.get
-    payload -- list them with ``list_document_comments`` (Drive API
-    comment surface).
+    respective clean text.
+
+    ``comments`` carries the Docs-side comment threads: comment_id,
+    anchor_id, status, quoted_text, the head post's author/content/times and
+    every reply with its own post_id and author. That is richer than the
+    Drive comment surface (``list_document_comments``), which has no anchor
+    id, no per-post ids and no People resource names -- use this for review,
+    Drive for cross-surface management. Comment threads need the Developer
+    Preview read; without it ``comments`` is empty and ``read_source`` says
+    ``ga_documents_get``.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -251,15 +338,23 @@ async def get_doc_review_view(
             PREVIEW_SUGGESTIONS_ACCEPTED, PREVIEW_WITHOUT_SUGGESTIONS.
 
     Returns:
-        str: JSON with view_mode, body_text, per-paragraph map
-            (segment/indexes/text/style/list/table/suggestion_ids),
-            header/footer/footnote texts, and all suggestion ids.
+        str: JSON with view_mode, read_source, tabs, body_text, per-paragraph
+            map (segment/tab/indexes/text/style/list/table/suggestion_ids),
+            header/footer/footnote texts, all suggestion ids, and comments.
     """
     if view_mode not in VIEW_MODES:
         raise UserInputError(
             f"Invalid view_mode '{view_mode}'. Must be one of: {', '.join(VIEW_MODES)}."
         )
-    document = await _get_document(service, document_id, view_mode)
-    rendered = render_document(document)
-    result = {"view_mode": view_mode, **rendered}
+    read = await _read_for_review(service, document_id, view_mode)
+    rendered = render_tabs(read.tabs)
+    result = {
+        "view_mode": view_mode,
+        "read_source": read.source,
+        "tabs": read.tab_metadata,
+        **rendered,
+        "comments": read.comments,
+    }
+    if read.degraded_reason:
+        result["degraded_reason"] = read.degraded_reason
     return json.dumps(result, indent=2, ensure_ascii=False)

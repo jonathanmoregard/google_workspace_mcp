@@ -25,6 +25,7 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status
+from gdocs_preview.preview_read import normalize_author
 
 logger = logging.getLogger(__name__)
 
@@ -393,8 +394,8 @@ async def reply_to_doc_thread(
 
     Returns:
         str: JSON with document_id, thread_type (comment|suggestion), the
-            target thread id, post_id (null when the API omits it),
-            comment_update_state, and link.
+            target thread id, post_id, author (the reply's PostAuthor as
+            the API recorded it), comment_update_state, and link.
     """
     if (comment_id is None) == (suggestion_id is None):
         raise UserInputError("Provide exactly one of comment_id or suggestion_id.")
@@ -425,19 +426,22 @@ async def reply_to_doc_thread(
         enforce_comment_update=True,
     )
 
-    # Response-union member name unconfirmed (docs/preview-api-reference.md,
-    # UNCERTAIN #3) -- extract when present, else null; e2e records reality.
-    post_id = None
+    # Verified 2026-07-30 against the real API: the batchUpdate Response
+    # union does carry an ``addCommentReply`` member holding the new Post,
+    # author included (docs/preview-api-reference.md).
+    post: dict[str, Any] = {}
     replies = response.get("replies") or []
     if replies:
         reply_payload = (replies[0] or {}).get("addCommentReply") or {}
-        post_id = (reply_payload.get("post") or {}).get("postId")
+        post = reply_payload.get("post") or {}
 
     result = {
         "document_id": document_id,
         "thread_type": thread_type,
         thread_id_key: thread_id,
-        "post_id": post_id,
+        "post_id": post.get("postId"),
+        "author": normalize_author(post.get("author")),
+        "create_time": post.get("createTime"),
         "comment_update_state": response.get("commentUpdateState"),
         "link": _doc_link(document_id),
     }
@@ -494,8 +498,9 @@ async def create_anchored_doc_comment(
             comment to.
 
     Returns:
-        str: JSON with document_id, comment_id, anchor_id, quoted_text,
-            comment_update_state, and link.
+        str: JSON with document_id, comment_id, post_id, author (the
+            thread head post's PostAuthor as the API recorded it),
+            anchor_id, quoted_text, status, comment_update_state, and link.
     """
     if not content or not content.strip():
         raise UserInputError("content must be non-empty.")
@@ -524,20 +529,27 @@ async def create_anchored_doc_comment(
         enforce_comment_update=True,
     )
 
-    # Response-union member name unconfirmed (docs/preview-api-reference.md,
-    # UNCERTAIN #3) -- extract when present, else nulls; e2e records reality.
+    # Verified 2026-07-30 against the real API: the batchUpdate Response
+    # union carries an ``insertComment`` member holding the whole
+    # CommentThread, headPost.author included -- so the write path can
+    # report the author it just created without a follow-up read.
     thread: dict[str, Any] = {}
     replies = response.get("replies") or []
     if replies:
         thread = ((replies[0] or {}).get("insertComment") or {}).get(
             "commentThread"
         ) or {}
+    head_post = thread.get("headPost") or {}
 
     result = {
         "document_id": document_id,
         "comment_id": thread.get("commentId"),
+        "post_id": head_post.get("postId"),
+        "author": normalize_author(head_post.get("author")),
+        "create_time": head_post.get("createTime"),
         "anchor_id": thread.get("anchorId"),
         "quoted_text": thread.get("plainTextQuote"),
+        "status": thread.get("status"),
         "comment_update_state": response.get("commentUpdateState"),
         "link": _doc_link(document_id),
     }

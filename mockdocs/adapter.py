@@ -213,59 +213,60 @@ def _paragraphs(chars: list[Char]) -> list[list[Char]]:
     return paras
 
 
+def _author_block(author: str, me: Optional[str]) -> dict[str, Any]:
+    return {
+        "displayName": author,
+        "me": author == me,
+        "anonymous": False,
+        "user": f"users/{author}",
+    }
+
+
 def suggestion_threads(doc: MockDoc, me: Optional[str] = None) -> list[dict[str, Any]]:
     """``SuggestionThread`` objects, one per live suggestion.
 
-    UNCERTAIN (docs/preview-api-reference.md item #4): whether -- and where --
-    ``documents.get`` exposes thread objects in the ``Document`` payload could
-    not be confirmed from the official reference. The mock emits them under
-    the top-level ``suggestionThreads`` key because that is what
-    ``analysis._extract_thread_authors`` feature-detects; the shape is an
-    explicit assumption on both sides, not an authority.
+    Shape verified against the live API 2026-07-30: a suggestion's
+    ``headPost`` carries ``postId``/``author``/``createTime``/``updateTime``
+    and a ``suggestionAction`` but NO ``content`` (unlike a comment head
+    post), and the thread carries ``status`` plus ``summaryText``. These
+    objects appear ONLY in the tabs+comments read (see
+    :func:`tabs_document_payload`) -- never in a plain ``documents.get``.
     """
     threads = []
     for sid in sorted(doc.registry):
         sug = doc.registry[sid]
         label = doc.label(sid)
-        threads.append(
-            {
-                "suggestionId": sid,
-                "status": "OPEN",
-                "headPost": {
-                    "postId": f"{sid}.head",
-                    "author": {
-                        "displayName": sug.author,
-                        "me": sug.author == me,
-                        "anonymous": False,
-                        "user": f"users/{sug.author}",
-                    },
-                    "createTime": f"2026-07-30T00:00:{sug.created_at:02d}Z",
-                },
-                "replies": [
-                    {
-                        "postId": p.post_id,
-                        "content": p.content,
-                        "author": {
-                            "displayName": p.author,
-                            "me": p.author == me,
-                            "anonymous": False,
-                            "user": f"users/{p.author}",
-                        },
-                    }
-                    for p in sug.thread
-                ],
-                "summaryText": label["text"],
-            }
-        )
+        thread: dict[str, Any] = {
+            "suggestionId": sid,
+            "headPost": {
+                "postId": f"{sid}.head",
+                "author": _author_block(sug.author, me),
+                "createTime": f"2026-07-30T00:00:{sug.created_at:02d}Z",
+                "updateTime": f"2026-07-30T00:00:{sug.touched_at:02d}Z",
+                "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+            },
+            "status": "OPEN",
+            "summaryText": label["text"],
+        }
+        if sug.thread:
+            thread["replies"] = [
+                {
+                    "postId": p.post_id,
+                    "content": p.content,
+                    "contentHtml": p.content,
+                    "author": _author_block(p.author, me),
+                    "createTime": f"2026-07-30T00:00:{p.created_at:02d}Z",
+                    "updateTime": f"2026-07-30T00:00:{p.created_at:02d}Z",
+                    "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+                }
+                for p in sug.thread
+            ]
+        threads.append(thread)
     return threads
 
 
-def document_payload(
-    doc: MockDoc,
-    view_mode: str = "SUGGESTIONS_INLINE",
-    me: Optional[str] = None,
-) -> dict[str, Any]:
-    """Render a ``documents.get`` Document payload for one view mode.
+def _body_content(doc: MockDoc, view_mode: str) -> list[dict[str, Any]]:
+    """The body ``content`` array for one view mode.
 
     All ``startIndex``/``endIndex`` values are UTF-16 code units, converted
     from the grapheme model here and nowhere else.
@@ -300,15 +301,88 @@ def document_payload(
                 },
             }
         )
+    return content
 
+
+def document_payload(
+    doc: MockDoc,
+    view_mode: str = "SUGGESTIONS_INLINE",
+    me: Optional[str] = None,
+) -> dict[str, Any]:
+    """Render a plain ``documents.get`` Document payload for one view mode.
+
+    Deliberately carries NO thread objects: verified 2026-07-30 that the
+    real plain read returns only
+    ``body``/``documentStyle``/``namedStyles``/``title``/``revisionId``/
+    ``documentId``/``suggestionsViewMode``/``commentsViewMode``, with
+    ``commentsViewMode = COMMENTS_VIEW_MODE_OMITTED``. Comment and
+    suggestion threads live in :func:`tabs_document_payload`.
+
+    ``me`` is unused here and kept for signature symmetry with the tabs
+    payload (authors only exist on threads).
+    """
+    return {
+        "documentId": doc.document_id,
+        "title": doc.title,
+        "body": {"content": _body_content(doc, view_mode)},
+        "documentStyle": {},
+        "namedStyles": {"styles": []},
+        "revisionId": f"rev-{doc._clock}",
+        "suggestionsViewMode": view_mode,
+        "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED",
+    }
+
+
+def tabs_document_payload(
+    doc: MockDoc,
+    view_mode: str = "SUGGESTIONS_INLINE",
+    me: Optional[str] = None,
+    comments: Optional[list[dict[str, Any]]] = None,
+    include_comments: bool = True,
+) -> dict[str, Any]:
+    """Render the ``includeTabsContent=true`` Document payload.
+
+    Verified against the live API 2026-07-30: requesting tabs content moves
+    the content out of the top-level ``body`` into
+    ``tabs[i].documentTab.body`` (byte-identical, same indexes), and the
+    top level gains ``tabs``. ``suggestions`` and ``comments`` appear only
+    when ``commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`` is also sent --
+    with ``includeTabsContent`` alone the response says
+    ``commentsViewMode: COMMENTS_VIEW_MODE_OMITTED`` and carries neither.
+
+    The mock is single-tab (``t.0``): the model has no tab concept, and the
+    multi-tab code path is covered by unit fixtures instead.
+    """
     payload: dict[str, Any] = {
         "documentId": doc.document_id,
         "title": doc.title,
-        "body": {"content": content},
         "revisionId": f"rev-{doc._clock}",
+        "suggestionsViewMode": view_mode,
+        "commentsViewMode": (
+            "COMMENTS_VIEW_MODE_INCLUDED"
+            if include_comments
+            else "COMMENTS_VIEW_MODE_OMITTED"
+        ),
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "t.0", "title": "Tab 1", "index": 0},
+                "documentTab": {
+                    "body": {"content": _body_content(doc, view_mode)},
+                    "documentStyle": {},
+                    "namedStyles": {"styles": []},
+                },
+            }
+        ],
     }
-    if doc.registry:
-        payload["suggestionThreads"] = suggestion_threads(doc, me)
+    if include_comments:
+        # Proto3 JSON omits empty repeated fields, and so does the real API:
+        # a document with suggestions but no comments comes back with no
+        # ``comments`` key at all.
+        threads = suggestion_threads(doc, me)
+        if threads:
+            payload["suggestions"] = threads
+        if comments:
+            payload["comments"] = list(comments)
     return payload
 
 

@@ -137,7 +137,6 @@ def build_doc(
     headers: Optional[dict[str, list[dict[str, Any]]]] = None,
     footers: Optional[dict[str, list[dict[str, Any]]]] = None,
     footnotes: Optional[dict[str, list[dict[str, Any]]]] = None,
-    suggestion_threads: Optional[list[dict[str, Any]]] = None,
     title: str = "Fixture Doc",
     document_id: str = "doc-fixture-1",
 ) -> dict[str, Any]:
@@ -156,9 +155,50 @@ def build_doc(
                 seg_id: {"content": build_segment(specs, start=0, section_break=False)}
                 for seg_id, specs in segments.items()
             }
-    if suggestion_threads is not None:
-        doc["suggestionThreads"] = suggestion_threads
     return doc
+
+
+def build_tabs_payload(
+    documents: list[tuple[str, dict[str, Any]]],
+    suggestions: Optional[list[dict[str, Any]]] = None,
+    comments: Optional[list[dict[str, Any]]] = None,
+    title: str = "Fixture Doc",
+    document_id: str = "doc-fixture-1",
+) -> dict[str, Any]:
+    """A ``includeTabsContent=true&commentsViewMode=...`` payload.
+
+    Shape verified against the live API 2026-07-30: no top-level ``body``,
+    content under ``tabs[i].documentTab``, threads under top-level
+    ``suggestions`` / ``comments``. ``documents`` is ``(tab_id, GA-shaped
+    doc)`` pairs, so the same fixture bodies serve both read paths.
+    """
+    payload: dict[str, Any] = {
+        "documentId": document_id,
+        "title": title,
+        "revisionId": "rev-fixture",
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "commentsViewMode": "COMMENTS_VIEW_MODE_INCLUDED",
+        "tabs": [
+            {
+                "tabProperties": {
+                    "tabId": tab_id,
+                    "title": f"Tab {position + 1}",
+                    "index": position,
+                },
+                "documentTab": {
+                    key: value
+                    for key, value in document.items()
+                    if key in ("body", "headers", "footers", "footnotes")
+                },
+            }
+            for position, (tab_id, document) in enumerate(documents)
+        ],
+    }
+    if suggestions:
+        payload["suggestions"] = suggestions
+    if comments:
+        payload["comments"] = comments
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -327,30 +367,98 @@ DOC_MIXED = build_doc(
     ]
 )
 
-# 14. Suggestion threads present (preview surface): author is exposed via
-#     SuggestionThread.headPost.author (PostAuthor).
-THREADS = [
+# 14. Second tab body, for the multi-tab read path.
+DOC_SECOND_TAB = build_doc(
+    [
+        paragraph(
+            run("Tab two "),
+            run("addition", ins=["suggest.tab2"]),
+            run(".\n"),
+        )
+    ]
+)
+
+# 15. Thread objects as the live API returns them (top-level ``suggestions``
+#     / ``comments`` in the tabs read). Shapes verified 2026-07-30: a
+#     suggestion head post has no ``content``, a comment head post does.
+SUGGESTION_THREADS = [
     {
         "suggestionId": "suggest.ins1",
-        "status": "OPEN",
         "headPost": {
-            "postId": "post1",
+            "postId": "AAAApost1",
             "author": {
                 "displayName": "Alice Reviewer",
                 "me": False,
                 "user": "users/123",
             },
+            "createTime": "2026-07-30T10:00:00.000Z",
+            "updateTime": "2026-07-30T10:00:00.000Z",
+            "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
         },
-        "replies": [],
+        "status": "OPEN",
+        "summaryText": "Add: “brave”",
+        "summaryHtml": "<div>Add: “brave”</div>",
+        "replies": [
+            {
+                "postId": "AAAApost2",
+                "content": "looks good",
+                "author": {
+                    "displayName": "Bob Author",
+                    "me": True,
+                    "user": "users/456",
+                },
+                "createTime": "2026-07-30T10:05:00.000Z",
+                "updateTime": "2026-07-30T10:05:00.000Z",
+            }
+        ],
     }
 ]
-DOC_INSERTION_WITH_THREADS = build_doc(
-    [
-        paragraph(
-            run("Hello"),
-            run(" brave", ins=["suggest.ins1"]),
-            run(" world.\n"),
-        )
-    ],
-    suggestion_threads=THREADS,
+
+COMMENT_THREADS = [
+    {
+        "commentId": "AAAAcomment1",
+        "anchorId": "kix.anchor1",
+        "headPost": {
+            "postId": "AAAAcomment1",
+            "content": "why brave?",
+            "contentHtml": "why brave?",
+            "author": {
+                "displayName": "Alice Reviewer",
+                "me": False,
+                "user": "users/123",
+            },
+            "createTime": "2026-07-30T10:10:00.000Z",
+            "updateTime": "2026-07-30T10:10:00.000Z",
+            "commentAction": "NO_COMMENT_ACTION_CHANGE",
+        },
+        "replies": [
+            {
+                "postId": "AAAAcomment2",
+                "content": "brave new world",
+                "author": {
+                    "displayName": "Bob Author",
+                    "me": True,
+                    "user": "users/456",
+                },
+                "createTime": "2026-07-30T10:11:00.000Z",
+                "updateTime": "2026-07-30T10:11:00.000Z",
+                "commentAction": "NO_COMMENT_ACTION_CHANGE",
+            }
+        ],
+        "status": "OPEN",
+        "plainTextQuote": "Hello",
+    }
+]
+
+#: Single-tab preview payload: the plain-insertion body plus both threads.
+TABS_PAYLOAD = build_tabs_payload(
+    [("t.0", DOC_PLAIN_INSERTION)],
+    suggestions=SUGGESTION_THREADS,
+    comments=COMMENT_THREADS,
+)
+
+#: Two-tab preview payload; the second tab carries its own suggestion.
+TABS_PAYLOAD_MULTI = build_tabs_payload(
+    [("t.0", DOC_PLAIN_INSERTION), ("t.second", DOC_SECOND_TAB)],
+    suggestions=SUGGESTION_THREADS,
 )

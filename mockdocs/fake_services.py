@@ -19,10 +19,25 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from mockdocs.adapter import apply_batch_update, document_payload, http_error
+from mockdocs.adapter import (
+    apply_batch_update,
+    document_payload,
+    http_error,
+    tabs_document_payload,
+)
 from mockdocs.model import MockDoc, MockDocsError
 
 _ISO = "2026-07-30T12:00:{:02d}.000Z"
+
+#: ``google.apps.docs.v1.CommentsViewMode`` members the real API accepts
+#: (verified 2026-07-30: anything else is a 400 naming the enum type).
+_COMMENTS_VIEW_MODES = frozenset(
+    {
+        "COMMENTS_VIEW_MODE_UNSPECIFIED",
+        "COMMENTS_VIEW_MODE_INCLUDED",
+        "COMMENTS_VIEW_MODE_OMITTED",
+    }
+)
 
 
 class _Call:
@@ -114,16 +129,19 @@ class FakeBackend:
     ) -> dict[str, Any]:
         n = self._next("comment")
         stamp = _ISO.format(min(n, 59))
+        # Shape verified against the live API 2026-07-30: a comment head post
+        # carries content + contentHtml + author + times + commentAction.
         thread = {
             "commentId": f"comment.{n}",
             "anchorId": f"kix.anchor.{n}" if quote else "",
             "headPost": {
                 "postId": f"post.{self._next('post')}",
                 "content": content,
+                "contentHtml": content,
                 "author": self._author_block(author),
                 "createTime": stamp,
                 "updateTime": stamp,
-                "deleted": False,
+                "commentAction": "NO_COMMENT_ACTION_CHANGE",
             },
             "replies": [],
             "status": "OPEN",
@@ -160,10 +178,11 @@ class FakeBackend:
         post = {
             "postId": f"post.{n}",
             "content": content,
+            "contentHtml": content,
             "author": self._author_block(author),
             "createTime": stamp,
             "updateTime": stamp,
-            "deleted": False,
+            "commentAction": "NO_COMMENT_ACTION_CHANGE",
         }
         if comment_action in ("RESOLVE", "REOPEN"):
             post["commentAction"] = comment_action
@@ -194,10 +213,11 @@ class FakeBackend:
         return {
             "postId": f"post.{n}",
             "content": content,
+            "contentHtml": content,
             "author": self._author_block(author),
             "createTime": stamp,
             "updateTime": stamp,
-            "deleted": False,
+            "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
         }
 
     def update_post(
@@ -389,12 +409,47 @@ class _Documents:
         self,
         documentId: str,
         suggestionsViewMode: Optional[str] = None,
+        commentsViewMode: Optional[str] = None,
+        includeTabsContent: Optional[bool] = None,
         **_: Any,
     ) -> _Call:
+        """``documents.get``, including the thread-bearing preview read.
+
+        Accepting ``commentsViewMode`` here is what lets the mock stand in
+        for the raw authorized request
+        :mod:`gdocs_preview.preview_read` has to make against the real API
+        (the parameter is missing from public discovery, so the real client
+        raises ``TypeError`` and the production code falls back to a raw
+        request -- the mock simply supports it).
+        """
+
         def run() -> dict[str, Any]:
             doc = self._b.get_document(documentId)
             mode = suggestionsViewMode or "DEFAULT_FOR_CURRENT_ACCESS"
+            if commentsViewMode and not includeTabsContent:
+                raise http_error(
+                    400,
+                    "Comments view mode may only be specified if tabs content "
+                    "is also requested.",
+                )
+            if commentsViewMode and commentsViewMode not in _COMMENTS_VIEW_MODES:
+                raise http_error(
+                    400,
+                    "Invalid value at 'comments_view_mode' "
+                    "(type.googleapis.com/google.apps.docs.v1.CommentsViewMode), "
+                    f'"{commentsViewMode}"',
+                )
             try:
+                if includeTabsContent:
+                    return tabs_document_payload(
+                        doc,
+                        mode,
+                        me=self._b.me,
+                        comments=self._b.comments.get(documentId),
+                        include_comments=(
+                            commentsViewMode == "COMMENTS_VIEW_MODE_INCLUDED"
+                        ),
+                    )
                 return document_payload(doc, mode, me=self._b.me)
             except MockDocsError as exc:
                 raise http_error(400, str(exc)) from None

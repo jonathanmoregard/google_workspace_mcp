@@ -26,10 +26,12 @@ from hypothesis import HealthCheck, given, settings
 
 from gdocs_preview import preview_status
 from gdocs_preview.analysis import extract_suggestions, render_document, utf16_len
+from gdocs_preview.preview_read import suggestion_threads_by_id, tab_documents
 from mockdocs.adapter import (
     PREVIEW_REQUEST_TYPES,
     SUGGEST_UNSUPPORTED_OFFICIAL,
     document_payload,
+    tabs_document_payload,
     to_grapheme_index,
     utf16_offsets,
 )
@@ -188,9 +190,19 @@ def _model_pre_post(doc: MockDoc, sid: str) -> tuple[str, str]:
 def test_analysis_agrees_with_the_model(doc):
     """End-to-end: drive the REAL ``extract_suggestions`` over adapter output
     and require it to reproduce the model's per-suggestion pre/post text,
-    span, type and author."""
-    payload = document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
-    result = extract_suggestions(payload)
+    span, type and author.
+
+    Authors ride the tabs+comments read (the only one that carries thread
+    objects), so this drives the whole production read path: tabs payload ->
+    ``preview_read`` normalizers -> ``analysis``.
+    """
+    payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
+    (tab,) = tab_documents(payload)
+    result = extract_suggestions(
+        tab.document,
+        threads=suggestion_threads_by_id(payload),
+        tab_id=tab.tab_id,
+    )
 
     assert result["document_id"] == doc.document_id
     assert result["suggestion_count"] == len(doc.registry)
@@ -224,6 +236,9 @@ def test_analysis_agrees_with_the_model(doc):
         assert record["author"]["display_name"] == doc.registry[sid].author
         assert record["author_source"] == "suggestion_thread"
         assert record["author"]["me"] == (doc.registry[sid].author == "alice")
+        assert record["status"] == "OPEN"
+        assert record["summary_text"] == doc.label(sid)["text"]
+        assert record["tab_id"] == "t.0"
 
 
 @SETTINGS
@@ -238,6 +253,159 @@ def test_rendered_markers_match_the_render_states(doc):
     stripped = stripped.replace("{-", "").replace("-}", "")
     assert stripped == doc.display_text()
     assert set(rendered["suggestion_ids"]) == set(doc.registry)
+
+
+# ---------------------------------------------------------------------------
+# 3b. Read-mode fidelity: where threads live (verified against prod 2026-07-30)
+# ---------------------------------------------------------------------------
+
+
+@SETTINGS
+@given(doc=suggestion_docs())
+def test_plain_get_carries_no_thread_objects(doc):
+    """The real plain ``documents.get`` returns no comment or suggestion
+    threads at all -- only the tabs+comments read does. A mock that leaked
+    threads into the plain payload would hide the whole preview read path."""
+    payload = document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
+    assert "suggestions" not in payload
+    assert "comments" not in payload
+    assert "suggestionThreads" not in payload
+    assert "tabs" not in payload
+    assert payload["commentsViewMode"] == "COMMENTS_VIEW_MODE_OMITTED"
+    assert suggestion_threads_by_id(payload) == {}
+
+
+@SETTINGS
+@given(doc=suggestion_docs())
+def test_tabs_read_moves_the_body_and_adds_threads(doc):
+    """Tabs mode: no top-level ``body``, content under
+    ``tabs[i].documentTab.body`` with the SAME indexes, threads at the top
+    level. Verified against the real API."""
+    plain = document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
+    payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
+
+    assert "body" not in payload
+    (tab,) = payload["tabs"]
+    assert tab["documentTab"]["body"] == plain["body"]
+    assert tab["tabProperties"]["tabId"] == "t.0"
+    assert payload["commentsViewMode"] == "COMMENTS_VIEW_MODE_INCLUDED"
+    assert set(suggestion_threads_by_id(payload)) == set(doc.registry)
+    for thread in payload.get("suggestions", []):
+        # A suggestion head post has an author but no content (prod shape).
+        assert thread["headPost"]["author"]["displayName"]
+        assert "content" not in thread["headPost"]
+
+
+@SETTINGS
+@given(doc=suggestion_docs())
+def test_tabs_read_without_comments_view_mode_omits_threads(doc):
+    payload = tabs_document_payload(
+        doc, "SUGGESTIONS_INLINE", me="alice", include_comments=False
+    )
+    assert "tabs" in payload
+    assert "suggestions" not in payload
+    assert payload["commentsViewMode"] == "COMMENTS_VIEW_MODE_OMITTED"
+
+
+def test_comments_view_mode_requires_tabs_content():
+    """Real API 2026-07-30: 400 "Comments view mode may only be specified if
+    tabs content is also requested." """
+    backend, _ = _backend_with()
+    with pytest.raises(HttpError) as exc:
+        backend.docs_service().documents().get(
+            documentId="d1", commentsViewMode="COMMENTS_VIEW_MODE_INCLUDED"
+        ).execute()
+    assert exc.value.resp.status == 400
+    assert "tabs content" in str(exc.value)
+
+
+def test_invalid_comments_view_mode_is_rejected():
+    backend, _ = _backend_with()
+    with pytest.raises(HttpError) as exc:
+        backend.docs_service().documents().get(
+            documentId="d1",
+            commentsViewMode="COMMENTS_EXCLUDED",
+            includeTabsContent=True,
+        ).execute()
+    assert exc.value.resp.status == 400
+    assert "CommentsViewMode" in str(exc.value)
+
+
+def test_tabs_read_surfaces_comment_threads_with_authors():
+    backend, _ = _backend_with()
+    backend.docs_service().documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [
+                {
+                    "insertComment": {
+                        "content": "check this",
+                        "range": {"startIndex": 1, "endIndex": 6},
+                    }
+                }
+            ]
+        },
+    ).execute()
+    payload = (
+        backend.docs_service()
+        .documents()
+        .get(
+            documentId="d1",
+            suggestionsViewMode="SUGGESTIONS_INLINE",
+            commentsViewMode="COMMENTS_VIEW_MODE_INCLUDED",
+            includeTabsContent=True,
+        )
+        .execute()
+    )
+    from gdocs_preview.preview_read import comment_threads
+
+    (thread,) = comment_threads(payload)
+    assert thread["comment_id"]
+    assert thread["author"]["display_name"] == "alice"
+    assert thread["quoted_text"] == "Hello"
+
+
+def test_label_grammar_matches_prod_summary_text():
+    """Prod is the oracle for §8's label grammar: typographic quotes, and
+    ``Replace: "x" with "y"`` for a replacement (verified 2026-07-30)."""
+    backend, doc = _backend_with(text="Hello brave world.\n")
+    docs = backend.docs_service()
+    docs.documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [
+                {"deleteContentRange": {"range": {"startIndex": 7, "endIndex": 12}}},
+                {"insertText": {"location": {"index": 7}, "text": "bold"}},
+            ],
+            "writeControl": {"writeMode": "SUGGEST"},
+        },
+    ).execute()
+    (sid,) = doc.registry
+    assert doc.label(sid)["text"] == "Replace: “brave” with “bold”"
+
+    backend2, doc2 = _backend_with(text="Hello brave world.\n")
+    backend2.docs_service().documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [
+                {"deleteContentRange": {"range": {"startIndex": 7, "endIndex": 12}}}
+            ],
+            "writeControl": {"writeMode": "SUGGEST"},
+        },
+    ).execute()
+    (sid2,) = doc2.registry
+    assert doc2.label(sid2)["text"] == "Delete: “brave”"
+
+    backend3, doc3 = _backend_with(text="Hello world.\n")
+    backend3.docs_service().documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [{"insertText": {"location": {"index": 1}, "text": "Say "}}],
+            "writeControl": {"writeMode": "SUGGEST"},
+        },
+    ).execute()
+    (sid3,) = doc3.registry
+    assert doc3.label(sid3)["text"] == "Add: “Say”"
 
 
 # ---------------------------------------------------------------------------

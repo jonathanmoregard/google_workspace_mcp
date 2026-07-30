@@ -221,50 +221,6 @@ def _collect_segments(document: dict[str, Any]) -> list[_Segment]:
 
 
 # ---------------------------------------------------------------------------
-# Authors (Developer Preview surface -- feature-detected, never guessed)
-# ---------------------------------------------------------------------------
-
-
-def _normalize_author(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "display_name": raw.get("displayName"),
-        "me": raw.get("me"),
-        "anonymous": raw.get("anonymous"),
-        "user": raw.get("user"),
-    }
-
-
-def _extract_thread_authors(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Map suggestion id -> normalized PostAuthor, when the (Developer
-    Preview) suggestion-thread objects are present in the payload.
-
-    Where threads surface in ``documents.get`` is not yet confirmed by
-    official docs, so this feature-detects thread-shaped objects under
-    ``suggestionThreads`` (list or id-keyed dict) and degrades to an empty
-    map -- callers then report ``author: null`` / ``author_source:
-    "unavailable"`` rather than guessing.
-    """
-    raw = document.get("suggestionThreads")
-    if isinstance(raw, dict):
-        threads = list(raw.values())
-    elif isinstance(raw, list):
-        threads = raw
-    else:
-        return {}
-
-    authors: dict[str, dict[str, Any]] = {}
-    for thread in threads:
-        if not isinstance(thread, dict):
-            continue
-        sid = thread.get("suggestionId")
-        head_post = thread.get("headPost") or {}
-        author = head_post.get("author")
-        if sid and isinstance(author, dict):
-            authors[sid] = _normalize_author(author)
-    return authors
-
-
-# ---------------------------------------------------------------------------
 # Suggestion extraction
 # ---------------------------------------------------------------------------
 
@@ -280,11 +236,28 @@ def _suggestion_type(kinds: frozenset[str]) -> str:
     return _TYPE_BY_KINDS.get(kinds, "mixed")
 
 
-def extract_suggestions(document: dict[str, Any]) -> dict[str, Any]:
+def extract_suggestions(
+    document: dict[str, Any],
+    *,
+    threads: Optional[dict[str, dict[str, Any]]] = None,
+    tab_id: Optional[str] = None,
+) -> dict[str, Any]:
     """Analyse a SUGGESTIONS_INLINE Document payload into per-suggestion
-    review records (see module docstring for pre/post semantics)."""
+    review records (see module docstring for pre/post semantics).
+
+    ``threads`` is the suggestion-thread map from
+    :func:`gdocs_preview.preview_read.suggestion_threads_by_id`, joined on
+    ``suggestionId``. It carries what the document content cannot: author,
+    status, create time, Google's own ``summaryText`` and the thread's
+    replies. Without it (a GA read, or a caller not enrolled in the
+    Developer Preview) every record reports ``author: null`` /
+    ``author_source: "unavailable"`` -- never a guess.
+
+    ``tab_id`` tags the records with the tab they were found in; ``None``
+    for a single-tab or GA read.
+    """
     segments = _collect_segments(document)
-    authors = _extract_thread_authors(document)
+    threads = threads or {}
 
     order: list[str] = []
     kinds: dict[str, set[str]] = {}
@@ -339,7 +312,8 @@ def extract_suggestions(document: dict[str, Any]) -> dict[str, Any]:
         else:  # pragma: no cover - defensive: runs without indexes
             context_before = context_after = ""
 
-        author = authors.get(sid)
+        thread = threads.get(sid) or {}
+        author = thread.get("author")
         records.append(
             {
                 "suggestion_id": sid,
@@ -350,17 +324,49 @@ def extract_suggestions(document: dict[str, Any]) -> dict[str, Any]:
                 "context_after": context_after,
                 "segment": seg.segment,
                 "segment_id": seg.segment_id,
+                "tab_id": tab_id,
                 "in_table": any(r.in_table for r in own_runs),
                 "start_index": range_start,
                 "end_index": range_end,
                 "author": author,
                 "author_source": "suggestion_thread" if author else "unavailable",
+                "status": thread.get("status"),
+                "create_time": thread.get("create_time"),
+                "summary_text": thread.get("summary_text"),
+                "replies": thread.get("replies") or [],
             }
         )
 
     return {
         "document_id": document.get("documentId"),
         "title": document.get("title"),
+        "suggestion_count": len(records),
+        "suggestions": records,
+    }
+
+
+def extract_suggestions_from_tabs(
+    tabs: list[tuple[Optional[str], dict[str, Any]]],
+    threads: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Run :func:`extract_suggestions` per tab and concatenate the records.
+
+    Each tab is analysed on its own (indexes and segment ids are per-tab in
+    the Docs data model), and every record carries its ``tab_id``. A
+    single-element list reproduces the single-tab output exactly.
+    """
+    records: list[dict[str, Any]] = []
+    document_id = None
+    title = None
+    for tab_id, document in tabs:
+        result = extract_suggestions(document, threads=threads, tab_id=tab_id)
+        if document_id is None:
+            document_id = result["document_id"]
+            title = result["title"]
+        records.extend(result["suggestions"])
+    return {
+        "document_id": document_id,
+        "title": title,
         "suggestion_count": len(records),
         "suggestions": records,
     }
@@ -384,10 +390,16 @@ def _marked_text(run: _Run) -> str:
     return run.text
 
 
-def render_document(document: dict[str, Any]) -> dict[str, Any]:
+def render_document(
+    document: dict[str, Any], *, tab_id: Optional[str] = None
+) -> dict[str, Any]:
     """Render a Document payload the way a reviewer sees it: plain text with
     inline suggestion markers, plus a paragraph map. Lean by design -- no
-    formatting fidelity beyond what review needs."""
+    formatting fidelity beyond what review needs.
+
+    ``tab_id`` tags every paragraph with the tab it came from (``None`` for
+    a single-tab or GA read).
+    """
     segments = _collect_segments(document)
 
     paragraphs = []
@@ -419,6 +431,7 @@ def render_document(document: dict[str, Any]) -> dict[str, Any]:
                 {
                     "segment": seg.segment,
                     "segment_id": seg.segment_id,
+                    "tab_id": tab_id,
                     "start_index": para.start,
                     "end_index": para.end,
                     "text": text,
@@ -444,3 +457,40 @@ def render_document(document: dict[str, Any]) -> dict[str, Any]:
         "footnotes": segment_texts["footnote"],
         "suggestion_ids": suggestion_ids,
     }
+
+
+def render_tabs(
+    tabs: list[tuple[Optional[str], dict[str, Any]]],
+) -> dict[str, Any]:
+    """Render each tab with :func:`render_document` and merge the results.
+
+    ``body_text`` concatenates the tabs in document order, ``paragraphs``
+    carry their ``tab_id``, and header/footer/footnote texts stay keyed by
+    segment id (Docs segment ids are document-wide, not per-tab). A
+    single-element list reproduces the single-tab output exactly.
+    """
+    merged: dict[str, Any] = {
+        "document_id": None,
+        "title": None,
+        "body_text": "",
+        "paragraphs": [],
+        "headers": {},
+        "footers": {},
+        "footnotes": {},
+        "suggestion_ids": [],
+    }
+    body_parts: list[str] = []
+    for tab_id, document in tabs:
+        rendered = render_document(document, tab_id=tab_id)
+        if merged["document_id"] is None:
+            merged["document_id"] = rendered["document_id"]
+            merged["title"] = rendered["title"]
+        body_parts.append(rendered["body_text"])
+        merged["paragraphs"].extend(rendered["paragraphs"])
+        for key in ("headers", "footers", "footnotes"):
+            merged[key].update(rendered[key])
+        for sid in rendered["suggestion_ids"]:
+            if sid not in merged["suggestion_ids"]:
+                merged["suggestion_ids"].append(sid)
+    merged["body_text"] = "".join(body_parts)
+    return merged

@@ -494,6 +494,70 @@ class TestReplyToDocThread:
         )
         assert bare["post_id"] is None
 
+    @pytest.mark.asyncio
+    async def test_author_of_the_new_reply_is_reported(self):
+        """Real response shape (verified 2026-07-30): the AddCommentReply
+        response carries the whole Post, author included -- so the tool can
+        report who authored the reply without a follow-up read."""
+        service = _batch_service(
+            {
+                "commentUpdateState": "ALL_SAVED",
+                "replies": [
+                    {
+                        "addCommentReply": {
+                            "post": {
+                                "postId": "AAACEhLh9j8",
+                                "content": "c-reply",
+                                "contentHtml": "c-reply",
+                                "author": {
+                                    "displayName": "Jonathan Moregård",
+                                    "me": True,
+                                    "user": "users/108544169371250993163",
+                                },
+                                "createTime": "2026-07-30T18:54:32.741Z",
+                                "updateTime": "2026-07-30T18:54:32.741Z",
+                                "commentAction": "NO_COMMENT_ACTION_CHANGE",
+                            }
+                        }
+                    }
+                ],
+            }
+        )
+        fn = _unwrap(write_tools.reply_to_doc_thread)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                reply_content="c-reply",
+                comment_id="c1",
+            )
+        )
+        assert result["author"] == {
+            "display_name": "Jonathan Moregård",
+            "me": True,
+            "anonymous": None,
+            "user": "users/108544169371250993163",
+        }
+        assert result["create_time"] == "2026-07-30T18:54:32.741Z"
+
+    @pytest.mark.asyncio
+    async def test_author_is_null_when_the_response_omits_the_post(self):
+        service = _batch_service({"commentUpdateState": "ALL_SAVED"})
+        fn = _unwrap(write_tools.reply_to_doc_thread)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                reply_content="Hi",
+                comment_id="c1",
+            )
+        )
+        assert result["author"] is None
+
 
 class TestCreateAnchoredDocComment:
     @pytest.mark.asyncio
@@ -640,6 +704,65 @@ class TestCreateAnchoredDocComment:
         assert bare["comment_id"] is None
         assert bare["anchor_id"] is None
         assert bare["quoted_text"] is None
+        assert bare["author"] is None
+        assert bare["post_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_head_post_author_is_reported(self):
+        """Real response shape (verified 2026-07-30): InsertCommentResponse
+        carries the whole CommentThread, headPost.author included."""
+        service = _batch_service(
+            {
+                "commentUpdateState": "ALL_SAVED",
+                "replies": [
+                    {
+                        "insertComment": {
+                            "commentThread": {
+                                "commentId": "AAACEfTspmk",
+                                "anchorId": "kix.5jicnobkgd9j",
+                                "headPost": {
+                                    "postId": "AAACEfTspmk",
+                                    "content": "probe comment",
+                                    "contentHtml": "probe comment",
+                                    "author": {
+                                        "displayName": "Jonathan Moregård",
+                                        "me": True,
+                                        "user": "users/108544169371250993163",
+                                    },
+                                    "createTime": "2026-07-30T18:51:48.198Z",
+                                    "updateTime": "2026-07-30T18:51:48.198Z",
+                                    "commentAction": "NO_COMMENT_ACTION_CHANGE",
+                                },
+                                "status": "OPEN",
+                                "plainTextQuote": "Say",
+                            }
+                        }
+                    }
+                ],
+            }
+        )
+        fn = _unwrap(write_tools.create_anchored_doc_comment)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                content="probe comment",
+                start_index=1,
+                end_index=4,
+            )
+        )
+        assert result["comment_id"] == "AAACEfTspmk"
+        assert result["post_id"] == "AAACEfTspmk"
+        assert result["status"] == "OPEN"
+        assert result["author"] == {
+            "display_name": "Jonathan Moregård",
+            "me": True,
+            "anonymous": None,
+            "user": "users/108544169371250993163",
+        }
+        assert result["create_time"] == "2026-07-30T18:51:48.198Z"
 
     @pytest.mark.asyncio
     async def test_all_failed_comment_update_state_raises(self):

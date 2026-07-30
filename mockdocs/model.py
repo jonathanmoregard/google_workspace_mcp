@@ -32,6 +32,12 @@ MERGE_TOLERANCE = 0
 #: §8: single-line label truncation width.
 LABEL_MAX_CHARS = 60
 
+#: §8 label quoting. The live API uses typographic quotes in
+#: ``SuggestionThread.summaryText`` (verified 2026-07-30); the spec's ASCII
+#: quotes were a guess and prod wins.
+QUOTE_OPEN = "“"
+QUOTE_CLOSE = "”"
+
 # Rendering states, §4. Total and mutually exclusive (I4).
 RENDER_NORMAL = "normal"
 RENDER_INSERT = "insert"  # underline, author colour
@@ -422,16 +428,29 @@ class MockDoc:
 
         Recomputed on read, never stored: a stored label goes stale the
         moment a merge rewrites the range.
+
+        The grammar matches the live API's ``SuggestionThread.summaryText``
+        verbatim, quotation marks included -- verified 2026-07-30 against an
+        enrolled account, which produced ``Add: “Zero”``, ``Delete: “beta”``
+        and ``Replace: “brave” with “bold”``. Prod is the oracle here: the
+        spec's §8 straight ASCII quotes were a guess, and Google uses
+        typographic quotes (U+201C/U+201D).
         """
         struck_text = self.text_of(self.struck(sid))
         added_text = self.text_of(self.added(sid))
         if not added_text:
-            kind, text = "Delete", f'Delete: "{flat(struck_text)}"'
+            kind, text = (
+                "Delete",
+                f"Delete: {QUOTE_OPEN}{flat(struck_text)}{QUOTE_CLOSE}",
+            )
         elif not struck_text:
-            kind, text = "Add", f'Add: "{flat(added_text)}"'
+            kind, text = "Add", f"Add: {QUOTE_OPEN}{flat(added_text)}{QUOTE_CLOSE}"
         else:
             kind = "Replace"
-            text = f'Replace: "{flat(struck_text)}" with "{flat(added_text)}"'
+            text = (
+                f"Replace: {QUOTE_OPEN}{flat(struck_text)}{QUOTE_CLOSE} with "
+                f"{QUOTE_OPEN}{flat(added_text)}{QUOTE_CLOSE}"
+            )
         return {
             "suggestion_id": sid,
             "kind": kind,

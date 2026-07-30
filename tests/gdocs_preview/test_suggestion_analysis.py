@@ -8,7 +8,13 @@ with Python ``len()`` (code points != UTF-16 units for astral chars).
 """
 
 from tests.gdocs_preview import fixtures as fx
-from gdocs_preview.analysis import extract_suggestions, render_document
+from gdocs_preview.analysis import (
+    extract_suggestions,
+    extract_suggestions_from_tabs,
+    render_document,
+    render_tabs,
+)
+from gdocs_preview.preview_read import suggestion_threads_by_id
 
 
 def suggestions(doc):
@@ -33,11 +39,16 @@ class TestPlainInsertion:
             "context_after": " world.\n",
             "segment": "body",
             "segment_id": None,
+            "tab_id": None,
             "in_table": False,
             "start_index": 6,
             "end_index": 12,
             "author": None,
             "author_source": "unavailable",
+            "status": None,
+            "create_time": None,
+            "summary_text": None,
+            "replies": [],
         }
 
     def test_envelope(self):
@@ -170,8 +181,10 @@ class TestStyleAndMixed:
 
 
 class TestAuthors:
-    def test_author_from_suggestion_thread_when_present(self):
-        s = by_id(fx.DOC_INSERTION_WITH_THREADS, "suggest.ins1")
+    def test_thread_join_supplies_author_status_and_summary(self):
+        threads = suggestion_threads_by_id(fx.TABS_PAYLOAD)
+        result = extract_suggestions(fx.DOC_PLAIN_INSERTION, threads=threads)
+        (s,) = result["suggestions"]
         assert s["author"] == {
             "display_name": "Alice Reviewer",
             "me": False,
@@ -179,11 +192,65 @@ class TestAuthors:
             "user": "users/123",
         }
         assert s["author_source"] == "suggestion_thread"
+        assert s["status"] == "OPEN"
+        assert s["create_time"] == "2026-07-30T10:00:00.000Z"
+        assert s["summary_text"] == "Add: “brave”"
+
+    def test_thread_replies_carry_id_and_author(self):
+        threads = suggestion_threads_by_id(fx.TABS_PAYLOAD)
+        (s,) = extract_suggestions(fx.DOC_PLAIN_INSERTION, threads=threads)[
+            "suggestions"
+        ]
+        (reply,) = s["replies"]
+        assert reply["post_id"] == "AAAApost2"
+        assert reply["content"] == "looks good"
+        assert reply["author"]["display_name"] == "Bob Author"
 
     def test_author_never_guessed_without_threads(self):
         s = by_id(fx.DOC_PLAIN_INSERTION, "suggest.ins1")
         assert s["author"] is None
         assert s["author_source"] == "unavailable"
+        assert s["summary_text"] is None
+        assert s["replies"] == []
+
+    def test_unjoined_suggestion_keeps_null_author(self):
+        """A suggestion present in the body but absent from the thread list
+        must NOT inherit another suggestion's author."""
+        threads = suggestion_threads_by_id(fx.TABS_PAYLOAD)
+        (s,) = extract_suggestions(fx.DOC_SECOND_TAB, threads=threads)["suggestions"]
+        assert s["suggestion_id"] == "suggest.tab2"
+        assert s["author"] is None
+        assert s["author_source"] == "unavailable"
+
+
+class TestMultiTab:
+    def test_records_are_tagged_with_their_tab(self):
+        threads = suggestion_threads_by_id(fx.TABS_PAYLOAD_MULTI)
+        result = extract_suggestions_from_tabs(
+            [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)],
+            threads,
+        )
+        assert result["suggestion_count"] == 2
+        assert [(s["suggestion_id"], s["tab_id"]) for s in result["suggestions"]] == [
+            ("suggest.ins1", "t.0"),
+            ("suggest.tab2", "t.second"),
+        ]
+        # Indexes stay per-tab: both tabs' bodies start at 1.
+        assert result["suggestions"][1]["start_index"] == 9
+
+    def test_render_tabs_concatenates_and_tags(self):
+        rendered = render_tabs(
+            [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)]
+        )
+        assert rendered["body_text"] == (
+            "Hello{+ brave+} world.\nTab two {+addition+}.\n"
+        )
+        assert {p["tab_id"] for p in rendered["paragraphs"]} == {"t.0", "t.second"}
+        assert rendered["suggestion_ids"] == ["suggest.ins1", "suggest.tab2"]
+
+    def test_single_tab_render_matches_render_document(self):
+        merged = render_tabs([(None, fx.DOC_HEADER)])
+        assert merged == render_document(fx.DOC_HEADER)
 
 
 class TestRenderDocument:
@@ -204,6 +271,7 @@ class TestRenderDocument:
         p = paras[0]
         assert p["segment"] == "body"
         assert p["segment_id"] is None
+        assert p["tab_id"] is None
         assert p["start_index"] == 1
         assert p["end_index"] == 20
         assert p["text"] == "Hello{+ brave+} world.\n"

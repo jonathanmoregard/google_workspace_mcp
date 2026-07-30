@@ -202,7 +202,9 @@ def read_state_dict(path: str | Path) -> dict[str, Any]:
     try:
         return json.loads(source.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StateFormatError(f"state dump at {source} is not valid JSON: {exc}") from exc
+        raise StateFormatError(
+            f"state dump at {source} is not valid JSON: {exc}"
+        ) from exc
 
 
 def read_state(path: str | Path) -> FakeBackend:

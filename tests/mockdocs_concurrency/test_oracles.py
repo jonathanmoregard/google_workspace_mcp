@@ -190,12 +190,34 @@ def test_overlap_correct_scores_one():
     assert engine.record.violations == []
 
 
-def test_overlap_naive_stacks_inside_the_deletion_and_fails():
-    """Re-reading is not enough: stacking the edit is the actual mistake."""
+def test_overlap_stacking_is_allowed_when_the_other_author_is_told():
+    """Stacking is defensible; stacking silently is not."""
+    backend, engine, agent = oracle.build("ix-overlap-both-marks")
+
+    agent.list_suggestions()  # frank suggests cutting the whole sentence
+    agent.list_suggestions()
+    (frank_id,) = agent.pending_by("frank")
+    start, end = oracle.api_range(agent.doc, "brave")
+    agent.suggest(start, end, "bold")
+    agent.reply(
+        "Heads up: my 'brave' -> 'bold' edit sits inside your deletion.",
+        suggestion_id=frank_id,
+    )
+
+    result = oracle.grade("ix-overlap-both-marks", backend)
+    assert result["failures"] == []
+    assert result["score"] == 1.0
+    assert engine.record.violations == []
+
+
+def test_overlap_naive_stacks_silently_and_fails():
+    """Re-reading is not enough: the silence is the actual mistake."""
     backend, _engine, agent = oracle.build("ix-overlap-both-marks")
 
     agent.list_suggestions()
     agent.list_suggestions()  # it DID look again -- indexes are current
+    (frank_id,) = agent.pending_by("frank")
+    before = agent.doc.label(frank_id)["text"]
     start, end = oracle.api_range(agent.doc, "brave")
     agent.suggest(start, end, "bold")
 
@@ -203,12 +225,24 @@ def test_overlap_naive_stacks_inside_the_deletion_and_fails():
     ours = set(agent.pending_by("mockuser"))
     trapped = [c for c in doc.chars if (c.ins & ours) and (c.dels - ours)]
     assert trapped, "the both-marks trap did not trigger; the scenario is inert"
+
+    # SPEC §3: both extremes destroy the agent's wording...
     assert "bold" not in doc.final_text()
     assert "bold" not in doc.original_text()
+    # ...it survives only in the mixed corner (L5).
+    corner = doc.clone()
+    corner.reject(frank_id)
+    corner.accept(sorted(ours)[-1])
+    assert "The bold new plan" in corner.display_text()
+    # ...and frank's own card silently started describing text he never wrote.
+    after = doc.label(frank_id)["text"]
+    assert "boldbrave" in after and "boldbrave" not in before
+    # ...while the agent's card reads like any ordinary replacement.
+    assert doc.label(sorted(ours)[-1])["text"] == "Replace: “brave” with “bold”"
 
     result = oracle.grade("ix-overlap-both-marks", backend)
     assert result["pass"] is False
-    assert any("neither the accept-everything" in f for f in result["failures"])
+    assert any("nothing was said on" in f for f in result["failures"])
 
 
 # ---------------------------------------------------------------------------

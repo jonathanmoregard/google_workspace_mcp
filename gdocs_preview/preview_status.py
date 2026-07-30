@@ -25,7 +25,7 @@ _UNKNOWN_FIELD_MARKERS = (
 _INITIAL_STATE: dict[str, Any] = {
     "availability": "unknown",  # unknown | available | unavailable
     "evidence": None,
-    "source": None,  # probe | None
+    "source": None,  # probe | tool_call | None
     "checked_at": None,
 }
 

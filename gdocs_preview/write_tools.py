@@ -126,7 +126,7 @@ async def _execute_preview_batch_update(
         enforce_comment_update
         and response.get("commentUpdateState") == "ALL_FAILED_UNKNOWN_REASON"
     ):
-        raise Exception(
+        raise UserInputError(
             f"{tool_name}: the API returned HTTP 200 but reported "
             "commentUpdateState=ALL_FAILED_UNKNOWN_REASON - the thread operation "
             "was NOT saved. Retry; if it persists, check enrollment and document "
@@ -225,6 +225,10 @@ async def suggest_doc_edit(
         # Replacement: delete then insert at start_index, mirroring
         # modify_doc_text's replacement path. In SUGGEST mode the deleted
         # text stays in the document (marked), so no index shifting.
+        # UNCERTAIN (pending enrollment): EDIT-mode batches resolve indexes
+        # against the pre-batch document; whether SUGGEST-mode shares that
+        # semantics is transcribed-not-verified. The preview e2e replacement
+        # scenario pins reality on the first enrolled run.
         mode = "replacement"
         requests.append(
             {

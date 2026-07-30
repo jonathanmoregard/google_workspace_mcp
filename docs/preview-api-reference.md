@@ -8,11 +8,12 @@ launched 2026-07-07: comment threads, suggestion accept/reject/delete, and the
 (`developers.google.com/workspace/docs/api/reference/rest/v1/documents/request`,
 `.../batchUpdate`, `.../response`, the documents resource page, and
 `.../how-tos/suggestions`; all "Last updated 2026-07-07 UTC", fetched
-2026-07-13). The preview surface is absent from the public discovery document,
-so **nothing here has been verified against the live API** — verification is
-pending Workspace Developer Preview Program enrollment. Statements marked
-**UNCERTAIN** are known gaps in the official docs, preserved verbatim from the
-overlay this file replaces (`codegen/overlay/docs_preview_overlay.json` +
+2026-07-13). The preview surface is absent from the public discovery document.
+Statements marked **VERIFIED 2026-07-30** were observed against the live API
+with an enrolled Workspace Developer Preview account
+(`jonathan@klaffat.com`); statements marked **UNCERTAIN** are still gaps in
+the official docs, preserved verbatim from the overlay this file replaces
+(`codegen/overlay/docs_preview_overlay.json` +
 `codegen/overlay/generator_config.json`, removed in the 2026-07-29 redirect).
 
 All preview operations are members of the `Request` union in
@@ -205,15 +206,134 @@ The suggestions affected by a given update. All fields are `string[]` of
 suggestion ids: `createdSuggestionIds`, `updatedSummarySuggestionIds`,
 `deletedSuggestionIds`, `acceptedSuggestionIds`, `rejectedSuggestionIds`.
 
-### Per-request response members
+### Per-request response members — **VERIFIED 2026-07-30**
 
-- `InsertCommentResponse` — `{ commentThread: CommentThread }` (the
-  newly-inserted thread).
-- `AddCommentReplyResponse` — `{ post: Post }` (the newly-inserted reply).
-- **UNCERTAIN**: whether the batchUpdate `Response` union actually gains
-  `insertComment` / `addCommentReply` members (and their exact member names)
-  was not transcribed; the response schemas exist per the batchUpdate
-  reference, but their union wiring is unconfirmed.
+The `Response` union does gain the members, under exactly these names, and
+they carry the **author** of the object just created — so a write path never
+needs a follow-up read to report authorship:
+
+- `replies[i].insertComment.commentThread` → the whole `CommentThread`:
+
+  ```json
+  {"insertComment": {"commentThread": {
+    "commentId": "AAACEfTspmk",
+    "anchorId": "kix.5jicnobkgd9j",
+    "headPost": {
+      "postId": "AAACEfTspmk", "content": "probe comment",
+      "contentHtml": "probe comment",
+      "author": {"displayName": "…", "me": true, "user": "users/1085…"},
+      "createTime": "2026-07-30T18:51:48.198Z",
+      "updateTime": "2026-07-30T18:51:48.198Z",
+      "commentAction": "NO_COMMENT_ACTION_CHANGE"},
+    "status": "OPEN", "plainTextQuote": "Say"}}}
+  ```
+
+  Note `headPost.postId == commentId` for the thread head.
+
+- `replies[i].addCommentReply.post` → the new reply `Post`, with `author`,
+  `contentHtml`, `createTime`/`updateTime`, and `commentAction`
+  (comment threads) or `suggestionAction` (suggestion threads).
+- Requests that produce no response member (e.g. `insertText`) occupy their
+  index with an empty object `{}`, so `replies` still maps 1:1.
+- A SUGGEST replacement (`deleteContentRange` + `insertText`) yields ONE
+  suggestion id: request 0 reports it under `createdSuggestionIds`, request 1
+  reports the same id under `updatedSummarySuggestionIds`.
+
+---
+
+## Reading threads: `documents.get` with tabs + comments — **VERIFIED 2026-07-30**
+
+Threads (and therefore **authors**) are absent from a plain `documents.get`.
+They appear only when the read asks for them:
+
+```
+GET https://docs.googleapis.com/v1/documents/{documentId}
+      ?suggestionsViewMode=SUGGESTIONS_INLINE
+      &commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED
+      &includeTabsContent=true
+```
+
+- `includeTabsContent=true` is **required** alongside `commentsViewMode`.
+  Without it: `400 "Comments view mode may only be specified if tabs content
+  is also requested."`
+- `commentsViewMode` is **absent from the public discovery document**, so the
+  googleapiclient Resource refuses it before any request is sent
+  (`TypeError: Got an unexpected keyword argument commentsViewMode`;
+  `documents().get` accepts only `documentId`, `suggestionsViewMode`,
+  `includeTabsContent` and the standard system parameters). The repo issues
+  this read with a `google.auth.transport.requests.AuthorizedSession` built
+  from the credentials the injected Resource already holds
+  (`service._http.credentials`) — see `gdocs_preview/preview_read.py`.
+- `commentsViewMode` is `google.apps.docs.v1.CommentsViewMode`. Accepted:
+  `COMMENTS_VIEW_MODE_UNSPECIFIED`, `COMMENTS_VIEW_MODE_INCLUDED`,
+  `COMMENTS_VIEW_MODE_OMITTED`; anything else is a 400 naming the enum type.
+  Responses always echo it — `COMMENTS_VIEW_MODE_OMITTED` for a plain or
+  tabs-only read.
+
+### Response layout
+
+| read | top-level keys |
+|---|---|
+| plain `documents.get` | `body`, `documentStyle`, `namedStyles`, `title`, `documentId`, `revisionId`, `suggestionsViewMode`, `commentsViewMode` |
+| `includeTabsContent=true` only | `tabs`, `title`, `documentId`, `revisionId`, `suggestionsViewMode`, `commentsViewMode` (no threads) |
+| tabs + `COMMENTS_VIEW_MODE_INCLUDED` | the above **plus** `suggestions` and `comments` |
+
+Asking for tabs content **removes the top-level `body`**: content moves to
+`tabs[i].documentTab`. Each tab is `{tabProperties, documentTab}` (plus
+`childTabs` for nested tabs); `tabProperties` is `{tabId, title, index}`
+(`t.0` for the first tab); `documentTab` holds `body`, `documentStyle`,
+`namedStyles`, and `headers`/`footers`/`footnotes`/`commentAnchors` when
+present. `tabs[0].documentTab.body` is byte-identical to the GA read's
+`body` for a single-tab document — **indexes are unchanged**, so indexes
+taken from either read stay valid for `batchUpdate`.
+
+Empty repeated fields are omitted proto3-style: a document with suggestions
+but no comments comes back with no `comments` key at all.
+
+### `suggestions[]` (SuggestionThread)
+
+```json
+{"suggestionId": "suggest.ymc8iork4nln",
+ "headPost": {"postId": "AAACEfTspmU",
+              "author": {"displayName": "…", "me": true, "user": "users/1085…"},
+              "createTime": "…", "updateTime": "…",
+              "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE"},
+ "replies": [ Post, … ],
+ "status": "OPEN",
+ "summaryText": "Replace: “brave” with “bold”",
+ "summaryHtml": "<div …>"}
+```
+
+A suggestion `headPost` has **no `content`** (unlike a comment head post) —
+the human-readable summary is `summaryText`/`summaryHtml` on the thread.
+
+### `comments[]` (CommentThread)
+
+Same shape as the `insertComment` response member above: `commentId`,
+`anchorId`, `headPost` (with `content`, `contentHtml`, `author`, times,
+`commentAction`), `replies[]`, `status`, `plainTextQuote`.
+
+Richer than the Drive v3 comment surface, which exposes no anchor id, no
+per-post ids and no People resource names. Comment ids DO interoperate:
+a thread created with `insertComment` is visible to Drive `comments.list`
+and can be updated/resolved/deleted through it (verified 2026-07-30).
+
+### `summaryText` grammar
+
+Google's own label for a suggestion, in **typographic** quotes (U+201C /
+U+201D), whitespace-collapsed and trimmed:
+
+| edit | `summaryText` |
+|---|---|
+| insertion | `Add: “Say”` |
+| deletion | `Delete: “brave”` |
+| replacement | `Replace: “brave” with “bold”` |
+
+This is the oracle for the mock's SPEC §8 `label()`
+(`docs/plans/2026-07-30-suggestion-mock-spec.md`), whose ASCII quotes were a
+guess; `mockdocs/model.py` now matches prod, and
+`e2e/test_preview_surface.py::test_summary_text_grammar_matches_the_mock_labels`
+re-checks the two against each other on every enrolled run.
 
 ---
 
@@ -243,6 +363,11 @@ an imported document). This is how suggestion/comment **authorship** is
 exposed — `SuggestionThread.headPost.author` resolves the suggestion author
 (the MVP plan's "suggestion author" unknown).
 
+**VERIFIED 2026-07-30**: a real author block is
+`{"displayName": "Jonathan Moregård", "me": true, "user": "users/1085…"}` —
+`anonymous` is omitted entirely when false, so consumers must treat a missing
+`anonymous` as unknown rather than defaulting it.
+
 ### `CommentThread`
 
 `commentId`, `anchorId` (the `CommentAnchor` in the document; multiple
@@ -253,6 +378,8 @@ the `quote` union).
 - `status` enum: `STATUS_UNSPECIFIED`, `OPEN`, `RESOLVED`.
 - **UNCERTAIN**: the enum values are inlined here; the real discovery schema
   name for this enum type is unknown.
+- Where to read them: the tabs + `commentsViewMode` read, top-level
+  `comments` (see above).
 
 ### `SuggestionThread`
 
@@ -262,21 +389,40 @@ differences; may be empty). Created only as a byproduct of SUGGEST-mode
 saves — never directly.
 
 - `status` enum: `STATUS_UNSPECIFIED`, `OPEN`, `ACCEPTED`, `REJECTED`.
+  Observed value for a pending suggestion: `OPEN`.
 - **UNCERTAIN**: same inlined-enum caveat as `CommentThread.status`.
+- Where to read them: the tabs + `commentsViewMode` read, top-level
+  `suggestions` (see above).
 
 ---
 
-## Open UNCERTAIN items (resolve empirically post-enrollment)
+## Resolved (2026-07-30, enrolled account)
+
+- ~~Whether (and where) `documents.get` exposes `CommentThread` /
+  `SuggestionThread` objects~~ → top-level `suggestions` / `comments`, only
+  in the `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` +
+  `includeTabsContent=true` read. See "Reading threads" above.
+- ~~Whether the batchUpdate `Response` union gains `insertComment` /
+  `addCommentReply` members~~ → it does, under those names, carrying the
+  full `CommentThread` / `Post` including `author`.
+- ~~How authorship is exposed~~ → `headPost.author` (`PostAuthor`) on both
+  thread kinds and on every reply.
+- ~~Error shape for a bogus suggestion id~~ → HTTP **404** "Suggestion with
+  ID … does not exist." (not 400); `preview_status.classify_preview_error`
+  handles it.
+
+## Open UNCERTAIN items
 
 1. `InsertCommentRequest` with `range` omitted — unanchored-comment behavior
-   undocumented.
+   undocumented (the repo's tool requires a range, so this stays untested).
 2. Real discovery names of the `CommentThread.status` /
    `SuggestionThread.status` enum types.
-3. Whether the batchUpdate `Response` union gains `insertComment` /
-   `addCommentReply` members, and their exact member names.
-4. Whether (and where) `documents.get` exposes `CommentThread` /
-   `SuggestionThread` objects in the `Document` payload — could not be
-   confirmed from the reference pages.
-5. Whether preview enrollment propagates per-project or per-account, and the
-   error shapes for non-enrolled callers (the capabilities probe in
-   `gdocs_preview/curated_tools.py` classifies these heuristically).
+3. Whether preview enrollment propagates per-project or per-account (the
+   capabilities probe in `gdocs_preview/curated_tools.py` classifies the
+   non-enrolled error shapes heuristically; only the enrolled shapes are
+   verified).
+4. Whether a multi-tab document's `suggestions` / `comments` arrays carry any
+   tab attribution. Observed arrays have none — the repo attributes a
+   suggestion to the tab whose body carries its id.
+5. Whether the preview thread operations really are SUGGEST-incompatible
+   (overlay decision, still unverified — see "Additional exclusions").

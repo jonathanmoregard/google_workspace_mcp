@@ -203,14 +203,21 @@ The label is a **pure function of the rendering**, not of the marks:
 struck(S) = [c | c ← D.chars, S ∈ c.del]                 // everything with a strikethrough
 added(S)  = [c | c ← D.chars, S ∈ c.ins, S ∉ c.del]      // underlined and not struck
 
-label(S) | added(S)  = [] = Delete:  "{flat(struck)}"
-         | struck(S) = [] = Add:     "{flat(added)}"
-         | otherwise      = Replace: "{flat(struck)}" with "{flat(added)}"
+label(S) | added(S)  = [] = Delete:  “{flat(struck)}”
+         | struck(S) = [] = Add:     “{flat(added)}”
+         | otherwise      = Replace: “{flat(struck)}” with “{flat(added)}”
 ```
+
+**Grammar verified against prod 2026-07-30** (`SuggestionThread.summaryText`
+from the live Docs API, enrolled account): `Add: “Say”`, `Delete: “brave”`,
+`Replace: “brave” with “bold”`. Google uses **typographic** quotes
+(U+201C/U+201D); this spec originally guessed ASCII `"` and lost — prod is the
+oracle, and `mockdocs/model.py` was changed to match. See
+`docs/preview-api-reference.md` § "summaryText grammar".
 
 The asymmetry is load-bearing: the struck side shows everything being removed, the added
 side shows only what will actually survive. This is what produces
-`Replace: "popul" with "ar"` rather than `... with "ular"`.
+`Replace: “popul” with “ar”` rather than `... with “ular”`.
 
 `flat` normalises for single-line display: block boundaries → one space, list markers
 dropped, collapse whitespace runs, truncate at ~60 chars with a trailing ellipsis.
@@ -413,8 +420,12 @@ harness — and is the only part of this document written by the implementation.
   so `gdocs_preview/preview_status.py`'s error classifier can be tested against both
   enrolled and non-enrolled backends. This targets open UNCERTAIN item #5 of
   `docs/preview-api-reference.md`.
-- **Thread exposure in `documents.get`.** The adapter emits `suggestionThreads` because
-  that is what `analysis._extract_thread_authors` feature-detects, but *where* the real
-  API exposes threads in the `Document` payload is UNCERTAIN item #4 of
-  `docs/preview-api-reference.md`. The shape is an assumption on both sides; the mock
-  makes the assumption explicit rather than authoritative.
+- **Thread exposure in `documents.get`** — *resolved 2026-07-30 against the live API.*
+  A plain `documents.get` carries **no** thread objects at all (the adapter's earlier
+  guessed `suggestionThreads` key does not exist). Threads live at the top level of the
+  `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` + `includeTabsContent=true` read, as
+  `suggestions[]` / `comments[]`, with the content moved under
+  `tabs[i].documentTab`. `mockdocs.adapter` now models both reads separately
+  (`document_payload` vs `tabs_document_payload`) and `mockdocs.fake_services`
+  enforces the API's "comments view mode requires tabs content" 400. Details:
+  `docs/preview-api-reference.md` § "Reading threads".

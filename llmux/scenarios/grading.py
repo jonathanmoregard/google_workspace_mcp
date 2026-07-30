@@ -221,6 +221,30 @@ def _invariant_failure(
         except AssertionError as exc:
             return f"model invariant violated in the end state: {exc}"
         return None
+    if kind == "suggestion_pending":
+        # Per-card credit for *not* acting. Without this the "leave it alone"
+        # half of a task is graded by one all-or-nothing survivors check,
+        # which at 120 cards makes the score a cliff instead of a curve.
+        sid = check["suggestion_id"]
+        if sid not in doc.registry:
+            return (
+                f"{sid} should still be pending -- the task does not ask for a "
+                f"decision on it -- but it has been resolved"
+            )
+        return None
+    if kind == "decision_witness":
+        # SPEC L5 made gradeable per card: ``text`` is a stretch of the end
+        # document that only the intended accept/reject/leave-pending call
+        # produces (see llmux.scenarios.stressgen.invariants.witness). Its
+        # absence localises the mistake to one suggestion.
+        actual = _projection_text(doc, check.get("projection", "display"))
+        if check["text"] not in actual:
+            return (
+                f"{check['suggestion_id']} should have been "
+                f"{check.get('decision', 'resolved')}: the text that only that "
+                f"decision produces ({check['text']!r}) is not in the document"
+            )
+        return None
     return f"unknown invariant check {kind!r}"
 
 

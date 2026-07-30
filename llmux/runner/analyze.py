@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
-from llmux.runner.taxonomy import CLASSES, Finding, repeat_report
+from llmux.runner.taxonomy import (
+    CLASSES,
+    POSITIVE_CLASSES,
+    Finding,
+    repeat_report,
+)
 
 DIFFICULTY_ORDER = ("easy", "medium", "hard", "unknown")
 
@@ -68,6 +73,8 @@ class Aggregate:
     taxonomy: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_usage: dict[str, dict[str, int]] = field(default_factory=dict)
     harness_errors: list[str] = field(default_factory=list)
+    #: One entry per run of a scenario that declared a concurrent editor.
+    interference: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def pass_rate(self) -> float:
@@ -93,6 +100,7 @@ class Aggregate:
             "taxonomy": self.taxonomy,
             "tool_usage": self.tool_usage,
             "harness_errors": self.harness_errors,
+            "interference": self.interference,
         }
 
 
@@ -150,6 +158,16 @@ def aggregate(results: Sequence[Any]) -> Aggregate:
             agg.harness_errors.append(
                 f"{result.scenario_id} [{result.model}]: {result.harness_error}"
             )
+        interference = getattr(result, "interference", None)
+        if interference:
+            agg.interference.append(
+                {
+                    "scenario_id": result.scenario_id,
+                    "model": result.model,
+                    "pass": bool(result.passed),
+                    **interference,
+                }
+            )
         per_run_findings.append(result.findings)
 
     agg.taxonomy = repeat_report(per_run_findings)
@@ -197,7 +215,9 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
     if not agg.taxonomy:
         lines.append("No findings: every run was clean.")
     else:
-        lines.append("| class | runs | share | occurrences | repeated in-run | systemic |")
+        lines.append(
+            "| class | runs | share | occurrences | repeated in-run | systemic |"
+        )
         lines.append("| --- | ---: | ---: | ---: | ---: | :---: |")
         for code, entry in agg.taxonomy.items():
             lines.append(
@@ -210,6 +230,15 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
             "*Systemic* = the class repeated inside a single run, or appeared "
             "in at least 30% of runs."
         )
+        positives = sorted(POSITIVE_CLASSES & set(agg.taxonomy))
+        if positives:
+            lines.append("")
+            lines.append(
+                "Not every row here is a mistake: "
+                + ", ".join(f"`{c}`" for c in positives)
+                + " is a POSITIVE signal, counted so good behaviour under "
+                "concurrent change is visible rather than merely absent."
+            )
         lines.append("")
         for code, entry in agg.taxonomy.items():
             lines.append(f"### `{code}`")
@@ -218,6 +247,48 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
             lines.append("")
             for example in entry.get("examples", []):
                 lines.append(f"- {example}")
+            lines.append("")
+
+    if agg.interference:
+        lines.append("## Concurrent-editor runs")
+        lines.append("")
+        lines.append(
+            "A second editor worked in the document while the agent reviewed "
+            "it, firing at fixed points in the agent's own call sequence. "
+            "`re-read` is the mechanical test of whether the agent looked "
+            "again after the change; `stale writes` are writes that SUCCEEDED "
+            "carrying pre-change indexes, which is the silent case."
+        )
+        lines.append("")
+        lines.append(
+            "| scenario | model | pass | fired (at agent call) | re-read | "
+            "blind retries | stale writes |"
+        )
+        lines.append("| --- | --- | :---: | --- | :---: | ---: | ---: |")
+        for entry in agg.interference:
+            fired = ", ".join(
+                f"{f['name']}@{f['at_call']}" for f in entry.get("fired") or []
+            )
+            lines.append(
+                f"| {entry['scenario_id']} | {entry['model']} | "
+                f"{'PASS' if entry['pass'] else 'FAIL'} | {fired or '(none)'} | "
+                f"{'yes' if entry.get('reread_after_change') else 'NO'} | "
+                f"{entry.get('blind_retries', 0)} | "
+                f"{entry.get('stale_index_writes', 0)} |"
+            )
+        lines.append("")
+        broken = [e for e in agg.interference if e.get("violations")]
+        if broken:
+            lines.append(
+                "**Harness fault**: the interleaving itself broke a spec "
+                "invariant in these runs, so their grades measure nothing:"
+            )
+            lines.append("")
+            for entry in broken:
+                for violation in entry["violations"]:
+                    lines.append(
+                        f"- {entry['scenario_id']} [{entry['model']}]: {violation}"
+                    )
             lines.append("")
 
     lines.append("## Pass rate by model x difficulty")
@@ -243,7 +314,9 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
 
     lines.append("## Per-scenario scores")
     lines.append("")
-    lines.append("| scenario | difficulty | model | pass | score | turns | calls (err) | $ |")
+    lines.append(
+        "| scenario | difficulty | model | pass | score | turns | calls (err) | $ |"
+    )
     lines.append("| --- | --- | --- | :---: | ---: | ---: | ---: | ---: |")
     for scenario_id in sorted(agg.by_scenario):
         entry = agg.by_scenario[scenario_id]
@@ -289,7 +362,9 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         agg.tool_usage.items(), key=lambda kv: (-kv[1]["calls"], kv[0])
     ):
         rate = usage["errors"] / usage["calls"] if usage["calls"] else 0.0
-        lines.append(f"| `{tool}` | {usage['calls']} | {usage['errors']} | {_pct(rate)} |")
+        lines.append(
+            f"| `{tool}` | {usage['calls']} | {usage['errors']} | {_pct(rate)} |"
+        )
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -303,6 +378,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
     That is how a taxonomy rule change gets validated against real runs
     instead of against synthetic ones.
     """
+    from llmux.runner.interference import InterferenceReport
     from llmux.runner.run import RunResult
     from llmux.runner.scenarios import GradeResult, load_scenario
     from llmux.runner.scenarios import grade_backend
@@ -324,8 +400,11 @@ def reanalyze(runs_dir: Path) -> list[Any]:
             )
         scenario = load_scenario(Path(scenario_path))
         transcript = parse_transcript_file(run_dir / "transcript.jsonl")
+        report = None
         try:
-            grade = grade_backend(scenario, read_state(run_dir / "state.json"))
+            backend = read_state(run_dir / "state.json")
+            grade = grade_backend(scenario, backend)
+            report = InterferenceReport.from_backend(backend)
         except StateFormatError as exc:
             grade = GradeResult.crashed(f"no gradeable end state: {exc}")
         findings = classify(
@@ -334,6 +413,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
             passed=grade.passed,
             failures=grade.failures,
             timed_out=bool(record.get("timed_out")),
+            interference=report,
         )
         results.append(
             RunResult(
@@ -349,6 +429,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
                 artifacts=run_dir,
                 harness_error=record.get("harness_error"),
                 scenario_path=scenario.path,
+                interference=report.as_dict() if report is not None else None,
             )
         )
     return results
@@ -386,7 +467,7 @@ def write_report(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Rebuild a report from a finished batch's run artifacts.
 
-        uv run python -m llmux.runner.analyze llmux/runner/reports/<stamp>/runs
+    uv run python -m llmux.runner.analyze llmux/runner/reports/<stamp>/runs
     """
     import argparse
 

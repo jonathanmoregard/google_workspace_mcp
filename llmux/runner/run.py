@@ -27,7 +27,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from llmux.runner import interference as interference_mod
 from llmux.runner import session as session_mod
+from llmux.runner.interference import InterferenceReport
 from llmux.runner.scenarios import (
     GradeResult,
     Scenario,
@@ -87,6 +89,8 @@ class RunResult:
     artifacts: Optional[Path] = None
     harness_error: Optional[str] = None
     scenario_path: Optional[Path] = None
+    #: What the scripted second editor did, when the scenario declared one.
+    interference: Optional[dict[str, Any]] = None
 
     @property
     def passed(self) -> bool:
@@ -109,6 +113,7 @@ class RunResult:
             # Recorded so a report can be rebuilt from artifacts alone after
             # the taxonomy rules change (see analyze.reanalyze).
             "scenario_path": str(self.scenario_path) if self.scenario_path else None,
+            "interference": self.interference,
             "findings": [f.as_dict() for f in self.findings],
             "transcript": self.transcript.as_dict(),
         }
@@ -133,12 +138,16 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
     """Run one scenario against one model and grade the end state."""
     run_dir = prepare_run_dir(options.workdir, scenario.id, model)
     state_path = run_dir / "state.json"
+    # The interference script is the runner's, not the scenario's env: a
+    # scenario may ask for mock *modes* through meta.env, never for the paths
+    # the harness owns. Merged last so it wins outright.
+    interference_env = interference_mod.materialise(scenario, run_dir)
     config = session_mod.build_mcp_config(
         scenario.seed_path.resolve(),
         state_path,
         credentials_dir=run_dir / "creds",
         me=scenario.me,
-        extra_env=scenario.server_env,
+        extra_env={**scenario.server_env, **interference_env},
     )
     config_path = session_mod.write_mcp_config(run_dir / "mcp-config.json", config)
     argv = session_mod.build_claude_argv(
@@ -187,9 +196,18 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
     transcript = parse_stream_json(stdout.splitlines())
 
-    grade = _grade_from_state(scenario, state_path)
+    backend, grade = _load_and_grade(scenario, state_path)
     if grade.error and harness_error is None and not state_path.exists():
         harness_error = grade.error
+
+    report = InterferenceReport.from_backend(backend) if backend is not None else None
+    if report is not None and report.violations and harness_error is None:
+        # A broken interleaving means the run measured nothing. Surface it
+        # where a reader cannot miss it rather than letting it read as a
+        # failed agent.
+        harness_error = "interference broke a spec invariant: " + "; ".join(
+            report.violations[:3]
+        )
 
     findings = classify(
         ScenarioFacts.from_scenario(scenario),
@@ -197,6 +215,7 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         passed=grade.passed,
         failures=grade.failures,
         timed_out=timed_out,
+        interference=report,
     )
     result = RunResult(
         scenario_id=scenario.id,
@@ -211,6 +230,7 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         artifacts=run_dir,
         harness_error=harness_error,
         scenario_path=scenario.path,
+        interference=report.as_dict() if report is not None else None,
     )
     (run_dir / "run.json").write_text(
         json.dumps(result.as_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
@@ -218,15 +238,28 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
     return result
 
 
-def _grade_from_state(scenario: Scenario, state_path: Path) -> GradeResult:
-    """Read the server's end-state dump and grade it."""
+def _load_and_grade(
+    scenario: Scenario, state_path: Path
+) -> tuple[Optional[Any], GradeResult]:
+    """Read the server's end-state dump once, and grade it.
+
+    The backend comes back too, because under interference the same snapshot
+    also carries the interleaving (``backend.concurrency``) and re-reading
+    the file to get at it would risk grading one state and classifying
+    another.
+    """
     from mockdocs.state import StateFormatError, read_state
 
     try:
         backend = read_state(state_path)
     except StateFormatError as exc:
-        return GradeResult.crashed(f"no gradeable end state: {exc}")
-    return grade_backend(scenario, backend)
+        return None, GradeResult.crashed(f"no gradeable end state: {exc}")
+    return backend, grade_backend(scenario, backend)
+
+
+def _grade_from_state(scenario: Scenario, state_path: Path) -> GradeResult:
+    """Read the server's end-state dump and grade it."""
+    return _load_and_grade(scenario, state_path)[1]
 
 
 def dry_run(scenarios: Sequence[Scenario], models: Sequence[str]) -> int:
@@ -249,15 +282,27 @@ def dry_run(scenarios: Sequence[Scenario], models: Sequence[str]) -> int:
         for scenario in scenarios:
             run_dir = prepare_run_dir(root, scenario.id, "dry")
             state_path = run_dir / "state.json"
+            # Validating the interference script here is the whole point of a
+            # dry run: a malformed second editor should fail before tokens,
+            # not halfway through a batch.
+            try:
+                interference_env = interference_mod.materialise(scenario, run_dir)
+            except interference_mod.InterferenceError as exc:
+                print(f"  [FAIL] {scenario.id}: bad interference script: {exc}")
+                failures += 1
+                continue
             config = session_mod.build_mcp_config(
                 scenario.seed_path.resolve(),
                 state_path,
                 credentials_dir=run_dir / "creds",
                 me=scenario.me,
+                extra_env={**scenario.server_env, **interference_env},
             )
             session_mod.write_mcp_config(run_dir / "mcp-config.json", config)
             argv = session_mod.build_claude_argv(
-                scenario.brief, model=models[0], mcp_config_path=run_dir / "mcp-config.json"
+                scenario.brief,
+                model=models[0],
+                mcp_config_path=run_dir / "mcp-config.json",
             )
             try:
                 tools = session_mod.probe_server(config)
@@ -268,11 +313,18 @@ def dry_run(scenarios: Sequence[Scenario], models: Sequence[str]) -> int:
             review_tools = [t for t in tools if "suggest" in t or "review" in t]
             grade = _grade_from_state(scenario, state_path)
             status = "ok" if not grade.error else "GRADER ERROR"
+            declared = interference_mod.declared_interferences(scenario)
+            suffix = (
+                f", {len(declared)} interference(s): "
+                + ", ".join(i.name for i in declared)
+                if declared
+                else ""
+            )
             print(
                 f"  [{status}] {scenario.id} ({scenario.difficulty}): "
                 f"{len(tools)} tools ({len(review_tools)} review), "
                 f"seed grade pass={grade.passed} score={grade.score:.2f}, "
-                f"argv={len(argv)} args"
+                f"argv={len(argv)} args{suffix}"
             )
             if grade.error:
                 failures += 1

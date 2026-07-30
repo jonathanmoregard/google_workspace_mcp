@@ -68,7 +68,61 @@ CLASSES: dict[str, str] = {
         "HARNESS FAULT, not an agent mistake: the mock MCP server never "
         "became reachable, so the run had no tools to use."
     ),
+    # -- concurrency (interleaved runs only) --------------------------------
+    # These fire only when a scenario declares interferences, so every batch
+    # before them is unaffected and the existing classes above keep their
+    # exact meaning. Note the deliberate overlap with `stale_state`: that
+    # class means "the run invalidated its own id", this one means "somebody
+    # else did". A single call can legitimately raise both -- read them
+    # together, do not net them off.
+    "acted_on_vanished_id": (
+        "Acted on a suggestion/comment id that a CONCURRENT EDITOR had "
+        "already resolved, deleted or merged away. Unlike stale_state the "
+        "run did nothing wrong to cause it -- the question is whether the "
+        "tool surface let it find out."
+    ),
+    "wrote_with_stale_indexes": (
+        "The dangerous one: a write carried indexes computed before another "
+        "editor shifted the text, and the write SUCCEEDED. No error, no "
+        "rejection -- the edit simply landed somewhere else. Silent "
+        "corruption, only visible by comparing what the write hit against "
+        "what the agent aimed at."
+    ),
+    "ignored_concurrent_change": (
+        "The document changed under the run and it never read the document "
+        "again afterwards, so it finished on a picture it knew to be "
+        "possibly stale."
+    ),
+    "recovered_after_conflict": (
+        "POSITIVE SIGNAL, counted deliberately: after the document changed "
+        "underneath it, the run re-read, adapted, and did not blind-retry "
+        "the call that failed. Necessary but not sufficient for a pass -- "
+        "the grade decides whether the adaptation was the right one."
+    ),
+    "harness_interference_fault": (
+        "HARNESS FAULT, not an agent mistake: the scripted second editor "
+        "broke a spec invariant, failed to apply, or never fired at all. A "
+        "run carrying this measured nothing and its grade must be discarded."
+    ),
 }
+
+#: Classes that are good news. Kept as data so a report can render them
+#: differently instead of listing a success under "mistake taxonomy".
+POSITIVE_CLASSES = frozenset({"recovered_after_conflict"})
+
+#: Classes that mean the harness, not the agent, is at fault.
+HARNESS_CLASSES = frozenset({"harness_mcp_unavailable", "harness_interference_fault"})
+
+#: Classes that only exist for interleaved (concurrent-editor) runs.
+CONCURRENCY_CLASSES = frozenset(
+    {
+        "acted_on_vanished_id",
+        "wrote_with_stale_indexes",
+        "ignored_concurrent_change",
+        "recovered_after_conflict",
+        "harness_interference_fault",
+    }
+)
 
 #: A class showing up in at least this share of runs is a systemic finding.
 REPEAT_RUN_SHARE = 0.30
@@ -423,6 +477,118 @@ def _grade_findings(failures: Sequence[str]) -> list[Finding]:
     return out
 
 
+def _concurrency_findings(report: Any) -> list[Finding]:
+    """Classify what a concurrent editor did to the run.
+
+    Every rule here reads the SERVER's own call log
+    (:class:`mockdocs.concurrency.ConcurrencyRecord`), not the transcript.
+    That log is the ground truth about what reached the mock and in what
+    order, and its ordinals are what the interference triggers fired on -- so
+    a finding can cite the exact call the other editor's edit landed next to.
+    ``call_index`` on these findings is therefore a 1-based server-side agent
+    call ordinal, not a transcript block index.
+    """
+    if report is None:
+        return []
+
+    findings: list[Finding] = []
+
+    # Harness honesty first: if the interleaving itself misbehaved, nothing
+    # below is evidence about the agent.
+    for violation in report.violations:
+        findings.append(
+            Finding(
+                "harness_interference_fault",
+                f"the scripted second editor broke a spec invariant: {violation}",
+                source="interference",
+            )
+        )
+    for name in report.unfired:
+        findings.append(
+            Finding(
+                "harness_interference_fault",
+                f"declared interference {name!r} never fired, so this run never "
+                "met the concurrent change it was built to measure",
+                source="interference",
+            )
+        )
+    for name, why in report.ineffective:
+        findings.append(
+            Finding(
+                "harness_interference_fault",
+                f"interference {name!r} fired but changed nothing: {why}",
+                source="interference",
+            )
+        )
+    if not report.fired:
+        return findings
+
+    vanished = report.vanished_ids
+    for identifier, at_call in sorted(vanished.items()):
+        for call in report.calls_referencing(identifier):
+            if call.ordinal <= at_call or call.ok is True:
+                continue
+            findings.append(
+                Finding(
+                    "acted_on_vanished_id",
+                    f"{call.tool} (agent call {call.ordinal}) targeted "
+                    f"{identifier!r}, which another editor removed at call "
+                    f"{at_call}",
+                    source="interference",
+                    tool=call.tool,
+                    call_index=call.ordinal,
+                )
+            )
+    for first, second in report.blind_retries():
+        findings.append(
+            Finding(
+                "acted_on_vanished_id",
+                f"blind retry: {second.tool} (agent call {second.ordinal}) "
+                f"repeated the call that failed at {first.ordinal} without "
+                "reading the document in between",
+                source="interference",
+                tool=second.tool,
+                call_index=second.ordinal,
+            )
+        )
+    for call, shift in report.stale_index_writes():
+        findings.append(
+            Finding(
+                "wrote_with_stale_indexes",
+                f"{call.tool} (agent call {call.ordinal}) succeeded carrying "
+                f"indexes computed before another editor moved the text by "
+                f"{shift:+d} UTF-16 units, and it never re-read in between",
+                source="interference",
+                tool=call.tool,
+                call_index=call.ordinal,
+            )
+        )
+
+    first_fire = report.first_fire
+    if not report.reread_after_change():
+        findings.append(
+            Finding(
+                "ignored_concurrent_change",
+                f"the document changed at agent call {first_fire} and the run "
+                "never read it again",
+                source="interference",
+                call_index=first_fire,
+            )
+        )
+    elif not report.blind_retries() and not report.stale_index_writes():
+        findings.append(
+            Finding(
+                "recovered_after_conflict",
+                f"the document changed at agent call {first_fire}; the run "
+                "re-read afterwards, did not blind-retry and did not write "
+                "through the change",
+                source="interference",
+                call_index=first_fire,
+            )
+        )
+    return findings
+
+
 def _mark_repeats(findings: list[Finding]) -> list[Finding]:
     counts: dict[str, int] = {}
     for finding in findings:
@@ -447,8 +613,15 @@ def classify(
     passed: bool,
     failures: Sequence[str] = (),
     timed_out: bool = False,
+    interference: Any = None,
 ) -> list[Finding]:
-    """All findings for one run, with in-run repeats flagged."""
+    """All findings for one run, with in-run repeats flagged.
+
+    ``interference`` is an optional
+    :class:`llmux.runner.interference.InterferenceReport`. It is keyword-only
+    and defaults to ``None`` so that every existing caller -- and every
+    re-analysis of a pre-concurrency batch -- classifies exactly as before.
+    """
     calls = transcript.agent_tool_calls
     findings: list[Finding] = []
 
@@ -475,6 +648,7 @@ def classify(
     findings.extend(_wrong_tool_findings(facts, calls))
     findings.extend(_inversion_findings(facts, calls))
     findings.extend(_grade_findings(failures))
+    findings.extend(_concurrency_findings(interference))
 
     writes = [c for c in calls if c.is_write and not c.failed]
     if writes:

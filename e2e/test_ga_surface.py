@@ -46,6 +46,28 @@ _COMMENT_ID_RE = re.compile(r"Comment ID: ([A-Za-z0-9._-]+)")
 _REPLY_ID_RE = re.compile(r"Reply ID: ([A-Za-z0-9._-]+)")
 
 
+def _poll_for_tool_error(
+    mcp, name: str, arguments: dict, *, needle: str, timeout: float = 180.0
+) -> str:
+    """Wait for a tool call to start failing with ``needle`` in its error.
+
+    Only for genuinely eventually-consistent server state (see the deletion
+    note in test_comment_ops_on_deleted_doc_map_404). Returns the error text.
+    """
+
+    def check():
+        result = mcp.call_tool_raw(name, dict(arguments))
+        text = tool_text(result)
+        return text if (result.is_error and needle in text) else None
+
+    return poll_until(
+        check,
+        timeout=timeout,
+        interval=5.0,
+        description=f"{name} to fail with {needle!r}",
+    )
+
+
 def _comment_id_from(confirmation: str) -> str:
     match = _COMMENT_ID_RE.search(confirmation)
     assert match, f"no 'Comment ID:' in tool output: {confirmation[:300]!r}"
@@ -399,7 +421,17 @@ def test_comment_ops_on_deleted_doc_map_404(
     doc_tracker.mark_cleaned(doc_id, "delete")
 
     args = {"user_google_email": ga_auth.email, "document_id": doc_id}
-    error_text = mcp.expect_tool_error("list_document_comments", dict(args))
+
+    # Deletion is EVENTUALLY consistent, empirically (2026-07-30, first real
+    # run). Immediately after files.delete returns, reads still succeed:
+    # drive.comments.list yields an empty list and docs.documents.get serves
+    # the full document, while drive.files.get already 404s. All three settle
+    # on 404 within ~90s. So poll for the 404 rather than demanding it at
+    # once - and note that an agent which deletes and then immediately
+    # verifies will observe a stale success.
+    error_text = _poll_for_tool_error(
+        mcp, "list_document_comments", dict(args), needle="404"
+    )
     assert "404" in error_text
 
     error_text = mcp.expect_tool_error(

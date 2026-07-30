@@ -80,6 +80,15 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="Local callback port (default 0 = pick a free port)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=1800,
+        help="Seconds to wait for the browser callback (default 1800). The "
+        "library default is short enough that a real consent flow - including "
+        "the unverified-app interstitial - can outrun it, and the auth code "
+        "is then unusable because its PKCE verifier died with the listener.",
+    )
     args = parser.parse_args(argv)
 
     validate_client_file(args.client)
@@ -98,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         host="localhost",
         port=args.port,
         open_browser=False,
+        timeout_seconds=args.timeout,
         authorization_prompt_message=(
             "\nOpen this URL in a browser and approve access:\n\n    {url}\n\n"
             "Waiting for the local callback...\n"

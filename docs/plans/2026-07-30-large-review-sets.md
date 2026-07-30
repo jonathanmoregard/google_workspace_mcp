@@ -82,6 +82,32 @@ So a degradation curve is readable directly off the score, and the shape of
 the failure (dropped cards? wrong rule? never deferred?) is readable off the
 per-card failures.
 
+## What one real run cost
+
+A single sonnet run against the **30-card** tier (run 20260730-224005; the
+reports directory is gitignored, so reproduce with `uv run python -m
+llmux.runner.run --corpus llmux/scenarios/stress --scenario
+stress-030-faq-copyedit --models sonnet`) passed at score 1.00 in 17 turns
+and 62 seconds, using one `list_document_suggestions`, one
+`get_doc_review_view` and 14 writes, with **zero tool errors**. So the tool
+*syntax* is not the constraint even at 30 cards, which is the result the
+stress corpus was built to isolate.
+
+The cost is. That run reported:
+
+| | tokens |
+| --- | ---: |
+| cache creation (input) | 88,738 |
+| cache read (input) | 163,934 |
+| output | 6,420 |
+| **cost** | **$0.68** |
+
+The ~16,000-token read set is re-sent on every turn, so total input scales as
+*context × turns*, and both terms grow with card count: the 120-card tier has
+2.6x the read set and ~6x the writes. That is the mechanism by which a review
+tool that works fine at 30 cards becomes unusable at 300, and it is exactly
+what `fields="summary"` and pagination attack.
+
 ## Recommended surface change
 
 **Minimal, additive, no behaviour change for existing callers.** Four

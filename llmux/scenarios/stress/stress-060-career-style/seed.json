@@ -1,0 +1,443 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-stress-060-compute-governance",
+      "title": "Career review: compute governance",
+      "text": "Career review: compute governance\nLast updated March 2025. Reading time: about 14 minutes.\nIn a nutshell\nCompute governance is the practice of treating the physical supply chain behind advanced AI systems as a lever for policy. Training a frontier model still requires tens of thousands of specialised chips, those chips are made by a handful of firms in a handful of countries, and the resulting bottleneck is one of the very few inputs to AI development that a government can actually observe. We think this makes it an unusually tractable place to work on reducing risks from advanced AI, and we expect demand for people who understand both the technology and the policy to grow substantially over the next decade.\nRecommended if you have a background in semiconductor engineering, export control law, economics, or national security policy, and you are comfortable working in organisations where the right answer is contested and the evidence is thin.\nIt is worth noting that this path is much less established than the adjacent careers in AI research or in traditional arms control, so early entrants are still writing the job descriptions.\nWhy we think this problem is pressing\n1. The hardware supply chain is extremely concentrated. A single Dutch firm produces every extreme ultraviolet lithography machine in the world. One Taiwanese foundry fabricates the vast majority of leading-edge logic. Three firms design almost all of the accelerators used to train frontier models. Concentration of this kind is rare, and it is what makes compute governable at all.\n2. Compute is measurable in a way that algorithms are not. You can count chips, meter the power draw of a data centre, and audit a cloud provider's customer records. You cannot count ideas. Policy that attaches to compute therefore has a verification story, and verification is the part where most arms control regimes get stuck.\n3. Training runs keep getting larger. The compute used in the largest training runs has grown by roughly 4-5x per year for over a decade. If that trend continues, the capital requirements for frontier development will keep rising and the number of actors able to reach the frontier will stay small. That is good news for governance and bad news for competition.\n4. The controls that exist are already leaky. The export controls introduced in October 2022, and tightened repeatedly since, are the largest natural experiment we have. They have clearly slowed some actors down. They have also produced smuggling networks, chips redesigned to sit just below the thresholds, and a great deal of diplomatic friction with allies who host parts of the supply chain.\nWe do not think compute governance solves the alignment problem. It buys time, it creates enforcement points, and it makes agreements verifiable. Those things are worth a lot, but they are instrumental, and it is important to remember that a well-monitored race is still a race.\nWhat the work actually involves\nTechnical analysis. Estimating the compute required for a given capability, tracking performance per dollar across chip generations, and modelling how quickly a restricted actor could substitute older hardware for newer.\nPolicy design. Writing the actual text of a threshold, deciding whether it should be denominated in FLOP, in chip count, or in interconnect bandwidth, and thinking carefully about how each choice will be gamed.\nVerification and enforcement. Designing on-chip mechanisms, data centre inspection regimes, and know-your-customer requirements for cloud providers, all of which have to survive contact with commercial reality.\nDiplomacy. Persuading allied governments to align their control lists, because a unilateral control on a globally traded good mostly relocates the trade rather than stopping it.\nIndustry engagement. Working with firms who reasonably object to being turned into instruments of foreign policy, and who know more about their own supply chains than any regulator does.\nA typical week at a policy think tank might be two days of research, one day of writing, and two days of meetings with officials, journalists and company staff. In government the ratio shifts sharply towards meetings, and the writing that survives is much shorter. At a frontier lab the work is closer to product engineering than to policy, because the mechanisms have to ship.\nThe roles themselves sit in five broad places. Think tanks and academic centres, which offer the most intellectual freedom and the least direct influence. Government, where the influence is real but arrives slowly and is heavily mediated by whoever holds the relevant office. Frontier laboratories, where the compensation is high and the independence is limited. Chip firms and cloud providers, where you will spend a lot of time explaining to colleagues why a rule that costs them money is nonetheless reasonable. And a small number of nonprofits doing technical standards work, which is unglamorous and possibly the highest-leverage option of the lot.\nWe would encourage people to think about these as a sequence rather than a choice. Almost everyone we would point to as unusually effective in this area has worked in at least two of the five, and the combination of an industry stint with a policy role appears to be particularly valuable, because it is very hard to write an implementable rule about a process you have never seen operate.\nWho is a good fit\nPeople who do well here tend to share a few traits. They are comfortable being the only person in the room who understands both the silicon and the statute. They can write a two-page memo that a busy official will actually read. They tolerate working on questions where the honest answer is that nobody knows, and they do not need public credit, because the best outcomes in this field are invisible.\nYou do not need a PhD. Roughly half the people we know doing this work well came from law, economics or journalism and learned the technical material on the job. You do need enough numeracy to sanity-check a FLOP estimate, and enough patience to read a 200-page rulemaking document without skimming.\nIt is probably a bad fit if you want fast feedback loops, if you find political ambiguity draining, or if you would be unhappy spending several years building credibility before anyone asks your opinion. It is also a bad fit if you need to be certain that your work is helping, because a plausible reading of the last three years is that the controls have accelerated exactly the domestic capability they were meant to slow.\nOne trait we have started to weight more heavily is a tolerance for being disliked by people you respect. Compute governance sits between a research community that values openness and a security community that values control, and anyone doing the work seriously will at some point be told by thoughtful colleagues that they are on the wrong side. People who need consensus to feel comfortable tend to leave within two years.\nHow to enter the field\n1. Build a public track record. Write two or three short analyses of a live policy question and publish them. This is the single highest-return thing an outsider can do, and it is how a large fraction of current practitioners were first noticed.\n2. Get one deep technical or legal competence. Semiconductor process technology, export control law, cloud infrastructure, or the economics of general purpose technologies. Breadth is easy to acquire later, and depth is what gets you hired.\n3. Take an entry role adjacent to the field. Congressional staff, a national laboratory, a chip firm's policy team, or a research assistant position at a think tank. Each of these gives you either the technical exposure or the institutional access, and you can pick up the other.\n4. Move towards the bottleneck. Once inside, the highest-leverage roles are the ones nobody wants: the interagency coordination job, the standards committee, the team that has to write the implementing guidance. This is a fast-moving area and some of the details below will date quickly.\n5. Learn the institutions, not just the topic. A great deal of what determines whether a proposal goes anywhere is procedural: which committee has jurisdiction, which agency writes the guidance, which trade association will be consulted, and how long each of those steps takes. This knowledge is boring, it is not taught anywhere, and it is a large part of what separates people who publish from people who change things.\nSalaries in this space vary enormously. A research analyst at a mid-sized think tank might start near the bottom of that range, while a policy lead at a large laboratory sits near the top. None of this is investment advice.\nWhat we might be getting wrong\nWe may be overrating tractability. Export controls are a blunt instrument, and the historical record for technology controls on dual-use goods is mixed at best. It could be that the entire approach buys eighteen months and a worse diplomatic environment.\nWe may be underrating the substitution problem. Algorithmic efficiency has been improving quickly, and if the compute needed for a given capability keeps falling, then hardware governance becomes a control on a moving target.\nWe may be wrong about who matters. Most of our attention has gone to training compute, but inference is now a large and growing share of total spending, and the governance story for inference is much weaker. We have written about this at greater length elsewhere.\nFinally, we are aware that our sources skew towards a small community in Washington, London and the Bay Area, which is exactly the sort of thing that produces confident consensus on a question that is genuinely open.\nOur take\nWe also want to flag a disagreement inside our own team. One view is that the value of this work comes almost entirely from the possibility of a future international agreement, and that everything happening now is preparation for a negotiation that may never occur. The other view is that the day-to-day work of writing better thresholds and closing enforcement gaps is valuable on its own terms, regardless of whether any grand bargain materialises. We have not resolved this, and where you land on it should probably affect which of the five settings above you choose.\nWe rate compute governance as one of the more promising paths for people who want to reduce risks from advanced AI and who are not going to become machine learning researchers. The field is small, the demand is real, and the skills transfer well if the strategic picture changes. We would encourage more people with hard technical backgrounds to consider it, particularly people who already understand semiconductors, since that expertise is genuinely scarce and cannot be picked up quickly.\nIf you are considering this path, our advising team would like to hear from you, and we can usually introduce promising candidates to people already working on cutting-edge model policy.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 2430,
+          "end": 2472,
+          "text": "The best public estimates suggest the controls delayed some actors by one to two years, at the cost of accelerating domestic substitution.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 260,
+          "end": 268,
+          "text": "needs",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 7162,
+          "text": " [citation needed]",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 10887,
+          "end": 10914,
+          "text": "is hard to pick up quickly",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 5454,
+          "end": 5459,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 4279,
+          "text": "Even so, in",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 1367,
+          "end": 1387,
+          "text": "most",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 3701,
+          "end": 3708,
+          "text": " that ",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 7946,
+          "end": 7953,
+          "text": "toward",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 7701,
+          "text": " (see the references at the end)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 8686,
+          "end": 8725,
+          "text": "Compensation ranges from roughly $70,000 in a small nonprofit to well above $300,000 at a frontier lab, and the highest-paying roles are rarely the highest-impact ones.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 2719,
+          "end": 2734,
+          "text": "much",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 2043,
+          "text": " (see the references at the end)",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 9841,
+          "text": " in our view",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 5044,
+          "end": 5055,
+          "text": "even so",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 7271,
+          "end": 7279,
+          "text": "analyzes",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 885,
+          "end": 898,
+          "text": "organizations",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 8375,
+          "end": 8390,
+          "text": "Much",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1256,
+          "text": ", on the best public numbers we could find",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 2280,
+          "text": " we think",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 979,
+          "text": " on balance",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 2684,
+          "text": "In practice, they",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 9189,
+          "end": 9224,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 11488,
+          "end": 11506,
+          "text": "frontier model",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 2218,
+          "end": 2234,
+          "text": "may keep rising",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 4878,
+          "end": 4900,
+          "text": "depends heavily on",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 228,
+          "text": "Even so, training",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 9363,
+          "end": 9368,
+          "text": "imprecise",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 8587,
+          "end": 8594,
+          "text": " that ",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 8388,
+          "text": " on balance",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 2028,
+          "end": 2159,
+          "text": "Estimates of the growth rate in training compute cluster around 4x per year since 2010, though the series is noisy and the last two years are consistent with a slowdown.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 1576,
+          "end": 1659,
+          "text": "Concentration at every layer of the stack is what makes compute governable at all, and it is also the thing most likely to erode as other suppliers mature.",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 8454,
+          "end": 8463,
+          "text": ". You",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 11743,
+          "text": " on balance",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 4815,
+          "end": 4822,
+          "text": "markedly",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 3735,
+          "end": 3744,
+          "text": "modeling",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 5172,
+          "text": "In practice, government",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 1806,
+          "end": 1813,
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 5839,
+          "end": 5848,
+          "text": "exceptionally",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 2578,
+          "text": " on balance",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 612,
+          "end": 620,
+          "text": ". We",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 10603,
+          "text": " arguably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 9931,
+          "end": 9946,
+          "text": "18 months",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 3448,
+          "text": "By contrast, those",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4136,
+          "end": 4142,
+          "text": "center",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3208,
+          "end": 3219,
+          "text": ". A",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 708,
+          "end": 722,
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 2889,
+          "end": 2907,
+          "text": "real-world test",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 7547,
+          "end": 7559,
+          "text": ". Anyone",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 2423,
+          "end": 2436,
+          "text": "4 to 5 times per year",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 11251,
+          "text": "By contrast, we",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 9285,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 9572,
+          "end": 9582,
+          "text": "greatly",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1872,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 10256,
+          "end": 10275,
+          "text": "compute governance",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 8856,
+          "end": 8943,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 995,
+          "end": 1039,
+          "text": "This path",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 3359,
+          "end": 3423,
+          "text": "Compute governance does not solve the alignment problem, and treating it as though it does is the most common mistake we see newcomers make.",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 7997,
+          "text": " we think",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 12120,
+          "text": " reportedly",
+          "author": "priya"
+        }
+      ],
+      "comments": [
+        {
+          "content": "This reads as more confident than the evidence behind it. Can we soften?",
+          "quote": "Concentration of this kind is rare, and it is what makes compute governable at all.",
+          "author": "marcus"
+        },
+        {
+          "content": "Is this still true as of this year? The figure looks like it is from the old draft.",
+          "quote": "They have also produced smuggling networks, chips redesigned to sit just below the thresholds, and a great deal of diplomatic friction with allies who host parts of the supply chain.",
+          "author": "marcus"
+        },
+        {
+          "content": "Who is the audience for this paragraph? It feels aimed at a different reader.",
+          "quote": "It buys time, it creates enforcement points, and it makes agreements verifiable.",
+          "author": "priya"
+        },
+        {
+          "content": "Can we cut this? It repeats the point made two paragraphs above.",
+          "quote": "Government, where the influence is real but arrives slowly and is heavily mediated by whoever holds the relevant office.",
+          "author": "marcus"
+        },
+        {
+          "content": "I would like a number here rather than a qualitative claim.",
+          "quote": "And a small number of nonprofits doing technical standards work, which is unglamorous and possibly the highest-leverage option of the lot.",
+          "author": "sam"
+        },
+        {
+          "content": "Flagging for legal review before this goes live.",
+          "quote": "We would encourage people to think about these as a sequence rather than a choice.",
+          "author": "marcus"
+        },
+        {
+          "content": "This is the strongest claim in the piece and it has no citation.",
+          "quote": "Congressional staff, a national laboratory, a chip firm's policy team, or a research assistant position at a think tank.",
+          "author": "dana"
+        }
+      ]
+    }
+  ]
+}

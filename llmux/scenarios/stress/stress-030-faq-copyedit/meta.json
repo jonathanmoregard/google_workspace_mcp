@@ -1,0 +1,29 @@
+{
+  "id": "stress-030-faq-copyedit",
+  "difficulty": 5,
+  "steps": 14,
+  "tags": [
+    "stress",
+    "high-volume",
+    "multi-author",
+    "predicate",
+    "section",
+    "overlap",
+    "context-pressure",
+    "n30"
+  ],
+  "authors": [
+    "priya",
+    "marcus",
+    "dana",
+    "sam",
+    "nadia"
+  ],
+  "n_suggestions": 30,
+  "tier": "stress",
+  "document_id": "mockdoc-stress-030-advice-faq",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

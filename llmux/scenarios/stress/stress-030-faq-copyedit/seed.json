@@ -1,0 +1,230 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-stress-030-advice-faq",
+      "title": "Frequently asked questions about our career advice",
+      "text": "Frequently asked questions about our career advice\nThese are the questions our advisors get most often from readers planning a high-impact career. We update this page periodically.\nDo I have to work on the problems you rank highest?\nNo, and we would gently push back on the framing. Our problem rankings are an attempt to answer a general question: if you knew nothing about a person, which problems would you point them at? You know a great deal about yourself, and that information should usually dominate.\nThe ranking is most useful as a way of noticing options you had not considered. It is least useful as a tiebreaker between two roles you are already excited about, because at that point the differences in personal fit are almost certainly larger than the differences in problem score. The list is a starting point for your own thinking.\nThere is also a supply consideration that we do not emphasise enough. If a problem is highly ranked and widely publicised, it may already be attracting more people than it can absorb, and the marginal value of one more person falls accordingly. We try to account for this, and we do not always succeed.\nIs it too late to change career?\nAlmost certainly not, though the honest answer depends on what you are changing to and how much runway you have.\nMost people who change career successfully do it in two steps rather than one. Someone moving from corporate law to policy work rarely lands in a policy role directly; they take a role that uses the legal training in a new sector, then move again. Each step is small enough to be credible to the person hiring.\nThe main constraints we see are financial rather than reputational. People with dependants, visa requirements, or debt have much less room to take a pay cut or an entry-level role, and advice that ignores this is not advice, it is a description of a lifestyle. If that is your situation, the useful question is which moves preserve your options rather than which move is optimal.\nAge itself matters less than people expect. We have advised people who made substantial transitions in their fifties. What changes with age is not capability but the cost of being a beginner again, and that cost is mostly social.\nWhat if I am not technical?\nA great deal of the most valuable work is not technical, and we think our own materials have historically overcorrected towards research roles.\nOperations, communications, management, grantmaking, and policy all sit on the critical path for most of the problems we care about, and all of them are chronically undersupplied. Organisations working on these problems routinely tell us that their binding constraint is a good operations lead, not another researcher.\nThere is a real caveat. Some of these roles require you to understand the technical work well enough to evaluate it, even if you never do it yourself. A grantmaker in AI safety who cannot read a paper is at a serious disadvantage. The requirement is comprehension, not production, and that is a much lower bar than people assume.\nThe other thing we would say to people who describe themselves as non-technical is that the label is often doing more work than it deserves. Plenty of people who say it mean that they did not study a technical subject at university, which is a fact about their past rather than a constraint on their future. If you can read a technical argument carefully and notice when it does not follow, you have the part that is hard to teach.\nShould I earn to give?\nEarning to give is a good fit for a minority of people. It was more central to our advice ten years ago than it is now, for two reasons: the organisations we care about became less funding-constrained and more talent-constrained, and the range of directly impactful roles widened considerably.\nIt still makes sense in several situations. If you have unusually high earning potential, if your alternative roles are ones where you would be readily replaced, if you have obligations that make a low salary impossible, or if you want to build career capital in a lucrative field while you decide, then it can be an excellent choice.\nThe failure mode we see most often is people who plan to earn to give, succeed at the earning, and quietly stop giving. Making the commitment public and automatic is the standard remedy and it works better than willpower.\nA second failure mode is subtler and we have only recently started warning people about it. Someone takes a lucrative role intending to give, finds that the role also builds career capital, and then discovers five years later that the skills they built are not the ones any of the organisations they admire actually need. Earning to give is a plan about money, and it is easy to let it quietly become a plan about a career without ever deciding to.\nHow much does personal fit matter?\nPersonal fit is the single biggest factor in how much good you do. The distribution of outcomes within almost any career path is wide, and the difference between being excellent at something and being adequate at it is usually larger than the difference between two adjacent paths.\nTesting fit is cheaper than most people think. A short project, a summer internship, a volunteer stint, or a serious conversation with three people already doing the job will tell you more than a year of deliberation. Several of these answers are adapted from our podcast.\nWe would add one caution. Enjoyment and fit are correlated but not identical. Enjoying the day-to-day is a strong signal, and so is being unusually good at the thing relative to your peers, and those two signals sometimes point in different directions.\nPeople also underrate how much fit depends on the specific team rather than the abstract job. Two research roles with identical descriptions at two organisations can differ enormously in how much autonomy you get, how quickly you receive feedback, and whether your manager has time for you. When people tell us a path did not work for them, the reasons they give are usually about a particular workplace, not about the work.\nIf you are early in your career and genuinely cannot tell, the practical advice is to optimise for learning rate over the first few years. A role where you are visibly improving every month builds career capital that transfers, and it also gives you much better information about what you are suited to than any amount of reflection will.\nWhat about jobs that are good but not on your list?\nTake them, if they are the best option available to you.\nAn impactful career does not have to be a legible one, and our list is built from public information about a few dozen paths, so it necessarily misses most of what exists. There are thousands of roles that contribute meaningfully to solving important problems and that we have never written about, either because the path is idiosyncratic or because nobody on our team happened to look at it.\nThe test we would apply is not whether a role appears on our list. It is whether the work addresses a problem that is large, neglected and tractable, whether you will be good at it, and whether it builds transferable skills for the next step. A role that passes those three tests and is absent from our list is a role we have not got to yet.\nHow confident are you in any of this?\nLess than the tone of our writing sometimes suggests, and we are trying to fix that.\nWe revise our rankings roughly once a year. Our track record on specific predictions is mixed. We were early on some things and slow on others, and several positions we held confidently five years ago now look wrong to us.\nOur advice is aimed at a narrow audience and we know it. It assumes a degree of flexibility, mobility and financial cushion that most people in the world do not have. Within that audience we think the advice is good. Outside it, please treat it as a set of considerations rather than a plan.\nThe single thing we would most like readers to take away is a habit rather than a conclusion: ask what problem you are contributing to, ask how much difference your particular contribution makes, and revisit both answers as the world changes. You can skip this section if you have read our key ideas series.\nHow do I get in touch?\nOur one-on-one advising is free and is aimed at people who are seriously considering a change in the next year or two. We prioritise applications where we think a conversation would actually change what someone does, which in practice means people with a specific decision in front of them.\nIf advising is not a fit, our job board, our podcast, and our newsletter are all free, and none of them require an application. We read replies to the newsletter and we do respond, though it can take a few weeks.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 311,
+          "end": 318,
+          "text": "try",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6260,
+          "end": 6274,
+          "text": "transferable skills",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 4494,
+          "end": 4499,
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 249,
+          "text": " arguably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 5532,
+          "end": 5541,
+          "text": "exceptionally",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 3522,
+          "text": " in our view",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 4055,
+          "end": 4069,
+          "text": "transferable skills",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 2531,
+          "end": 2540,
+          "text": ". All",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 5374,
+          "end": 5429,
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 8020,
+          "text": " on balance",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 1974,
+          "end": 1981,
+          "text": " that ",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 8228,
+          "text": " on balance",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3515,
+          "end": 3582,
+          "text": "Earning to give makes sense when your expected earnings are unusually high, when the roles you would otherwise take are well supplied with talent, and when you are confident you will keep giving.",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 8697,
+          "end": 8706,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3060,
+          "end": 3098,
+          "text": "To people",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 5537,
+          "end": 5555,
+          "text": "usually tells you more",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 8089,
+          "end": 8116,
+          "text": "the advice is good",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 2382,
+          "end": 2389,
+          "text": "toward",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6107,
+          "end": 6117,
+          "text": "greatly",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 3249,
+          "end": 3254,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 4781,
+          "end": 4795,
+          "text": "transferable skills",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 2939,
+          "text": " on balance",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 2262,
+          "end": 2277,
+          "text": "Much",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 8511,
+          "end": 8587,
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 944,
+          "end": 951,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1567,
+          "text": " on balance",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 5151,
+          "text": " we think",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 910,
+          "end": 919,
+          "text": "emphasize",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 8762,
+          "end": 8772,
+          "text": "prioritize",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 3784,
+          "text": " reportedly",
+          "author": "priya"
+        }
+      ],
+      "comments": [
+        {
+          "content": "Is this still true as of this year? The figure looks like it is from the old draft.",
+          "quote": "The ranking is most useful as a way of noticing options you had not considered.",
+          "author": "priya"
+        },
+        {
+          "content": "Who is the audience for this paragraph? It feels aimed at a different reader.",
+          "quote": "There is also a supply consideration that we do not emphasise enough.",
+          "author": "sam"
+        },
+        {
+          "content": "Can we cut this? It repeats the point made two paragraphs above.",
+          "quote": "If advising is not a fit, our job board, our podcast, and our newsletter are all free, and none of them require an application.",
+          "author": "dana"
+        },
+        {
+          "content": "I would like a number here rather than a qualitative claim.",
+          "quote": "We read replies to the newsletter and we do respond, though it can take a few weeks.",
+          "author": "dana"
+        }
+      ]
+    }
+  ]
+}

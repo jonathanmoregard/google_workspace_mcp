@@ -1,0 +1,854 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-stress-120-forecasting-evidence",
+      "title": "Does forecasting research actually improve decisions?",
+      "text": "Does forecasting research actually improve decisions?\nA summary of the evidence, written for people deciding whether to fund or work on it.\nSummary\nThe evidence that structured forecasting improves the accuracy of predictions is strong. The evidence that it improves the quality of decisions is much weaker, and the gap between those two claims is where most of the disagreement in this field lives. We reviewed 34 studies, 4 large tournaments, and interviewed 11 practitioners inside government and philanthropy. We conclude that the accuracy findings are real and replicated, that the decision-quality findings rest on a handful of case studies, and that the main bottleneck is institutional rather than methodological.\nThis piece is aimed at people choosing between research agendas, not at forecasters looking to improve their scores.\nThe claim we are evaluating\nThe strong version of the claim goes something like this: organisations make consequential decisions under uncertainty, they currently do so using unquantified expert judgement, that judgement is poorly calibrated, and replacing it with aggregated probabilistic forecasts would clearly produce better outcomes. Each of the four steps is doing real work, and it is important to remember that the last one is the only one anybody actually cares about.\nWe separate the claim into three testable pieces:\n1. Trained forecasters are more accurate than untrained ones on resolvable questions.\n2. Aggregation methods improve accuracy beyond what any individual achieves.\n3. Organisations that adopt these methods make measurably better decisions.\nThe first two are well supported. The third is not, and in our view it is the one worth working on.\nWhat the tournament evidence shows\nThe forecasting tournaments run between 2011 and 2015 remain the cleanest evidence available. Aggregating and extremising a group of trained forecasters beat the intelligence community's classified baseline by a wide margin. Individual accuracy also improved with a short course in probability training, typically an hour of material, which is a remarkably cheap intervention for the effect reported.\nThis is one of the most robust findings in the judgement literature. It has been replicated in at least three subsequent tournaments, including two run outside the United States and one restricted to epidemiological questions during 2020.\nA few details are worth stating precisely, because they are frequently misquoted:\nThe improvement from calibration training is roughly 10 percent in Brier score terms, not 10 percentage points of accuracy.\nThe superforecaster effect is partly selection and partly training, and the published decompositions disagree about the split.\nTeam effects are large and are usually reported as if they were individual effects.\nThe effect sizes reported in the literature are large. Forecasting tournaments select for a particular kind of question. This matters more than it might appear, and we return to it below.\nThere is a further result that gets less attention and that we think is more useful to funders. Accuracy improvements from aggregation are largely independent of accuracy improvements from training, which means the two interventions stack. An organisation that does neither can get most of the available benefit by doing the cheaper one first, and the cheaper one is almost always aggregation, because it requires no behaviour change from the people being aggregated.\nThe counterpoint, raised by several of the practitioners we interviewed, is that aggregation without training produces confident-looking numbers that nobody in the organisation understands well enough to argue with. Whether that is better or worse than unquantified judgement is genuinely unclear to us, and we could not find a study that addresses it.\nWhat happens inside organisations\nThis is where the evidence thins out dramatically. We identified nine organisations that have run an internal forecasting programme for at least two years: three government agencies, four philanthropic funders, and two firms. Of those, only two have attempted any evaluation of whether the forecasts changed a decision, and neither evaluation was blinded.\nThe practitioners we interviewed were consistent about the failure modes. Forecasts arrive after the decision has effectively been made. The questions that get asked are the ones that are easy to resolve rather than the ones that are load-bearing. Senior staff treat a probability as a hedge rather than as information. A number of respondents said that the main value they had observed was cultural: teams that forecast argue more precisely, even when nobody looks at the numbers afterwards.\nThat cultural claim is plausible and almost entirely unevidenced. A longer version of this section appeared in our 2023 annual review.\nThe two organisations that did attempt an evaluation are worth describing, because their designs illustrate how hard this is. The first compared decisions made in quarters when the forecasting team was active against quarters when it was not, and found no detectable difference, which the authors attribute to the questions being unrelated to the decisions actually taken. The second surveyed decision-makers about whether a forecast had changed their view, and found that 60 percent said yes, which tells us about recall and self-image rather than about decisions.\nWe want to be careful not to overclaim in the other direction. Absence of evidence here is genuinely weak evidence of absence, because the studies that would detect an effect have mostly not been run, and running them requires an organisation willing to randomise something it cares about. Very few organisations are willing to do that, and the ones that are tend to be unusual in ways that limit what you can generalise from them.\nA rough quantitative model\nTo make the comparison concrete we built a simple model of the value of an internal programme. The inputs are deliberately crude and we encourage readers to substitute their own.\nAnnual cost of a programme, 5 staff, fully loaded: $750,000\nDecisions informed per year: 40\nBudget governed by those decisions: $400M\nImprovement in expected value per decision, central estimate: 1.5 percent\nImplied annual value created: $6M\nWe estimate that a well-run internal forecasting programme costs about 0.2 percent of the budget it informs. The central estimate for value created is therefore roughly eight times the cost, but the confidence interval spans zero, because the improvement-per-decision term is not measured anywhere. We are effectively assuming the conclusion.\nThe honest summary of this model is that it tells you what you would need to believe, not what is true. We include it because several funders asked for a number, and a transparent bad number is more useful than a private one.\nLimitations of this evidence\nPublication bias is a serious concern here. The field is small, the researchers are often the same people who run the tournaments, and negative results about a method you developed are hard to publish and harder to fund.\nQuestion selection is the deeper problem. Tournament questions resolve within twelve months, have unambiguous resolution criteria, and concern events that a well-read generalist can reason about. The decisions that matter most to the organisations we studied have none of those properties. Whether a research programme will pay off over fifteen years is not a question a tournament can score.\nFinally, almost all of this work measures accuracy against outcomes rather than decision quality against counterfactuals. A perfectly calibrated forecast attached to a decision nobody revisits creates no value at all.\nA fourth limitation is that we have very little evidence about persistence. Nearly every programme we looked at was under five years old, and the two that are older have both been through a period of reduced activity. Whether an internal forecasting function survives a change of leadership, a budget cut, or a high-profile miss is an empirical question with essentially no data behind it, and it bears directly on how a funder should discount future value.\nWe should also note our own position. Two of the authors have previously received funding from an organisation that runs forecasting tournaments, and one has served as a paid question writer. We do not think this has changed our conclusions, which is exactly what someone in our position would say, so we mention it and let readers apply their own discount.\nWhat would change our mind\nWe would substantially raise our estimate if we saw a preregistered trial in which comparable teams made comparable decisions with and without forecast input, and the forecast-informed teams did measurably better on an outcome specified in advance.\nWe would substantially lower it if a serious replication effort found that the tournament effects shrink under stricter question selection, or if the two organisations currently attempting internal evaluations report null results.\nWe would also update on cheaper evidence than that. If someone published a careful account of a decision that was demonstrably changed by a forecast, with the counterfactual documented at the time rather than reconstructed afterwards, we would treat it as a meaningful data point even though it is a single case. The reason is that the theory currently has no worked example at all, and one worked example moves you a surprising distance when the prior is that far from zero.\nConversely, we would become considerably more pessimistic if the pattern reported by our interviewees turns out to be universal: that questions are selected for resolvability rather than importance, and that this is not a start-up problem but a stable equilibrium, because the people choosing questions are rewarded for a clean scoreboard rather than a useful one.\nWe think the case for funding more of this work is strong. The full dataset is available on request.\nReferences\nTetlock and Gardner, Superforecasting, 2015. The popular treatment; the underlying papers are more careful than the book.\nMellers et al., Psychological Science, 2014. The main tournament result, including the training effect.\nKarvetski et al., Decision Analysis, 2021. Aggregation methods compared on a common dataset.\nOur own interview notes, anonymised, 2024. We are grateful to several reviewers for comments on an earlier draft.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 4431,
+          "end": 4443,
+          "text": "essential",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 10346,
+          "text": ", and the spread across sources is wide",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 7701,
+          "end": 7708,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3391,
+          "end": 3399,
+          "text": "needs",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 10335,
+          "end": 10345,
+          "text": "anonymized",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 3738,
+          "end": 3748,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 4531,
+          "end": 4542,
+          "text": "Several",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 9426,
+          "end": 9435,
+          "text": ". One",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 2516,
+          "end": 2526,
+          "text": "10%",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 9972,
+          "text": " arguably",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 5633,
+          "end": 5641,
+          "text": "needs",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4264,
+          "end": 4277,
+          "text": "ways this goes wrong",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 4362,
+          "text": "That said, the",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 9596,
+          "end": 9609,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 9024,
+          "end": 9033,
+          "text": "now",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 5708,
+          "end": 5717,
+          "text": "randomize",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6343,
+          "end": 6451,
+          "text": "Our cost estimate of roughly 0.2% of the informed budget is built from four organisations that agreed to share figures, and the spread between them was more than threefold.",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 1451,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 2422,
+          "text": ", though the underlying estimate is uncertain",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2889,
+          "end": 2943,
+          "text": "Reported effect sizes are large, but the studies that report them are mostly small, unblinded, and run by researchers with a stake in the result.",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 10881,
+          "end": 10952,
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 10738,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 6857,
+          "text": "By contrast, the",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 5025,
+          "end": 5034,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 7661,
+          "end": 7674,
+          "text": "12 months",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 10425,
+          "text": " we think",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 2254,
+          "text": "By contrast, it",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3874,
+          "end": 3886,
+          "text": "organization",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 400,
+          "text": "For what it is worth, we",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 6906,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 6290,
+          "end": 6299,
+          "text": "program",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1671,
+          "text": " (Mellers et al., 2014)",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 5847,
+          "end": 5857,
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 4035,
+          "end": 4044,
+          "text": "judgment",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 9335,
+          "end": 9344,
+          "text": ". The",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 7239,
+          "end": 7282,
+          "text": "This model",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 8865,
+          "end": 8875,
+          "text": "before",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 4257,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 2239,
+          "text": " we think",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 7302,
+          "text": " probably",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 10083,
+          "end": 10095,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 7103,
+          "end": 7112,
+          "text": ". The",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 5146,
+          "end": 5215,
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 3715,
+          "end": 3724,
+          "text": "behavior",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 5461,
+          "text": " on balance",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 4251,
+          "end": 4264,
+          "text": "organizations",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 5293,
+          "text": " on balance",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 4325,
+          "end": 4334,
+          "text": "program",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 9352,
+          "end": 9359,
+          "text": " that ",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 9285,
+          "end": 9299,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 5275,
+          "end": 5282,
+          "text": "try",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 228,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 2652,
+          "end": 2672,
+          "text": "probability training",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 7860,
+          "text": " arguably",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 11247,
+          "text": " on balance",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 1328,
+          "end": 1337,
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 315,
+          "end": 324,
+          "text": ". The",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 9652,
+          "end": 9657,
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 1609,
+          "text": " (Mellers et al., 2014)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2269,
+          "end": 2346,
+          "text": "The finding replicates across several tournaments, though almost all of them share a question-selection process that favours resolvable geopolitical events.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 8350,
+          "end": 8359,
+          "text": "program",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 2793,
+          "end": 2803,
+          "text": "often",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1962,
+          "text": "That said, aggregating",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 8722,
+          "end": 8727,
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 5982,
+          "end": 5992,
+          "text": "60%",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 5205,
+          "end": 5210,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 8431,
+          "text": " in our view",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 3392,
+          "text": " probably",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3409,
+          "end": 3474,
+          "text": "Tournament questions are chosen because they resolve cleanly within a year, which systematically excludes the slow, structural questions that most institutional decisions actually turn on.",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 1960,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 6122,
+          "text": "Even so, the",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2027,
+          "end": 2157,
+          "text": "The often-quoted margin over the classified baseline comes from a single programme with a small number of question sets, and the comparison was never designed as a controlled trial.",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 1431,
+          "text": " we think",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 5912,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 5370,
+          "end": 5381,
+          "text": "in effect",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 10697,
+          "end": 10711,
+          "text": "difference-making",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 2469,
+          "end": 2480,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4206,
+          "end": 4218,
+          "text": "organization",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 8243,
+          "end": 8250,
+          "text": ". A",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 1183,
+          "end": 1191,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 2814,
+          "end": 2824,
+          "text": "later",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 11421,
+          "end": 11488,
+          "text": "On balance we think the case for funding more of this work is moderately strong, and weaker than the enthusiasm of its advocates suggests.",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 7179,
+          "end": 7192,
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 11626,
+          "end": 11677,
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 7376,
+          "end": 7381,
+          "text": "$400 million",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2773,
+          "end": 2795,
+          "text": "Researchers have replicated it",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 9616,
+          "end": 9627,
+          "text": "in effect",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 9874,
+          "end": 9883,
+          "text": ". One",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 9700,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 11797,
+          "text": ", on the best public numbers we could find",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 7486,
+          "end": 7497,
+          "text": "1.5%",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 11965,
+          "text": ", though the underlying estimate is uncertain",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 6619,
+          "end": 6682,
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 5320,
+          "text": " probably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 1072,
+          "end": 1081,
+          "text": "judgment",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4821,
+          "end": 4829,
+          "text": ". We",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 6174,
+          "text": "Even so, the",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 9068,
+          "text": " on balance",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 564,
+          "end": 569,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 8080,
+          "text": " arguably",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 3977,
+          "end": 3985,
+          "text": ". We",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 6432,
+          "end": 6441,
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 717,
+          "text": " arguably",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 550,
+          "text": ", on the best public numbers we could find",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 1081,
+          "end": 1090,
+          "text": "now",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 8178,
+          "end": 8189,
+          "text": "in effect",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 7285,
+          "text": "Even so, the",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 6597,
+          "end": 6608,
+          "text": ". Found",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 5662,
+          "text": "By contrast, senior",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 9588,
+          "text": " in our view",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 10572,
+          "end": 10586,
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 4072,
+          "text": " we think",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 9837,
+          "end": 9845,
+          "text": ". It",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 3317,
+          "text": " (see the references at the end)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 1854,
+          "end": 1862,
+          "text": ". In",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 11219,
+          "text": " arguably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 7706,
+          "end": 7709,
+          "text": "$6 million",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 3359,
+          "end": 3374,
+          "text": "expert forecaster",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 12242,
+          "text": " roughly",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 6149,
+          "text": " roughly",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 426,
+          "text": " approximately",
+          "author": "priya"
+        }
+      ],
+      "comments": [
+        {
+          "content": "This reads as more confident than the evidence behind it. Can we soften?",
+          "quote": "Each of the four steps is doing real work, and it is important to remember that the last one is the only one anybody actually cares about.",
+          "author": "priya"
+        },
+        {
+          "content": "Is this still true as of this year? The figure looks like it is from the old draft.",
+          "quote": "The third is not, and in our view it is the one worth working on.",
+          "author": "priya"
+        },
+        {
+          "content": "Who is the audience for this paragraph? It feels aimed at a different reader.",
+          "quote": "It has been replicated in at least three subsequent tournaments, including two run outside the United States and one restricted to epidemiological questions during 2020.",
+          "author": "sam"
+        },
+        {
+          "content": "Can we cut this? It repeats the point made two paragraphs above.",
+          "quote": "The superforecaster effect is partly selection and partly training, and the published decompositions disagree about the split.",
+          "author": "marcus"
+        },
+        {
+          "content": "I would like a number here rather than a qualitative claim.",
+          "quote": "Team effects are large and are usually reported as if they were individual effects.",
+          "author": "sam"
+        },
+        {
+          "content": "Flagging for legal review before this goes live.",
+          "quote": "Whether that is better or worse than unquantified judgement is genuinely unclear to us, and we could not find a study that addresses it.",
+          "author": "priya"
+        },
+        {
+          "content": "This is the strongest claim in the piece and it has no citation.",
+          "quote": "Forecasts arrive after the decision has effectively been made.",
+          "author": "marcus"
+        },
+        {
+          "content": "Should this be a callout box rather than body text?",
+          "quote": "Senior staff treat a probability as a hedge rather than as information.",
+          "author": "dana"
+        },
+        {
+          "content": "Terminology: we use two different words for this across the piece.",
+          "quote": "A number of respondents said that the main value they had observed was cultural: teams that forecast argue more precisely, even when nobody looks at the numbers afterwards.",
+          "author": "priya"
+        },
+        {
+          "content": "I disagree with this framing but I do not want to block on it.",
+          "quote": "The inputs are deliberately crude and we encourage readers to substitute their own.",
+          "author": "nadia"
+        },
+        {
+          "content": "Can someone check the arithmetic here against the spreadsheet?",
+          "quote": "Tournament questions resolve within twelve months, have unambiguous resolution criteria, and concern events that a well-read generalist can reason about.",
+          "author": "nadia"
+        },
+        {
+          "content": "This sentence is doing a lot of work. Consider splitting it.",
+          "quote": "Whether a research programme will pay off over fifteen years is not a question a tournament can score.",
+          "author": "priya"
+        }
+      ]
+    }
+  ]
+}

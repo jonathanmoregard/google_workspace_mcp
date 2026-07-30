@@ -1,0 +1,29 @@
+{
+  "id": "stress-060-career-style",
+  "difficulty": 5,
+  "steps": 41,
+  "tags": [
+    "stress",
+    "high-volume",
+    "multi-author",
+    "predicate",
+    "section",
+    "overlap",
+    "context-pressure",
+    "n60"
+  ],
+  "authors": [
+    "priya",
+    "marcus",
+    "dana",
+    "sam",
+    "nadia"
+  ],
+  "n_suggestions": 60,
+  "tier": "stress",
+  "document_id": "mockdoc-stress-060-compute-governance",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

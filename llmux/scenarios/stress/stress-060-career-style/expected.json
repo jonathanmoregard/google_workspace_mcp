@@ -1,0 +1,513 @@
+{
+  "document_id": "mockdoc-stress-060-compute-governance",
+  "final_text": "Career review: compute governance\nLast updated March 2025. Reading time: about 14 minutes.\nIn a nutshell\nCompute governance is the practice of treating the physical supply chain behind advanced AI systems as a lever for policy. Even so, trainingTraining a frontier model still needsrequires tens of thousands of specialised chips, those chips are made by a handful of firms in a handful of countries, and the resulting bottleneck is one of the very few inputs to AI development that a government can actually observe. We think this makes it an unusually tractable place to work on reducing risks from advanced AI. We, and we expect demand for people who understand both the technology and the policy to grow over the next decade.\nRecommended if you have a background in semiconductor engineering, export control law, economics, or national security policy, and you are comfortable working in organizations where the right answer is contested and the evidence is thin.\nIt is on balance worth noting that this path is much less established than the adjacent careers in AI research or in traditional arms control, so early entrants are still writing the job descriptions.\nWhy we think this problem is pressing\n1. The hardware supply chain is extremely concentrated, on the best public numbers we could find. A single Dutch firm produces every extreme ultraviolet lithography machine in the world. One Taiwanese foundry fabricates most leading-edge logic. Three firms design almost all of the accelerators used to train frontier models. Concentration of this kind is rare, and it is what makes compute governable at all.\n2. Compute is measurable in a way that algorithms are probably not. You can count chips, meter the power draw of a data centre, and audit a cloud provider's customer records. You cannot count ideas. Policy that attaches to compute therefore has a verification story, and verification is the part where most arms control regimes get stuck.\n3. Training runs keep getting larger. The compute used in the largest training runs has grown by roughly 4 to 5 times per year for over a decade (see the references at the end). If that trend continues, the capital requirements for frontier development may keep risingwill on balance keep rising and the number of actors able to reach the frontier will we think stay small. That is good news for governance and bad news for competition.\n4. The controls that exist are already leaky. The export controls introduced in October 2022, and tightened repeatedly since, are the largest real-world test we have. In practice, theyThey have clearly slowed some actors down. They have also produced smuggling networks, chips redesigned to sit just below the thresholds. A diplomatic friction with allies who host parts of the supply chain.\nWe do not think compute governance solves the alignment problem. It buys time, it creates enforcement points, and it makes agreements verifiable. By contrast, thoseThose things are worth a lot, but they are instrumental, and it is important to remember that a well-monitored race is still a race.\nWhat the work actually involves\nTechnical analysis. Estimating the compute required for a given capability, tracking performance per dollar across chip generations, and modeling how quickly a restricted actor could substitute older hardware for newer.\nPolicy design. Writing the actual text of a threshold, deciding whether it should be denominated in FLOP, in chip count, or in interconnect bandwidth, and thinking carefully about how each choice will be gamed.\nVerification and enforcement. Designing on-chip mechanisms, data center inspection regimes, and know-your-customer requirements for cloud providers, all of that  which have to survive contact with commercial reality.\nDiplomacy. Persuading allied governments to align their control lists, because a unilateral control on a globally traded good mostly relocates the trade rather than stopping it.\nIndustry engagement. Working with firms who reasonably object to being turned into instruments of foreign policy, and who know more about their own supply chains than any regulator does.\nA typical week at a policy think tank might be two days of research, one day of writing, and two days of meetings with officials, journalists and company staff. Even so, inIn government the ratio shifts markedly towards meetings, and the writing that survives is much shorter. At a frontier lab the work is closer to product engineering than to policy, because the mechanisms have to ship.\nThe roles themselves sit in five broad places. Think tanks and academic centres, which offer the most intellectual freedom and the least direct influence. In practice, governmentGovernment, where the influence is real but arrives slowly and depends heavily onis heavily mediated by whoever holds the relevant office. Frontier laboratories, where the compensation is high and the independence is limited. Chip firms and cloud providers, where you will spend a lot of time explaining to colleagues why a rule that costs them money is even so reasonable. And a small number of nonprofits doing technical standards work, which is unglamorous and possibly the highest-leverage option of the lot.\nWe would encourage people to think about these as a sequence rather than a choice. Almost everyone we would point to as exceptionally effective in this area has worked in at least two of the five, and the combination of an industry stint with a policy role appears to be particularly valuable, because it is hard to write an implementable rule about a process you have never seen operate.\nWho is a good fit\nPeople who do well here tend to share a few traits. They are comfortable being the only person in the room who understands both the silicon and the statute. They can write a two-page memo that a busy official will actually read. They tolerate working on questions where the honest answer is that nobody knows, and they do not need public credit, because the best outcomes in this field are invisible.\nYou do not need a PhD. Roughly half the people we know doing this work well came from law, economics or journalism and learned the technical material on the job. You do need enough numeracy to sanity-check a FLOP estimate, and enough patience to read a 200-page rulemaking document without skimming.\nIt is probably a bad fit if you want fast feedback loops, if you find political ambiguity draining, or if you would be unhappy spending several years building credibility before anyone asks your opinion. It is also a bad fit if you need to be certain that your work is helping, because a plausible reading of the last three years is that the controls have accelerated exactly the domestic capability they were meant to slow.\nOne trait we have started to weight more heavily is a tolerance for being disliked by people you respect. Compute governance sits between a research community that values openness and a security community that values control. Anyone doing the work seriously will at some point be told by thoughtful colleagues that they are on the wrong side. People who need consensus to feel comfortable tend to leave within two years.\nHow to enter the field\n1. Build a public track record [citatio we thinkn needed]. Write two or three short analyzes of a live policy question and publish them. This is the single highest-return thing an outsider can do, and it is how a large fraction of current practitioners were first noticed.\n2. Get one deep technical or legal competence. Semiconductor process technology, export control law, cloud infrastructure, or the economics of general purpose technologies. Breadth is easy to acquire later, and depth is what gets you hired.\n3. Take an entry role adjacent to the field (see the references at the end). Congressional staff, a national laboratory, a chip firm's policy team, or a research assistant position at a think tank. Each of these gives you either the technical exposure or the institutional access. You can pick up the other.\n4. Move toward the bottleneck. Once inside, the highest-leverage roles are the ones nobody wants: the interagency coordination job, the standards committee, the team that has to write the implementing guidance. This is on balance a fast-moving area and some of the details below will date quickly.\n5. Learn the institutions, not just the topic. Much what determines whether a proposal goes anywhere is procedural: that  which committee has jurisdiction, which agency writes the guidance, which trade association will be consulted, and how long each of those steps takes. This knowledge is boring, it is not taught anywhere, and it is probably a large part of what separates people who publish from people who change things.\nSalaries in this space vary greatly. A research analyst at a mid-sized think tank might start near the bottom of that range, while a policy lead at a large laboratory sits near the top. None of this is investment advice.\nWhat we might be getting wrong\nWe may be overrating tractability. Export controls are a imprecise instrument, and the historical record for technology controls on dual-use goods is mixed at best. It could be that the entire approach buys 18 months and a worse diplomatic environment.\nWe may be underrating the substitution problem. Algorithmic efficiency has been improving quickly, and if the compute needed for a given capability keeps falling, then compute governancehardware governance becomes a control on a moving target.\nWe may be wrong about who matters. Most of our attention has gone to training compute, but inference is now a large and growing share of total spending, and the governance story for inference is much weaker. We have in our view written about this at greater length elsewhere.\nFinally, we are aware that our sources skew towards a small community in Washington, London and the Bay Area, which is arguably exactly the sort of thing that produces confident consensus on a question that is genuinely open.\nOur take\nWe also want to flag a disagreement inside our own team. One view is that the value of this work comes almost entirely from the possibility of a future international agreement, and that everything happening now is preparation for a negotiation that may never occur. The other view is that the day-to-day work of writing better thresholds and closing enforcement gaps is valuable on its own terms, regardless of whether any grand bargain materialises. We have not resolved this, and where you land on it should probably affect which of the five settings above you choose.\nWe rate compute governance as one of the more promising paths for people who want to reduce risks from advanced AI and who are not going to become machine learning researchers. The field is small, the demand is real, and the skills transfer well if the strategic picture changes. We would encourage more people with hard technical backgrounds to consider it, particularly people who already understand semiconductors, since that expertise is genuinely scarce and cannot be picked up quickly.\nIf you are considering this path, our advising team would like to hear from you, and we can usually introduce promising candidates to people already working on cutting-edge model policy.\n",
+  "surviving_suggestion_ids": [
+    "sug.marcus.10",
+    "sug.marcus.11",
+    "sug.marcus.12",
+    "sug.marcus.13",
+    "sug.marcus.15",
+    "sug.nadia.3",
+    "sug.nadia.5",
+    "sug.sam.10",
+    "sug.sam.11",
+    "sug.sam.13",
+    "sug.sam.14",
+    "sug.sam.2",
+    "sug.sam.3",
+    "sug.sam.4",
+    "sug.sam.6",
+    "sug.sam.7",
+    "sug.sam.8",
+    "sug.sam.9"
+  ],
+  "resolved": {
+    "sug.dana.9": "accepted",
+    "sug.dana.13": "accepted",
+    "sug.dana.6": "accepted",
+    "sug.nadia.9": "rejected",
+    "sug.priya.10": "accepted",
+    "sug.dana.2": "accepted",
+    "sug.priya.16": "rejected",
+    "sug.marcus.8": "rejected",
+    "sug.priya.34": "accepted",
+    "sug.priya.23": "accepted",
+    "sug.priya.32": "accepted",
+    "sug.marcus.2": "rejected",
+    "sug.priya.11": "accepted",
+    "sug.priya.30": "accepted",
+    "sug.dana.4": "accepted",
+    "sug.marcus.17": "rejected",
+    "sug.priya.26": "accepted",
+    "sug.priya.20": "accepted",
+    "sug.priya.28": "accepted",
+    "sug.dana.11": "accepted",
+    "sug.dana.12": "accepted",
+    "sug.priya.5": "accepted",
+    "sug.priya.22": "accepted",
+    "sug.priya.1": "accepted",
+    "sug.dana.15": "accepted",
+    "sug.priya.37": "accepted",
+    "sug.priya.7": "accepted",
+    "sug.priya.18": "accepted",
+    "sug.priya.3": "accepted",
+    "sug.nadia.7": "rejected",
+    "sug.priya.14": "accepted",
+    "sug.priya.9": "accepted",
+    "sug.marcus.6": "rejected",
+    "sug.priya.36": "accepted",
+    "sug.nadia.1": "rejected",
+    "sug.priya.13": "accepted",
+    "sug.priya.25": "accepted",
+    "sug.dana.16": "rejected",
+    "sug.marcus.4": "rejected",
+    "sug.nadia.6": "rejected",
+    "sug.dana.8": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Career review: compute governance\nLast updated March 2025. Reading time: about 14 minutes.\nIn a nutshell\nCompute governance is the practice of treating the physical supply chain behind advanced AI systems as a lever for policy. Even so, trainingTraining a frontier model still requires tens of thousands of specialised chips, those chips are made by a handful of firms in a handful of countries, and the resulting bottleneck is one of the very few inputs to AI development that a government can actually observe. We think this makes it an unusually tractable place to work on reducing risks from advanced AI, and we expect demand for people who understand both the technology and the policy to grow over the next decade.\nRecommended if you have a background in semiconductor engineering, export control law, economics, or national security policy, and you are comfortable working in organizations where the right answer is contested and the evidence is thin.\nIt is on balance worth noting that this path is much less established than the adjacent careers in AI research or in traditional arms control, so early entrants are still writing the job descriptions.\nWhy we think this problem is pressing\n1. The hardware supply chain is extremely concentrated. A single Dutch firm produces every extreme ultraviolet lithography machine in the world. One Taiwanese foundry fabricates most leading-edge logic. Three firms design almost all of the accelerators used to train frontier models. Concentration of this kind is rare, and it is what makes compute governable at all.\n2. Compute is measurable in a way that algorithms are not. You can count chips, meter the power draw of a data centre, and audit a cloud provider's customer records. You cannot count ideas. Policy that attaches to compute therefore has a verification story, and verification is the part where most arms control regimes get stuck.\n3. Training runs keep getting larger. The compute used in the largest training runs has grown by roughly 4 to 5 times per year for over a decade. If that trend continues, the capital requirements for frontier development will on balance keep rising and the number of actors able to reach the frontier will stay small. That is good news for governance and bad news for competition.\n4. The controls that exist are already leaky. The export controls introduced in October 2022, and tightened repeatedly since, are the largest real-world test we have. In practice, theyThey have clearly slowed some actors down. They have also produced smuggling networks, chips redesigned to sit just below the thresholds. A diplomatic friction with allies who host parts of the supply chain.\nWe do not think compute governance solves the alignment problem. It buys time, it creates enforcement points, and it makes agreements verifiable. By contrast, thoseThose things are worth a lot, but they are instrumental, and it is important to remember that a well-monitored race is still a race.\nWhat the work actually involves\nTechnical analysis. Estimating the compute required for a given capability, tracking performance per dollar across chip generations, and modeling how quickly a restricted actor could substitute older hardware for newer.\nPolicy design. Writing the actual text of a threshold, deciding whether it should be denominated in FLOP, in chip count, or in interconnect bandwidth, and thinking carefully about how each choice will be gamed.\nVerification and enforcement. Designing on-chip mechanisms, data center inspection regimes, and know-your-customer requirements for cloud providers, all of which have to survive contact with commercial reality.\nDiplomacy. Persuading allied governments to align their control lists, because a unilateral control on a globally traded good mostly relocates the trade rather than stopping it.\nIndustry engagement. Working with firms who reasonably object to being turned into instruments of foreign policy, and who know more about their own supply chains than any regulator does.\nA typical week at a policy think tank might be two days of research, one day of writing, and two days of meetings with officials, journalists and company staff. In government the ratio shifts markedly towards meetings, and the writing that survives is much shorter. At a frontier lab the work is closer to product engineering than to policy, because the mechanisms have to ship.\nThe roles themselves sit in five broad places. Think tanks and academic centres, which offer the most intellectual freedom and the least direct influence. In practice, governmentGovernment, where the influence is real but arrives slowly and is heavily mediated by whoever holds the relevant office. Frontier laboratories, where the compensation is high and the independence is limited. Chip firms and cloud providers, where you will spend a lot of time explaining to colleagues why a rule that costs them money is even so reasonable. And a small number of nonprofits doing technical standards work, which is unglamorous and possibly the highest-leverage option of the lot.\nWe would encourage people to think about these as a sequence rather than a choice. Almost everyone we would point to as exceptionally effective in this area has worked in at least two of the five, and the combination of an industry stint with a policy role appears to be particularly valuable, because it is hard to write an implementable rule about a process you have never seen operate.\nWho is a good fit\nPeople who do well here tend to share a few traits. They are comfortable being the only person in the room who understands both the silicon and the statute. They can write a two-page memo that a busy official will actually read. They tolerate working on questions where the honest answer is that nobody knows, and they do not need public credit, because the best outcomes in this field are invisible.\nYou do not need a PhD. Roughly half the people we know doing this work well came from law, economics or journalism and learned the technical material on the job. You do need enough numeracy to sanity-check a FLOP estimate, and enough patience to read a 200-page rulemaking document without skimming.\nIt is probably a bad fit if you want fast feedback loops, if you find political ambiguity draining, or if you would be unhappy spending several years building credibility before anyone asks your opinion. It is also a bad fit if you need to be certain that your work is helping, because a plausible reading of the last three years is that the controls have accelerated exactly the domestic capability they were meant to slow.\nOne trait we have started to weight more heavily is a tolerance for being disliked by people you respect. Compute governance sits between a research community that values openness and a security community that values control. Anyone doing the work seriously will at some point be told by thoughtful colleagues that they are on the wrong side. People who need consensus to feel comfortable tend to leave within two years.\nHow to enter the field\n1. Build a public track record. Write two or three short analyzes of a live policy question and publish them. This is the single highest-return thing an outsider can do, and it is how a large fraction of current practitioners were first noticed.\n2. Get one deep technical or legal competence. Semiconductor process technology, export control law, cloud infrastructure, or the economics of general purpose technologies. Breadth is easy to acquire later, and depth is what gets you hired.\n3. Take an entry role adjacent to the field. Congressional staff, a national laboratory, a chip firm's policy team, or a research assistant position at a think tank. Each of these gives you either the technical exposure or the institutional access. You can pick up the other.\n4. Move toward the bottleneck. Once inside, the highest-leverage roles are the ones nobody wants: the interagency coordination job, the standards committee, the team that has to write the implementing guidance. This is on balance a fast-moving area and some of the details below will date quickly.\n5. Learn the institutions, not just the topic. Much what determines whether a proposal goes anywhere is procedural: which committee has jurisdiction, which agency writes the guidance, which trade association will be consulted, and how long each of those steps takes. This knowledge is boring, it is not taught anywhere, and it is a large part of what separates people who publish from people who change things.\nSalaries in this space vary greatly. A research analyst at a mid-sized think tank might start near the bottom of that range, while a policy lead at a large laboratory sits near the top. None of this is investment advice.\nWhat we might be getting wrong\nWe may be overrating tractability. Export controls are a imprecise instrument, and the historical record for technology controls on dual-use goods is mixed at best. It could be that the entire approach buys 18 months and a worse diplomatic environment.\nWe may be underrating the substitution problem. Algorithmic efficiency has been improving quickly, and if the compute needed for a given capability keeps falling, then hardware governance becomes a control on a moving target.\nWe may be wrong about who matters. Most of our attention has gone to training compute, but inference is now a large and growing share of total spending, and the governance story for inference is much weaker. We have written about this at greater length elsewhere.\nFinally, we are aware that our sources skew towards a small community in Washington, London and the Bay Area, which is exactly the sort of thing that produces confident consensus on a question that is genuinely open.\nOur take\nWe also want to flag a disagreement inside our own team. One view is that the value of this work comes almost entirely from the possibility of a future international agreement, and that everything happening now is preparation for a negotiation that may never occur. The other view is that the day-to-day work of writing better thresholds and closing enforcement gaps is valuable on its own terms, regardless of whether any grand bargain materialises. We have not resolved this, and where you land on it should probably affect which of the five settings above you choose.\nWe rate compute governance as one of the more promising paths for people who want to reduce risks from advanced AI and who are not going to become machine learning researchers. The field is small, the demand is real, and the skills transfer well if the strategic picture changes. We would encourage more people with hard technical backgrounds to consider it, particularly people who already understand semiconductors, since that expertise is genuinely scarce and cannot be picked up quickly.\nIf you are considering this path, our advising team would like to hear from you, and we can usually introduce promising candidates to people already working on cutting-edge model policy.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Career review: compute governance\nLast updated March 2025. Reading time: about 14 minutes.\nIn a nutshell\nCompute governance is the practice of treating the physical supply chain behind advanced AI systems as a lever for policy. Even so, trainingTraining a frontier model still needs tens of thousands of specialised chips, those chips are made by a handful of firms in a handful of countries, and the resulting bottleneck is one of the very few inputs to AI development that a government can actually observe. We think this makes it an unusually tractable place to work on reducing risks from advanced AI. We expect demand for people who understand both the technology and the policy to grow over the next decade.\nRecommended if you have a background in semiconductor engineering, export control law, economics, or national security policy, and you are comfortable working in organizations where the right answer is contested and the evidence is thin.\nIt is on balance worth noting that this path is much less established than the adjacent careers in AI research or in traditional arms control, so early entrants are still writing the job descriptions.\nWhy we think this problem is pressing\n1. The hardware supply chain is extremely concentrated, on the best public numbers we could find. A single Dutch firm produces every extreme ultraviolet lithography machine in the world. One Taiwanese foundry fabricates most leading-edge logic. Three firms design almost all of the accelerators used to train frontier models. Concentration of this kind is rare, and it is what makes compute governable.\n2. Compute is measurable in a way that algorithms are probably not. You can count chips, meter the power draw of a data centre, and audit a cloud provider's customer records. You cannot count ideas. Policy that attaches to compute therefore has a verification story, and verification is the part where most arms control regimes get stuck.\n3. Training runs keep getting larger. The compute used in the largest training runs has grown by roughly 4 to 5 times per year for over a decade (see the references at the end). If that trend continues, the capital requirements for frontier development may keep rising and the number of actors able to reach the frontier will we think stay small. That is good news for governance and bad news for competition.\n4. The controls that exist are already leaky. The export controls introduced in October 2022, and tightened repeatedly since, are the largest real-world test we have. In practice, theyThey have clearly slowed some actors down. They have also produced smuggling networks, chips redesigned to sit just below the thresholds. A diplomatic friction with allies who host parts of the supply chain.\nWe do not think compute governance solves the alignment problem. It buys time, it creates enforcement points, and it makes agreements verifiable. By contrast, thoseThose things are worth a lot, but they are instrumental, and it is important to remember that a well-monitored race is still a race.\nWhat the work actually involves\nTechnical analysis. Estimating the compute required for a given capability, tracking performance per dollar across chip generations, and modeling how quickly a restricted actor could substitute older hardware for newer.\nPolicy design. Writing the actual text of a threshold, deciding whether it should be denominated in FLOP, in chip count, or in interconnect bandwidth, and thinking carefully about how each choice will be gamed.\nVerification and enforcement. Designing on-chip mechanisms, data center inspection regimes, and know-your-customer requirements for cloud providers, all of that have to survive contact with commercial reality.\nDiplomacy. Persuading allied governments to align their control lists, because a unilateral control on a globally traded good mostly relocates the trade rather than stopping it.\nIndustry engagement. Working with firms who reasonably object to being turned into instruments of foreign policy, and who know more about their own supply chains than any regulator does.\nA typical week at a policy think tank might be two days of research, one day of writing, and two days of meetings with officials, journalists and company staff. Even so, inIn government the ratio shifts markedly towards meetings, and the writing that survives is much shorter. At a frontier lab the work is closer to product engineering than to policy, because the mechanisms have to ship.\nThe roles themselves sit in five broad places. Think tanks and academic centres, which offer the most intellectual freedom and the least direct influence. In practice, governmentGovernment, where the influence is real but arrives slowly and depends heavily on whoever holds the relevant office. Frontier laboratories, where the compensation is high and the independence is limited. Chip firms and cloud providers, where you will spend a lot of time explaining to colleagues why a rule that costs them money is even so reasonable. And a small number of nonprofits doing technical standards work, which is unglamorous and possibly the highest-leverage option of the lot.\nWe would encourage people to think about these as a sequence rather than a choice. Almost everyone we would point to as exceptionally effective in this area has worked in at least two of the five, and the combination of an industry stint with a policy role appears to be particularly valuable, because it is hard to write an implementable rule about a process you have never seen operate.\nWho is a good fit\nPeople who do well here tend to share a few traits. They are comfortable being the only person in the room who understands both the silicon and the statute. They can write a two-page memo that a busy official will actually read. They tolerate working on questions where the honest answer is that nobody knows, and they do not need public credit, because the best outcomes in this field are invisible.\nYou do not need a PhD. Roughly half the people we know doing this work well came from law, economics or journalism and learned the technical material on the job. You do need enough numeracy to sanity-check a FLOP estimate, and enough patience to read a 200-page rulemaking document without skimming.\nIt is probably a bad fit if you want fast feedback loops, if you find political ambiguity draining, or if you would be unhappy spending several years building credibility before anyone asks your opinion. It is also a bad fit if you need to be certain that your work is helping, because a plausible reading of the last three years is that the controls have accelerated exactly the domestic capability they were meant to slow.\nOne trait we have started to weight more heavily is a tolerance for being disliked by people you respect. Compute governance sits between a research community that values openness and a security community that values control. Anyone doing the work seriously will at some point be told by thoughtful colleagues that they are on the wrong side. People who need consensus to feel comfortable tend to leave within two years.\nHow to enter the field\n1. Build a public track record [citatio we thinkn needed]. Write two or three short analyzes of a live policy question and publish them. This is the single highest-return thing an outsider can do, and it is how a large fraction of current practitioners were first noticed.\n2. Get one deep technical or legal competence. Semiconductor process technology, export control law, cloud infrastructure, or the economics of general purpose technologies. Breadth is easy to acquire later, and depth is what gets you hired.\n3. Take an entry role adjacent to the field (see the references at the end). Congressional staff, a national laboratory, a chip firm's policy team, or a research assistant position at a think tank. Each of these gives you either the technical exposure or the institutional access. You can pick up the other.\n4. Move toward the bottleneck. Once inside, the highest-leverage roles are the ones nobody wants: the interagency coordination job, the standards committee, the team that has to write the implementing guidance. This is on balance a fast-moving area and some of the details below will date quickly.\n5. Learn the institutions, not just the topic. Much what determines whether a proposal goes anywhere is procedural: that committee has jurisdiction, which agency writes the guidance, which trade association will be consulted, and how long each of those steps takes. This knowledge is boring, it is not taught anywhere, and it is probably a large part of what separates people who publish from people who change things.\nSalaries in this space vary greatly. A research analyst at a mid-sized think tank might start near the bottom of that range, while a policy lead at a large laboratory sits near the top. None of this is investment advice.\nWhat we might be getting wrong\nWe may be overrating tractability. Export controls are a imprecise instrument, and the historical record for technology controls on dual-use goods is mixed at best. It could be that the entire approach buys 18 months and a worse diplomatic environment.\nWe may be underrating the substitution problem. Algorithmic efficiency has been improving quickly, and if the compute needed for a given capability keeps falling, then compute governance becomes a control on a moving target.\nWe may be wrong about who matters. Most of our attention has gone to training compute, but inference is now a large and growing share of total spending, and the governance story for inference is much weaker. We have in our view written about this at greater length elsewhere.\nFinally, we are aware that our sources skew towards a small community in Washington, London and the Bay Area, which is arguably exactly the sort of thing that produces confident consensus on a question that is genuinely open.\nOur take\nWe also want to flag a disagreement inside our own team. One view is that the value of this work comes almost entirely from the possibility of a future international agreement, and that everything happening now is preparation for a negotiation that may never occur. The other view is that the day-to-day work of writing better thresholds and closing enforcement gaps is valuable on its own terms, regardless of whether any grand bargain materialises. We have not resolved this, and where you land on it should probably affect which of the five settings above you choose.\nWe rate compute governance as one of the more promising paths for people who want to reduce risks from advanced AI and who are not going to become machine learning researchers. The field is small, the demand is real, and the skills transfer well if the strategic picture changes. We would encourage more people with hard technical backgrounds to consider it, particularly people who already understand semiconductors, since that expertise is genuinely scarce and cannot be picked up quickly.\nIf you are considering this path, our advising team would like to hear from you, and we can usually introduce promising candidates to people already working on cutting-edge model policy.\n"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.11"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.12"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.13"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.3"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.5"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.11"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.13"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.14"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.2"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.3"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.4"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.6"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.7"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.8"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.9"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.11",
+      "decision": "accept",
+      "text": "hifts markedly tow"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.12",
+      "decision": "accept",
+      "text": "In practice, government"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.13",
+      "decision": "accept",
+      "text": " grow over t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.15",
+      "decision": "accept",
+      "text": "ontrol. Anyone "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.16",
+      "decision": "reject",
+      "text": "ises. We hav"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.2",
+      "decision": "accept",
+      "text": "cates most leadi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.4",
+      "decision": "accept",
+      "text": "ds. A diplom"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.6",
+      "decision": "accept",
+      "text": "king in organizations where t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.8",
+      "decision": "reject",
+      "text": "ng on cutting-edge model"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.9",
+      "decision": "accept",
+      "text": "Even so, training"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.10",
+      "decision": "pending",
+      "text": ". We, and w"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.11",
+      "decision": "pending",
+      "text": "arguably"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.12",
+      "decision": "pending",
+      "text": "it is probably a lar"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.13",
+      "decision": "pending",
+      "text": "s are probably not. "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.15",
+      "decision": "pending",
+      "text": "compute governancehardwar"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.17",
+      "decision": "reject",
+      "text": "hain.\nWe do not think compute governance solves the alignment problem. It b"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.2",
+      "decision": "reject",
+      "text": "have. In practice, theyThey have clearly slowed some actors down. They "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.4",
+      "decision": "reject",
+      "text": "e and cannot be picked up qu"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.6",
+      "decision": "reject",
+      "text": "ings.\nSalaries in this space vary greatly. A re"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.8",
+      "decision": "reject",
+      "text": "rger. The compute used in the largest training runs has grown by roughly 4 to 5 times per year for over a decade (see the references at the end). If t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.1",
+      "decision": "reject",
+      "text": " None of this is investment advice"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.3",
+      "decision": "pending",
+      "text": "may keep risingwill on balance"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.5",
+      "decision": "pending",
+      "text": "ural: that  which commi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.6",
+      "decision": "reject",
+      "text": "u are consid"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.7",
+      "decision": "reject",
+      "text": " This is on balance a fast-moving area and some of the details below will date quickly"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.9",
+      "decision": "reject",
+      "text": "thin.\nIt is on balance worth noting that this pa"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.1",
+      "decision": "accept",
+      "text": "it is hard t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.10",
+      "decision": "accept",
+      "text": "It is on balance worth"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.11",
+      "decision": "accept",
+      "text": "In practice, they"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.13",
+      "decision": "accept",
+      "text": "are a imprecise instr"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.14",
+      "decision": "accept",
+      "text": "is is on balance a fas"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.16",
+      "decision": "reject",
+      "text": "rontier models. Concentration of this kind is rare, and it is what makes compute governable at all.\n2. Compute is measurable in "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.18",
+      "decision": "accept",
+      "text": "access. You can"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.20",
+      "decision": "accept",
+      "text": " modeling ho"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.22",
+      "decision": "accept",
+      "text": "to as exceptionally e"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.23",
+      "decision": "accept",
+      "text": "gwill on balance keep "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.25",
+      "decision": "accept",
+      "text": "approach buys 18 months and a "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.26",
+      "decision": "accept",
+      "text": "By contrast, those"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.28",
+      "decision": "accept",
+      "text": "a center inspe"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.3",
+      "decision": "accept",
+      "text": "toward the b"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.30",
+      "decision": "accept",
+      "text": "sholds. A diplo"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.32",
+      "decision": "accept",
+      "text": "rgest real-world test we h"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.34",
+      "decision": "accept",
+      "text": "n by roughly 4 to 5 times per year for "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.36",
+      "decision": "accept",
+      "text": " vary greatly. A "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.37",
+      "decision": "accept",
+      "text": "itatio we thinkn need"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.5",
+      "decision": "accept",
+      "text": "ey is even so reaso"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.7",
+      "decision": "accept",
+      "text": " analyzes of "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.9",
+      "decision": "accept",
+      "text": "opic. Much what "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.10",
+      "decision": "pending",
+      "text": ", on the best public numbers we could fin"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.11",
+      "decision": "pending",
+      "text": " will we think stay "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.13",
+      "decision": "pending",
+      "text": "depends heavily onis heavily mediated by"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.14",
+      "decision": "pending",
+      "text": " at all"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.2",
+      "decision": "pending",
+      "text": "needsrequire"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.3",
+      "decision": "pending",
+      "text": " [citatio we thinkn needed]"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.4",
+      "decision": "pending",
+      "text": "Even so, in"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.6",
+      "decision": "pending",
+      "text": "ll of that  which have "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.7",
+      "decision": "pending",
+      "text": " field (see the references at the end). Cong"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.8",
+      "decision": "pending",
+      "text": "decade (see the references at the end). If t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.9",
+      "decision": "pending",
+      "text": "in our view"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 18
+    }
+  ]
+}

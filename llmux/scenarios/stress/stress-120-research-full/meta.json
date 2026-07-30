@@ -1,0 +1,29 @@
+{
+  "id": "stress-120-research-full",
+  "difficulty": 5,
+  "steps": 83,
+  "tags": [
+    "stress",
+    "high-volume",
+    "multi-author",
+    "predicate",
+    "section",
+    "overlap",
+    "context-pressure",
+    "n120"
+  ],
+  "authors": [
+    "priya",
+    "marcus",
+    "dana",
+    "sam",
+    "nadia"
+  ],
+  "n_suggestions": 120,
+  "tier": "stress",
+  "document_id": "mockdoc-stress-120-forecasting-evidence",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

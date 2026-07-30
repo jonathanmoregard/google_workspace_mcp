@@ -1,0 +1,733 @@
+{
+  "document_id": "mockdoc-stress-090-synthesis-screening",
+  "final_text": "Policy brief: screening requirements for synthetic DNA\nPrepared for a policy audience. Approximately 8 pages in the printed version.\nSummary\nCommercial providers of synthetic DNA can, at small cost, screen incoming orders against a list of sequences associated with dangerous pathogens and toxins. Can, and can screen the customers placing those orders. Even so, screeningScreening is now voluntary and coverage is incomplete. We recommend that screening be made a condition of federal funding, that a public reference database of hazardous sequences be maintained by a designated agency, and that benchtop synthesis devices be brought within the same regime within three years. The compliance cost per order is small. Enforcement is the weakest part of this proposal.\nBackground\nSynthetic DNA is now a routine laboratory input. A researcher specifies a sequence, a provider manufactures it, and the physical material arrives in the post within days. Prices have fallen by more than 100-fold since 2005, and the market has we think grown as a resultaccordingly. This has been enormously beneficial for biomedical research, and we want to be clear at the outset that the policy question is how to preserve that benefit while closing a narrow and specific gap.\nThe gap is that the same capability that lets a laboratory order a gene lets someone order the genome of a dangerous pathogen. Several agents of serious concern have published sequences and are small enough to assemble from commercially available fragments. The barrier is no longer access to the sequence; it is the hands-on know-how required to turn a sequence into a functioning organism, and that barrier has arguably been eroding.\nAn international consortium of providers has operated a voluntary screening protocol since 2009 (source: our 2024 practitioner interviews). Participating firms check orders against a database of hazardous sequencessequences of concern, verify the identity and institutional affiliation of customers, and refer anomalies to law enforcement. By the consortium's own account this has caught a small number of genuinely concerning orders. The authors have in our view no financial interest in any company named in this brief.\nThe gap in current practice\nThree gaps matter.\nFirst, participation is voluntary and self-reported. There is no audit, no penalty for non-participation, and no reliable public figure for what share of global volume is screened. Providers who screen bear a cost that providers who do not screen avoid, which is exactly the wrong incentive gradient.\nSecond, the screening threshold is length-based. Most protocols screen orders above 200 base pairs. A determined actor can order fragments below the screening threshold and assemble them. Fragment assembly has been demonstrated in the open literature at least three times since 2018, and we are not aware of any serious participant in the debate who disputes that it works.This has been demonstrated in the open literature more than once, and no serious participant in the debate disputes it.\nThird, the regime does not cover devices. Benchtop synthesisers change the picture substantially. A device sitting in a private laboratory, synthesising sequences to order with no external party in the loop, is outside the reach of any provider-side control. Manufacturers have begun to build screening into the firmware, which is encouraging, and entirely voluntary.\nThere is a fourth gap that is harder to write policy about. Screening compares an ordered sequence against a list, and a list is a description of the past. Sequences that are functionally equivalent to a listed agent but differ enough to evade a similarity threshold are not a hypothetical problem, and the tools for generating them have improved quickly. Any screening standard written today needs a mechanism for updating its matching criteria, not only its list. None, and none of the current voluntary protocols has one that we would call adequate.\nWe do not attach a recommendation, because We flag this without a recommendation attached, because the honest position is that the technical community has not agreed on what a well-supportedrobust matching criterion looks like, and legislating a specific one now would freeze the weakest available answer into statute.\nRecommendations\n1. Make screening a funding condition. Any research funded by a federal agency should be required to procure synthetic nucleic acids only from providers that attest to a recognised screening standard. This uses an existing lever, requires no new legislation, and would cover a large fraction of legitimate demand within one budget cycle.\n2. Designate a custodian for the reference database. The list of hazardous sequences needs an owner with the authority to update it, the technical capacity to curate it, and a clear process for handling the genuinely difficult question of what to publish. We suggest this sit with a civilian agency, not an intelligence one, because provider cooperation depends on it not looking like surveillance.\n3. Fund the screening infrastructure directly. Screening algorithms, the curated database, and the customer verification service are public goods, and asking each provider to build them separately is both wasteful and a barrier to entry for small firms.\n4. Extend the regime to benchtop devices within three years. New devices should ship with screening enabled by default and should require a signed update to disable it. Retrofitting the installed base is harder and will need a separate instrument.\n5. Build an audit function. Attestation without verification is a paperwork exercise. A modest programme of test orders, run by a designated body against participating providers, would establish whether the controls actually operate.\n6. Protect the people who report. Screening only works if the staff who notice an anomalous order are willing to escalate it, and at present a provider employee who raises a concern about a paying customer has no protection at all. A narrow whistleblower provision covering synthesis orders would cost nothing and would meaningfully change the incentives inside firms.\nThe first three recommendations are, in our judgement, achievable within the current legal framework and the current political appetite. Recommendation 4 will require either new authority or a voluntary commitment from a small number of manufacturers, and recommendation 5 will require money that nobody has yet allocated. We list them together because a regime with attestation and no audit is worse than no regime at all, in the specific sense that it creates a false assurance that displaces other controls.\nCosts and objections\nThe most common objection is that screening may not stopwill not stop a sophisticated state actor. This is correct and not to the point. The regime is aimed at raising the floor, and the floor is where the added riskmarginal risk sits, because the number of actors with modest resources is very large and growing.\nA second objection is in our view commercial. Providers argue, with some justification, that a patchwork of national requirements would on balance impose real costs and would push orders towards jurisdictions with weaker rules. This is a genuine problem and it is the reason recommendation 2 emphasizes international alignment (Epoch AI, 2024).\nA third objection concerns research friction. Any screening system produces false positives. A, and a researcher whose legitimate order is delayed by a week has been taxed by the policy. Current false positive rates are reported at under 2 percent, and most flagged orders clear within one working day. We think this is an acceptable cost, though we would want it monitored rather than assumed.\nFinally, there is a genuine risk of publishing harmful detail question about the reference database itself. A public list of hazardous sequences is a shopping list. The consortium's current approach, in that the list is shared with verified providers rather than published, seems right to us, and it does make independent evaluation of screening quality much harder.\nA related objection, raised most often by academic researchers, is that a funding condition in effect deputises universities as enforcement agents for a security policy they had no part in setting. We take this seriously. The mitigation we prefer is to place the obligation on procurement rather than on individual investigators, so that compliance is handled by an administrative office rather than by a graduate student ordering a plasmid at eleven at night.\nThere is also a question of who bears the cost of false negatives. Under the current arrangement, a provider who screens and misses something faces reputational and possibly legal exposure, while a provider who does not screen at all faces neither. Any regime that raises the standard of care without also clarifying liability will push cautious firms out of the market and leave the incautious ones in it, which is the opposite of what anybody wants.\nImplementation timeline\nMonths 0 to 6: designate the custodian agency, publish the draft standard, and open a comment period, on the best public numbers we could find. An earlier draft of this brief was circulated for comment in November.\nMonths 6 to 18: funding condition takes effect for new grants. The audit program begins with volunteer participants.\nMonths 18 to 36: device requirements enter into force for newly manufactured benchtop synthesisers (Epoch AI, 2024). International negotiation on mutual recognition concludes or is abandoned.\nAnnex: definitions\nSequence of concern: a nucleic acid sequence whose possession or synthesis is judged to present a meaningful risk of misuse, as listed in the reference database.\nScreening: the comparison of an ordered sequence against the reference database, together with verification of the customer's identity and institutional affiliation. By contrast, bothBoth halves are required; a provider that checks sequences but not customers is not screening in the sense used here.\nBenchtop synthesizersynthesiser: a device capable of synthesising nucleic acids on site, without an order being placed with an external gene synthesis provider. Footnotes have been kept deliberately sparse.\n",
+  "surviving_suggestion_ids": [
+    "sug.dana.10",
+    "sug.dana.2",
+    "sug.dana.20",
+    "sug.dana.26",
+    "sug.dana.27",
+    "sug.dana.6",
+    "sug.dana.7",
+    "sug.dana.9",
+    "sug.marcus.10",
+    "sug.marcus.15",
+    "sug.marcus.17",
+    "sug.marcus.19",
+    "sug.marcus.20",
+    "sug.marcus.22",
+    "sug.marcus.6",
+    "sug.nadia.11",
+    "sug.nadia.13",
+    "sug.nadia.15",
+    "sug.priya.12",
+    "sug.priya.14",
+    "sug.sam.15",
+    "sug.sam.2",
+    "sug.sam.6",
+    "sug.sam.8"
+  ],
+  "resolved": {
+    "sug.priya.2": "accepted",
+    "sug.priya.16": "accepted",
+    "sug.sam.23": "rejected",
+    "sug.priya.36": "accepted",
+    "sug.nadia.6": "rejected",
+    "sug.dana.11": "rejected",
+    "sug.priya.20": "accepted",
+    "sug.sam.13": "accepted",
+    "sug.dana.13": "rejected",
+    "sug.marcus.23": "rejected",
+    "sug.marcus.4": "rejected",
+    "sug.priya.32": "rejected",
+    "sug.marcus.12": "rejected",
+    "sug.sam.20": "rejected",
+    "sug.sam.18": "rejected",
+    "sug.priya.30": "rejected",
+    "sug.marcus.13": "rejected",
+    "sug.dana.29": "rejected",
+    "sug.priya.25": "rejected",
+    "sug.nadia.4": "rejected",
+    "sug.priya.11": "rejected",
+    "sug.sam.1": "rejected",
+    "sug.sam.4": "rejected",
+    "sug.dana.4": "rejected",
+    "sug.sam.16": "rejected",
+    "sug.dana.14": "rejected",
+    "sug.priya.34": "rejected",
+    "sug.sam.21": "rejected",
+    "sug.priya.6": "rejected",
+    "sug.dana.21": "rejected",
+    "sug.marcus.7": "rejected",
+    "sug.priya.31": "rejected",
+    "sug.nadia.9": "rejected",
+    "sug.sam.24": "rejected",
+    "sug.marcus.18": "rejected",
+    "sug.sam.10": "rejected",
+    "sug.dana.25": "rejected",
+    "sug.marcus.2": "rejected",
+    "sug.nadia.2": "rejected",
+    "sug.dana.18": "rejected",
+    "sug.dana.16": "rejected",
+    "sug.sam.12": "rejected",
+    "sug.marcus.21": "rejected",
+    "sug.marcus.9": "rejected",
+    "sug.priya.13": "rejected",
+    "sug.priya.18": "accepted",
+    "sug.nadia.8": "rejected",
+    "sug.marcus.14": "rejected",
+    "sug.sam.17": "rejected",
+    "sug.priya.24": "accepted",
+    "sug.priya.27": "accepted",
+    "sug.priya.22": "rejected",
+    "sug.dana.23": "rejected",
+    "sug.priya.9": "accepted",
+    "sug.sam.22": "accepted",
+    "sug.nadia.1": "rejected",
+    "sug.priya.7": "rejected",
+    "sug.priya.4": "accepted",
+    "sug.sam.3": "accepted",
+    "sug.priya.29": "rejected",
+    "sug.dana.3": "rejected",
+    "sug.nadia.10": "rejected",
+    "sug.priya.37": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Policy brief: screening requirements for synthetic DNA\nPrepared for a policy audience. Approximately 8 pages in the printed version.\nSummary\nCommercial providers of synthetic DNA can, at small cost, screen incoming orders against a list of sequences associated with dangerous pathogens and toxins, and can screen the customers placing those orders. Screening is now voluntary and coverage is incomplete. We recommend that screening be made a condition of federal funding, that a public reference database of hazardous sequences be maintained by a designated agency, and that benchtop synthesis devices be brought within the same regime within three years. The compliance cost per order is small. Enforcement is the weakest part of this proposal.\nBackground\nSynthetic DNA is now a routine laboratory input. A researcher specifies a sequence, a provider manufactures it, and the physical material arrives in the post within days. Prices have fallen by more than 100-fold since 2005, and the market has grown accordingly. This has been enormously beneficial for biomedical research, and we want to be clear at the outset that the policy question is how to preserve that benefit while closing a narrow and specific gap.\nThe gap is that the same capability that lets a laboratory order a gene lets someone order the genome of a dangerous pathogen. Several agents of serious concern have published sequences and are small enough to assemble from commercially available fragments. The barrier is no longer access to the sequence; it is the hands-on know-how required to turn a sequence into a functioning organism, and that barrier has been eroding.\nAn international consortium of providers has operated a voluntary screening protocol since 2009 (source: our 2024 practitioner interviews). Participating firms check orders against a database of sequences of concern, verify the identity and institutional affiliation of customers, and refer anomalies to law enforcement. By the consortium's own account this has caught a small number of genuinely concerning orders. The authors have no financial interest in any company named in this brief.\nThe gap in current practice\nThree gaps matter.\nFirst, participation is voluntary and self-reported. There is no audit, no penalty for non-participation, and no reliable public figure for what share of global volume is screened. Providers who screen bear a cost that providers who do not screen avoid, which is exactly the wrong incentive gradient.\nSecond, the screening threshold is length-based. Most protocols screen orders above 200 base pairs. A determined actor can order fragments below the screening threshold and assemble them. This has been demonstrated in the open literature more than once, and no serious participant in the debate disputes it.\nThird, the regime does not cover devices. Benchtop synthesisers change the picture substantially. A device sitting in a private laboratory, synthesising sequences to order with no external party in the loop, is outside the reach of any provider-side control. Manufacturers have begun to build screening into the firmware, which is encouraging, and entirely voluntary.\nThere is a fourth gap that is harder to write policy about. Screening compares an ordered sequence against a list, and a list is a description of the past. Sequences that are functionally equivalent to a listed agent but differ enough to evade a similarity threshold are not a hypothetical problem, and the tools for generating them have improved quickly. Any screening standard written today needs a mechanism for updating its matching criteria, not only its list, and none of the current voluntary protocols has one that we would call adequate.\nWe flag this without a recommendation attached, because the honest position is that the technical community has not agreed on what a robust matching criterion looks like, and legislating a specific one now would freeze the weakest available answer into statute.\nRecommendations\n1. Make screening a funding condition. Any research funded by a federal agency should be required to procure synthetic nucleic acids only from providers that attest to a recognised screening standard. This uses an existing lever, requires no new legislation, and would cover a large fraction of legitimate demand within one budget cycle.\n2. Designate a custodian for the reference database. The list of hazardous sequences needs an owner with the authority to update it, the technical capacity to curate it, and a clear process for handling the genuinely difficult question of what to publish. We suggest this sit with a civilian agency, not an intelligence one, because provider cooperation depends on it not looking like surveillance.\n3. Fund the screening infrastructure directly. Screening algorithms, the curated database, and the customer verification service are public goods, and asking each provider to build them separately is both wasteful and a barrier to entry for small firms.\n4. Extend the regime to benchtop devices within three years. New devices should ship with screening enabled by default and should require a signed update to disable it. Retrofitting the installed base is harder and will need a separate instrument.\n5. Build an audit function. Attestation without verification is a paperwork exercise. A modest programme of test orders, run by a designated body against participating providers, would establish whether the controls actually operate.\n6. Protect the people who report. Screening only works if the staff who notice an anomalous order are willing to escalate it, and at present a provider employee who raises a concern about a paying customer has no protection at all. A narrow whistleblower provision covering synthesis orders would cost nothing and would meaningfully change the incentives inside firms.\nThe first three recommendations are, in our judgement, achievable within the current legal framework and the current political appetite. Recommendation 4 will require either new authority or a voluntary commitment from a small number of manufacturers, and recommendation 5 will require money that nobody has yet allocated. We list them together because a regime with attestation and no audit is worse than no regime at all, in the specific sense that it creates a false assurance that displaces other controls.\nCosts and objections\nThe most common objection is that screening will not stop a sophisticated state actor. This is correct and not to the point. The regime is aimed at raising the floor, and the floor is where the marginal risk sits, because the number of actors with modest resources is very large and growing.\nA second objection is commercial. Providers argue, with some justification, that a patchwork of national requirements would impose real costs and would push orders towards jurisdictions with weaker rules. This is a genuine problem and it is the reason recommendation 2 emphasizes international alignment.\nA third objection concerns research friction. Any screening system produces false positives, and a researcher whose legitimate order is delayed by a week has been taxed by the policy. Current false positive rates are reported at under 2 percent, and most flagged orders clear within one working day. We think this is an acceptable cost, though we would want it monitored rather than assumed.\nFinally, there is a genuine risk of publishing harmful detail question about the reference database itself. A public list of hazardous sequences is a shopping list. The consortium's current approach, in that the list is shared with verified providers rather than published, seems right to us, and it does make independent evaluation of screening quality much harder.\nA related objection, raised most often by academic researchers, is that a funding condition in effect deputises universities as enforcement agents for a security policy they had no part in setting. We take this seriously. The mitigation we prefer is to place the obligation on procurement rather than on individual investigators, so that compliance is handled by an administrative office rather than by a graduate student ordering a plasmid at eleven at night.\nThere is also a question of who bears the cost of false negatives. Under the current arrangement, a provider who screens and misses something faces reputational and possibly legal exposure, while a provider who does not screen at all faces neither. Any regime that raises the standard of care without also clarifying liability will push cautious firms out of the market and leave the incautious ones in it, which is the opposite of what anybody wants.\nImplementation timeline\nMonths 0 to 6: designate the custodian agency, publish the draft standard, and open a comment period, on the best public numbers we could find. An earlier draft of this brief was circulated for comment in November.\nMonths 6 to 18: funding condition takes effect for new grants. The audit program begins with volunteer participants.\nMonths 18 to 36: device requirements enter into force for newly manufactured benchtop synthesisers (Epoch AI, 2024). International negotiation on mutual recognition concludes or is abandoned.\nAnnex: definitions\nSequence of concern: a nucleic acid sequence whose possession or synthesis is judged to present a meaningful risk of misuse, as listed in the reference database.\nScreening: the comparison of an ordered sequence against the reference database, together with verification of the customer's identity and institutional affiliation. Both halves are required; a provider that checks sequences but not customers is not screening in the sense used here.\nBenchtop synthesiser: a device capable of synthesising nucleic acids on site, without an order being placed with an external gene synthesis provider. Footnotes have been kept deliberately sparse.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Policy brief: screening requirements for synthetic DNA\nPrepared for a policy audience. Approximately 8 pages in the printed version.\nSummary\nCommercial providers of synthetic DNA can, at small cost, screen incoming orders against a list of sequences associated with dangerous pathogens and toxins. Can screen the customers placing those orders. Even so, screeningScreening is now voluntary and coverage is incomplete. We recommend that screening be made a condition of federal funding, that a public reference database of hazardous sequences be maintained by a designated agency, and that benchtop synthesis devices be brought within the same regime within three years. The compliance cost per order is small. Enforcement is the weakest part of this proposal.\nBackground\nSynthetic DNA is now a routine laboratory input. A researcher specifies a sequence, a provider manufactures it, and the physical material arrives in the post within days. Prices have fallen by more than 100-fold since 2005, and the market has we think grown as a result. This has been enormously beneficial for biomedical research, and we want at the outset that the policy question is how to preserve that benefit while closing a narrow and specific gap.\nThe gap is that the same capability that lets a laboratory order a gene lets someone order the genome of a dangerous pathogen. Several agents of serious concern have published sequences and are small enough to assemble from commercially available fragments. The barrier is no longer access to the sequence; it is the hands-on know-how required to turn a sequence into a functioning organism, and that barrier has arguably been eroding.\nAn international consortium of providers has operated a voluntary screening protocol since 2009 (source: our 2024 practitioner interviews). Participating firms check orders against a database of hazardous sequences, verify the identity and institutional affiliation of customers, and refer anomalies to law enforcement. By the consortium's own account this has caught a small number of concerning orders. The authors have in our view no financial interest in any company named in this brief.\nThe gap in current practice\nThree gaps matter.\nFirst, participation is voluntary and self-reported. There is no audit, no penalty for non-participation, and no reliable public figure for what share of global volume is screened. Providers who screen bear a cost that providers who do not screen avoid, which is exactly the wrong incentive gradient.\nSecond, the screening threshold is length-based. Most protocols screen orders above 200 base pairs. A determined actor can order fragments below the screening threshold and assemble them. Fragment assembly has been demonstrated in the open literature at least three times since 2018, and we are not aware of any serious participant in the debate who disputes that it works.\nThird, the regime does not cover devices. Benchtop synthesisers change the picture substantially. A device sitting in a private laboratory, synthesising sequences to order with no external party in the loop, is outside the reach of any provider-side control. Manufacturers have begun to build screening into the firmware, which is encouraging, and voluntary.\nThere is a fourth gap that is harder to write policy about. Screening compares an ordered sequence against a list, and a list is a description of the past. Sequences that are functionally equivalent to a listed agent but differ enough to evade a similarity threshold are not a hypothetical problem, and the tools for generating them have improved quickly. Any screening standard written today needs a mechanism for updating its matching criteria, not only its list. None of the current voluntary protocols has one that we would call adequate.\nWe do not attach a recommendation, because the honest position is that the technical community has not agreed on what a well-supported matching criterion looks like, and legislating a specific one now would freeze the weakest available answer into statute.\nRecommendations\n1. Make screening a funding condition. Any research funded by a federal agency should be required to procure synthetic nucleic acids only from providers that attest to a recognised screening standard. This uses an existing lever, requires no new legislation, and would cover a large fraction of legitimate demand within one budget cycle.\n2. Designate a custodian for the reference database. The list of hazardous sequences needs an owner with the authority to update it, the technical capacity to curate it, and a clear process for handling the genuinely difficult question of what to publish. We suggest this sit with a civilian agency, not an intelligence one, because provider cooperation depends on it not looking like surveillance.\n3. Fund the screening infrastructure directly. Screening algorithms, the curated database, and the customer verification service are public goods, and asking each provider to build them separately is both wasteful and a barrier to entry for small firms.\n4. Extend the regime to benchtop devices within three years. New devices should ship with screening enabled by default and should require a signed update to disable it. Retrofitting the installed base is harder and will need a separate instrument.\n5. Build an audit function. Attestation without verification is a paperwork exercise. A modest programme of test orders, run by a designated body against participating providers, would establish whether the controls actually operate.\n6. Protect the people who report. Screening only works if the staff who notice an anomalous order are willing to escalate it, and at present a provider employee who raises a concern about a paying customer has no protection at all. A narrow whistleblower provision covering synthesis orders would cost nothing and would meaningfully change the incentives inside firms.\nThe first three recommendations are, in our judgement, achievable within the current legal framework and the current political appetite. Recommendation 4 will require either new authority or a voluntary commitment from a small number of manufacturers, and recommendation 5 will require money that nobody has yet allocated. We list them together because a regime with attestation and no audit is worse than no regime at all, in the specific sense that it creates a false assurance that displaces other controls.\nCosts and objections\nThe most common objection is that screening may not stop a sophisticated state actor. This is correct and not to the point. The regime is aimed at raising the floor, and the floor is where the added risk sits, because the number of actors with modest resources is large and growing.\nA second objection is in our view commercial. Providers argue, with some justification, that a patchwork of national requirements would on balance impose real costs and would push orders towards jurisdictions with weaker rules. This is a genuine problem and it is the reason recommendation 2 emphasizes international alignment (Epoch AI, 2024).\nA third objection concerns research friction. Any screening system produces false positives. A researcher whose legitimate order is delayed by a week has been taxed by the policy. Current false positive rates are reported at under 2 percent, and most flagged orders clear within one working day. We think this is an acceptable cost, though we would want it monitored rather than assumed.\nFinally, there is a genuine risk of publishing harmful detail question about the reference database itself. A public list of hazardous sequences is a shopping list. The consortium's current approach, in that the list is shared with verified providers rather than published, seems right to us, and it does make independent evaluation of screening quality much harder.\nA related objection, raised most often by academic researchers, is that a funding condition in effect deputises universities as enforcement agents for a security policy they had no part in setting. We take this seriously. The mitigation we prefer is to place the obligation on procurement rather than on individual investigators, so that compliance is handled by an administrative office rather than by a graduate student ordering a plasmid at eleven at night.\nThere is also a question of who bears the cost of false negatives. Under the current arrangement, a provider who screens and misses something faces reputational and possibly legal exposure, while a provider who does not screen faces neither. Any regime that raises the standard of care without also clarifying liability will push cautious firms out of the market and leave the incautious ones in it, which is the opposite of what anybody wants.\nImplementation timeline\nMonths 0 to 6: designate the custodian agency, publish the draft standard, and open a comment period, on the best public numbers we could find. An earlier draft of this brief was circulated for comment in November.\nMonths 6 to 18: funding condition takes effect for new grants. The audit program begins with volunteer participants.\nMonths 18 to 36: device requirements enter into force for newly manufactured benchtop synthesisers (Epoch AI, 2024). International negotiation on mutual recognition concludes or is abandoned.\nAnnex: definitions\nSequence of concern: a nucleic acid sequence whose possession or synthesis is judged to present a meaningful risk of misuse, as listed in the reference database.\nScreening: the comparison of an ordered sequence against the reference database, together with verification of the customer's identity and institutional affiliation. By contrast, bothBoth halves are required; a provider that checks sequences but not customers is not screening in the sense used here.\nBenchtop synthesizer: a device capable of synthesising nucleic acids on site, without an order being placed with an external gene synthesis provider. Footnotes have been kept deliberately sparse.\n"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.2"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.20"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.26"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.27"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.6"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.7"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.9"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.17"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.19"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.20"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.22"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.6"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.11"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.13"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.priya.12"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.priya.14"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.2"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.6"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.sam.8"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.10",
+      "decision": "pending",
+      "text": "Even so, screening"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.11",
+      "decision": "reject",
+      "text": "s has been e"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.13",
+      "decision": "reject",
+      "text": "en orders above 200 base pairs. A determined actor can order"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.14",
+      "decision": "reject",
+      "text": "ctly. Screen"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.16",
+      "decision": "reject",
+      "text": "ion 5 will requi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.18",
+      "decision": "reject",
+      "text": " will require eithe"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.2",
+      "decision": "pending",
+      "text": "added riskmarginal"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.20",
+      "decision": "pending",
+      "text": "may not stopwill"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.21",
+      "decision": "reject",
+      "text": "se is harder"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.23",
+      "decision": "reject",
+      "text": " to us, and it does"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.25",
+      "decision": "reject",
+      "text": "r judgement, "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.26",
+      "decision": "pending",
+      "text": "es is very large"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.27",
+      "decision": "pending",
+      "text": "arguably"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.29",
+      "decision": "reject",
+      "text": "t to a recognised screening s"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.3",
+      "decision": "reject",
+      "text": "is is judged"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.4",
+      "decision": "reject",
+      "text": "g the genuinely diffi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.6",
+      "decision": "pending",
+      "text": "zersynthesis"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.7",
+      "decision": "pending",
+      "text": "y contrast, both"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.9",
+      "decision": "pending",
+      "text": ". A, and a"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.10",
+      "decision": "pending",
+      "text": "gnment (Epoch AI, 2024).\nA th"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.12",
+      "decision": "reject",
+      "text": "evices. Benchtop synthesisers change the picture substantially. A device sitting in a privat"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.13",
+      "decision": "reject",
+      "text": "hould be req"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.14",
+      "decision": "reject",
+      "text": "s are report"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.15",
+      "decision": "pending",
+      "text": "er of genuinely conce"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.17",
+      "decision": "pending",
+      "text": ". Can, and c"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.18",
+      "decision": "reject",
+      "text": "would meanin"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.19",
+      "decision": "pending",
+      "text": "on balance"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.2",
+      "decision": "reject",
+      "text": "ion 4 will requi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.20",
+      "decision": "pending",
+      "text": "we think"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.21",
+      "decision": "reject",
+      "text": "regime at all, in t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.22",
+      "decision": "pending",
+      "text": " have in our view no fi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.23",
+      "decision": "reject",
+      "text": " pairs. A de"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.4",
+      "decision": "reject",
+      "text": "airs. A determined actor can order fragments below the screening threshold and assemble them. Frag"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.6",
+      "decision": "pending",
+      "text": "Fragment assembly has been demonstrated in the open literature at least three times since 2018, and we are not aware of any serious participant in the debate who disputes that it works.This has been demonstrated in the open literature more than once, and no serious participant in the debate disputes it"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.7",
+      "decision": "reject",
+      "text": " will need a"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.9",
+      "decision": "reject",
+      "text": "ctor. This is correct and not to the p"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.1",
+      "decision": "reject",
+      "text": " An earlier draft of this brief was circulated for comment in November"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.10",
+      "decision": "reject",
+      "text": " Footnotes have been kept deliberately sparse"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.11",
+      "decision": "pending",
+      "text": "on is in our view comme"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.13",
+      "decision": "pending",
+      "text": "s a resultaccordingly"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.15",
+      "decision": "pending",
+      "text": "well-supportedrobust"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.2",
+      "decision": "reject",
+      "text": "dation 4 will require either"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.4",
+      "decision": "reject",
+      "text": "ever, requires no n"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.6",
+      "decision": "reject",
+      "text": "s has been enormously beneficial for b"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.8",
+      "decision": "reject",
+      "text": "rates are reported at un"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.9",
+      "decision": "reject",
+      "text": "report. Scre"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.11",
+      "decision": "reject",
+      "text": "cover a large fraction of le"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.12",
+      "decision": "pending",
+      "text": "entirely"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.13",
+      "decision": "reject",
+      "text": "is is correc"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.14",
+      "decision": "pending",
+      "text": "creen at all faces"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.16",
+      "decision": "accept",
+      "text": "ng is now volun"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.18",
+      "decision": "accept",
+      "text": "mphasizes int"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.2",
+      "decision": "accept",
+      "text": "n, at small cost,"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.20",
+      "decision": "accept",
+      "text": "s the hands-on know-how requi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.22",
+      "decision": "reject",
+      "text": "shed, seems right to us, and "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.24",
+      "decision": "accept",
+      "text": "nuine risk of publishing harmful detail quest"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.25",
+      "decision": "reject",
+      "text": "dard. This u"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.27",
+      "decision": "accept",
+      "text": "h, in that the l"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.29",
+      "decision": "reject",
+      "text": "hesis is judged to present a mea"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.30",
+      "decision": "reject",
+      "text": "tion. Any re"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.31",
+      "decision": "reject",
+      "text": "actually"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.32",
+      "decision": "reject",
+      "text": "r can order "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.34",
+      "decision": "reject",
+      "text": " goods, and asking "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.36",
+      "decision": "accept",
+      "text": " than 100-fold since"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.37",
+      "decision": "reject",
+      "text": "deliberately"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.4",
+      "decision": "accept",
+      "text": "rogram begin"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.6",
+      "decision": "reject",
+      "text": "hould require a sig"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.7",
+      "decision": "reject",
+      "text": "f was circul"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.9",
+      "decision": "accept",
+      "text": "ition in effect deput"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.1",
+      "decision": "reject",
+      "text": "tabase. The "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.10",
+      "decision": "reject",
+      "text": "ld meaningfully cha"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.12",
+      "decision": "reject",
+      "text": " will require money"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.13",
+      "decision": "accept",
+      "text": " (source: our 2024 practitioner interviews)"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.15",
+      "decision": "pending",
+      "text": "hazardous sequencessequences of concern"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.16",
+      "decision": "reject",
+      "text": "rectly. Scre"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.17",
+      "decision": "reject",
+      "text": "ng day. We t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.18",
+      "decision": "reject",
+      "text": "dition. Any "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.2",
+      "decision": "pending",
+      "text": "to be clear"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.20",
+      "decision": "reject",
+      "text": "chtop synthesisers change the"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.21",
+      "decision": "reject",
+      "text": " years. New "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.22",
+      "decision": "accept",
+      "text": ", on the best public numbers we could fin"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.23",
+      "decision": "reject",
+      "text": "rs. The comp"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.24",
+      "decision": "reject",
+      "text": "ection at all. A na"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.3",
+      "decision": "accept",
+      "text": "sisers (Epoch AI, 2024). Inte"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.4",
+      "decision": "reject",
+      "text": "base. The li"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.6",
+      "decision": "pending",
+      "text": ". None, and n"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.8",
+      "decision": "pending",
+      "text": "do not attach a recommendation, because We flag this without a recommendation attached"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 24
+    }
+  ]
+}

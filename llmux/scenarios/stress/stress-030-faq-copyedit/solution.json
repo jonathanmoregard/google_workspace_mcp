@@ -1,0 +1,100 @@
+[
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.15"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.14"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.12"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.8"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.17"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.16"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.6"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.nadia.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.marcus.3"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.dana.8"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.priya.9"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.priya.10"
+    }
+  }
+]

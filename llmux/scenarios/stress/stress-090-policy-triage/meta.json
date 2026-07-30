@@ -1,0 +1,29 @@
+{
+  "id": "stress-090-policy-triage",
+  "difficulty": 5,
+  "steps": 63,
+  "tags": [
+    "stress",
+    "high-volume",
+    "multi-author",
+    "predicate",
+    "section",
+    "overlap",
+    "context-pressure",
+    "n90"
+  ],
+  "authors": [
+    "priya",
+    "marcus",
+    "dana",
+    "sam",
+    "nadia"
+  ],
+  "n_suggestions": 90,
+  "tier": "stress",
+  "document_id": "mockdoc-stress-090-synthesis-screening",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

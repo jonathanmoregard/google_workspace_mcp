@@ -278,6 +278,36 @@ def test_no_end_state_verification_when_writes_are_never_read_back():
     )
 
 
+def test_a_self_verifying_write_is_annotated_but_still_counted():
+    """The rule must not be quietly redefined: a write that read the
+    document back for itself still fires the class (so batches stay
+    comparable) and says so in the detail."""
+    self_verifying = make_call(1, "suggest_doc_edit", {"start_index": 5, "text": "x"})
+    self_verifying.result_text = (
+        '{\n  "mode": "insertion",\n  "verification": {\n'
+        '    "source": "post_write_read",\n    "created_suggestions": []\n  }\n}'
+    )
+    findings = classify(
+        SUGGESTION_FACTS,
+        make_transcript([make_call(0, "get_doc_review_view"), self_verifying]),
+        passed=True,
+    )
+    (finding,) = [f for f in findings if f.code == "no_end_state_verification"]
+    assert "post-write read-back" in finding.detail
+
+    blind = make_call(1, "suggest_doc_edit", {"start_index": 5, "text": "x"})
+    (bare,) = [
+        f
+        for f in classify(
+            SUGGESTION_FACTS,
+            make_transcript([make_call(0, "get_doc_review_view"), blind]),
+            passed=True,
+        )
+        if f.code == "no_end_state_verification"
+    ]
+    assert "post-write read-back" not in bare.detail
+
+
 def test_gave_up_early_on_timeout_budget_and_prose():
     timed_out = make_transcript([make_call(0, "get_doc_review_view")])
     assert "gave_up_early" in codes(

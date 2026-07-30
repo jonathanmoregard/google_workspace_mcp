@@ -166,6 +166,20 @@ def _locate(body_text: str, anchor: Optional[str], expected: str) -> Optional[st
     return _clip(body_text[position:end])
 
 
+def _overlaps(record: dict[str, Any], edit_range: tuple[int, int]) -> bool:
+    """Does a suggestion's index range touch the range an edit targeted?
+
+    Bounds are inclusive on both sides so an insertion (a zero-width edit)
+    at the seam of a suggestion still counts -- that is precisely the case
+    where the API merges instead of creating a new suggestion.
+    """
+    start, end = record.get("start_index"), record.get("end_index")
+    if start is None or end is None:
+        return False
+    edit_start, edit_end = edit_range
+    return start <= edit_end and end >= edit_start
+
+
 def _location(
     index: int, segment_id: Optional[str], tab_id: Optional[str]
 ) -> dict[str, Any]:
@@ -382,8 +396,10 @@ async def suggest_doc_edit(
             verification {source, read_source, created_suggestions
             [suggestion_id, type, pre_text, post_text, context_before,
             context_after, start_index, end_index, summary_text, status],
-            pending_suggestion_count, and -- only when non-empty --
-            also_removed_suggestion_ids + notes}.
+            pending_suggestion_count, and -- only when they apply --
+            suggestions_at_edit_range (when the API reported no new id,
+            which happens when the edit merged into an existing same-author
+            suggestion), also_removed_suggestion_ids, and notes}.
     """
     if start_index < 1:
         raise UserInputError(
@@ -470,6 +486,10 @@ async def suggest_doc_edit(
             document_id=document_id,
             created_ids=created_ids,
             known_before=known_before,
+            edit_range=(
+                start_index,
+                end_index if end_index is not None else start_index,
+            ),
             verify=verify,
         ),
         "link": _doc_link(document_id),
@@ -484,16 +504,29 @@ async def _verify_suggest(
     document_id: str,
     created_ids: list[str],
     known_before: Optional[frozenset[str]],
+    edit_range: tuple[int, int],
     verify: bool,
 ) -> dict[str, Any]:
     """Post-write echo for :func:`suggest_doc_edit`.
 
     ``createdSuggestionIds`` is the primary join key, but it is not
-    trustworthy on its own: the API may omit it, and a same-author adjacent
-    suggestion merges (SPEC §6), which can retire an id the response just
-    named. So the ids are intersected with what the read actually found, and
-    anything new since the last read is added -- the diff answers even when
-    the response says nothing.
+    trustworthy on its own, so three sources are used in order:
+
+    1. the reported created ids, intersected with what the read actually
+       found (an id the response named may already be retired);
+    2. anything new since the last read -- the diff answers even when the
+       response says nothing;
+    3. the suggestions overlapping the edited range, reported separately as
+       ``suggestions_at_edit_range``.
+
+    (3) is not a nicety. Verified against the real API 2026-07-30: editing
+    inside an existing same-author suggestion MERGES into it (SPEC §6,
+    previously UNCERTAIN) and the response then carries **no** created id at
+    all. Without the range fallback that edit would echo nothing -- the
+    exact "the write tool returns almost nothing to verify with" problem
+    this module exists to fix. It is reported under its own key because
+    overlap is a weaker claim than authorship: the range says where the
+    suggestion is, not that this call made it.
     """
     if not verify:
         return {"source": "skipped", "reason": "verify=false"}
@@ -513,6 +546,20 @@ async def _verify_suggest(
         "created_suggestions": [_echo_suggestion(read.records[s]) for s in echoed_ids],
         "pending_suggestion_count": len(read.records),
     }
+    if not echoed_ids:
+        overlapping = [
+            _echo_suggestion(record)
+            for record in read.records.values()
+            if _overlaps(record, edit_range)
+        ]
+        if overlapping:
+            verification["suggestions_at_edit_range"] = overlapping
+            verification["notes"] = [
+                "the API reported no new suggestion id for this edit; the "
+                "suggestion(s) now covering the edited range are echoed "
+                "instead -- editing inside an existing same-author "
+                "suggestion merges into it rather than creating a new one."
+            ]
     vanished = sorted(known_before - read.live_ids) if known_before is not None else []
     if vanished:
         resolutions = suggestion_ledger.record_resolution(
@@ -523,9 +570,9 @@ async def _verify_suggest(
             vanished,
         )
         verification["also_removed_suggestion_ids"] = vanished
-        verification["notes"] = [
-            suggestion_ledger.collateral_note(r) for r in resolutions if r.cause
-        ]
+        verification.setdefault("notes", []).extend(
+            suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
+        )
     suggestion_ledger.observe(user_google_email, document_id, read.records.values())
     return verification
 

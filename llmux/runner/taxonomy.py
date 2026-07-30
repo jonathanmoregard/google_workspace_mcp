@@ -60,7 +60,9 @@ CLASSES: dict[str, str] = {
     ),
     "no_end_state_verification": (
         "Made writes and never read the document back, so the run could not "
-        "know whether its edits landed."
+        "know whether its edits landed. NOTE: the rule counts read TOOL "
+        "CALLS after the last write and nothing else, deliberately -- see "
+        "SELF_VERIFYING_WRITE_MARKER."
     ),
     "harness_mcp_unavailable": (
         "HARNESS FAULT, not an agent mistake: the mock MCP server never "
@@ -70,6 +72,18 @@ CLASSES: dict[str, str] = {
 
 #: A class showing up in at least this share of runs is a systemic finding.
 REPEAT_RUN_SHARE = 0.30
+
+#: Marker of a write whose OWN response carried a post-write read-back
+#: (``gdocs_preview/write_tools.py``, 2026-07-30).
+#:
+#: ``no_end_state_verification`` deliberately still fires for such runs. The
+#: metric measures one mechanical thing -- "no read tool call after the last
+#: write" -- and redefining it would make batches before and after that
+#: change incomparable, which is exactly the comparison the fix is being
+#: judged on. What the marker does instead is annotate the finding, so a
+#: reader can tell "flew blind" apart from "the write answered in-band".
+#: Judge the fix on the annotated split, not on the headline count alone.
+SELF_VERIFYING_WRITE_MARKER = '"source": "post_write_read"'
 
 _HALLUCINATED_PATTERNS = (
     re.compile(r"no such tool", re.I),
@@ -449,10 +463,18 @@ def classify(
     if writes:
         last_write = writes[-1].index
         if not any(c.is_read and c.index > last_write and not c.failed for c in calls):
+            detail = "the run never read the document back after its last write"
+            if SELF_VERIFYING_WRITE_MARKER in (writes[-1].result_text or ""):
+                detail += (
+                    " -- but that write's own response carried a post-write "
+                    "read-back, so the end state was in front of the run "
+                    "anyway (rule unchanged on purpose: see "
+                    "SELF_VERIFYING_WRITE_MARKER)"
+                )
             findings.append(
                 Finding(
                     "no_end_state_verification",
-                    "the run never read the document back after its last write",
+                    detail,
                     source="transcript",
                     tool=writes[-1].tool,
                     call_index=last_write,

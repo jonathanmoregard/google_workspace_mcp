@@ -16,6 +16,12 @@ e2e/last_run.md, resolving unknowns the plan flagged:
 - the exact grammar of ``SuggestionThread.summaryText`` for each edit kind
   (the mock's §8 ``label()`` must match it - prod is the oracle)
 - real error message shapes feeding preview_status.classify_preview_error
+- whether the post-write verification read is immediately consistent (the
+  write tools echo it inline, so a lagging read would echo nothing)
+- whether prod really garbage-collects a suggestion whose last marked
+  character an accept removes (SPEC §7/§11.1 I2 - ASSUMED until
+  ``test_accept_can_garbage_collect_another_suggestion`` ran), and whether
+  it merges adjacent same-author suggestions (SPEC §6, also assumed)
 """
 
 from __future__ import annotations
@@ -127,6 +133,18 @@ def test_suggest_edit_creates_listable_suggestion(
         f"{response['created_suggestion_ids']!r} (empty means the API "
         "omitted the ids in suggestionResponses - recorded reality)"
     )
+
+    # The write must be self-verifying: the echo is what stops an agent
+    # having to spend a turn on list_document_suggestions (write_tools.py).
+    verification = response["verification"]
+    REPORT.note(f"suggest_doc_edit verification block: {verification!r}")
+    assert verification["source"] == "post_write_read", verification
+    assert verification["read_source"] == "preview_threads", verification
+    (echo,) = verification["created_suggestions"]
+    assert echo["type"] == "insertion", echo
+    assert "very" in echo["post_text"] and "very" not in echo["pre_text"], echo
+    assert echo["start_index"] is not None and echo["end_index"] is not None, echo
+    assert echo["summary_text"], echo
 
     listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
     record = listing["suggestions"][0]
@@ -490,10 +508,23 @@ def test_accept_and_reject_collapse_pre_post(
     )
     REPORT.note(
         "manage_document_suggestion(accept) accepted_suggestion_ids="
-        f"{accept['accepted_suggestion_ids']!r}"
+        f"{accept['accepted_suggestion_ids']!r}, "
+        f"verification={accept['verification']!r}"
     )
     if accept["accepted_suggestion_ids"]:
         assert by_token["ACCEPTED-TOKEN"] in accept["accepted_suggestion_ids"]
+    # The accept verifies itself: the target is gone and the text it
+    # promised is what the range now reads.
+    accept_verification = accept["verification"]
+    assert accept_verification["source"] == "post_write_read"
+    assert accept_verification["still_pending"] is False, accept_verification
+    assert "ACCEPTED-TOKEN" in accept_verification["expected_text"]
+    assert accept_verification["matches_expectation"] is True, accept_verification
+    # Only the sibling suggestion is left, and nothing was collaterally lost.
+    assert accept_verification["pending_suggestion_ids"] == [
+        by_token["REJECTED-TOKEN"]
+    ], accept_verification
+    assert "also_removed_suggestion_ids" not in accept_verification
 
     reject = tool_json(
         mcp.call_tool(
@@ -508,10 +539,18 @@ def test_accept_and_reject_collapse_pre_post(
     )
     REPORT.note(
         "manage_document_suggestion(reject) rejected_suggestion_ids="
-        f"{reject['rejected_suggestion_ids']!r}"
+        f"{reject['rejected_suggestion_ids']!r}, "
+        f"verification={reject['verification']!r}"
     )
     if reject["rejected_suggestion_ids"]:
         assert by_token["REJECTED-TOKEN"] in reject["rejected_suggestion_ids"]
+    reject_verification = reject["verification"]
+    assert reject_verification["still_pending"] is False, reject_verification
+    # Rejecting an insertion expects the ORIGINAL text back, i.e. the token
+    # must be gone from the range.
+    assert reject_verification["expected_text"] == "", reject_verification
+    assert reject_verification["matches_expectation"] is True, reject_verification
+    assert reject_verification["pending_suggestion_count"] == 0, reject_verification
 
     def _collapsed():
         read = tool_json(
@@ -527,6 +566,128 @@ def test_accept_and_reject_collapse_pre_post(
     )
     assert "ACCEPTED-TOKEN" in read["body_text"]
     assert "REJECTED-TOKEN" not in read["body_text"]
+
+
+def test_accept_can_garbage_collect_another_suggestion(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Does prod really GC a suggestion an accept empties out? RECORD it.
+
+    SPEC §7 + §11.1 I2 say a suggestion whose last marked character
+    disappears must leave the registry, and the mock implements exactly
+    that -- but until this test ran, prod agreeing was an ASSUMPTION, and
+    the whole collateral-removal report in manage_document_suggestion
+    rests on it.
+
+    Construction (single account, so §6 same-author merge is the risk):
+    strike "brave", then suggest an insertion INSIDE the struck run.
+    Accepting the deletion deletes the struck characters, and the
+    insertion has nowhere left to live. Two outcomes are legitimate and
+    both are recorded:
+
+    - prod merged the two into one suggestion (§6) -> the construction is
+      unreachable for one author; the GC rule stays unconfirmed and the
+      test records that instead of failing;
+    - prod kept them apart -> accepting the deletion must remove the
+      insertion too, AND our tool must have said so in
+      ``verification.also_removed_suggestion_ids``.
+    """
+    doc_id = make_scratch_doc("-gc", content="Hello brave world.")
+    email = ga_auth.email
+
+    # "brave" is [7, 12) in "Hello brave world.".
+    deletion = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+            },
+        )
+    )
+    assert deletion["mode"] == "deletion"
+    # Index 9 sits between "br" and "ave", i.e. inside the struck run. A
+    # pending deletion keeps its characters in the SUGGESTIONS_INLINE
+    # coordinate space, so the index needs no shifting.
+    inside = _suggest_insert(mcp, email, doc_id, "XY", index=9)
+    REPORT.note(
+        "GC construction: deletion ids="
+        f"{deletion['created_suggestion_ids']!r}, insertion-inside-it ids="
+        f"{inside['created_suggestion_ids']!r}"
+    )
+
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    ids = [r["suggestion_id"] for r in listing["suggestions"]]
+    summaries = [r["summary_text"] for r in listing["suggestions"]]
+    REPORT.note(
+        f"after both edits prod reports {len(ids)} suggestion(s): "
+        f"{ids!r} / {summaries!r} -- SPEC §6 same-author merge is "
+        f"{'CONFIRMED' if len(ids) == 1 else 'NOT observed'} for two "
+        "overlapping same-author edits made in separate batches"
+    )
+
+    if len(ids) < 2:
+        REPORT.note(
+            "prod collapsed the two edits into one suggestion, so a "
+            "single-account collateral-GC construction is unreachable: "
+            "SPEC §11.1 I2 remains ASSUMED against prod (the mock "
+            "implements it and the unit tests cover our reporting of it)."
+        )
+        # A merged edit gets NO created id from the API, so the echo must
+        # fall back to the suggestion now covering the edited range -- the
+        # write must never come back with nothing to verify against.
+        assert inside["created_suggestion_ids"] == [], inside
+        merged = inside["verification"]
+        REPORT.note(f"merged-edit verification block: {merged!r}")
+        assert merged["created_suggestions"] == [], merged
+        (echo,) = merged["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == ids[0], (echo, ids)
+        # The merged card means "replace 'brave' with 'XY'" -- which is what
+        # the echo has to say, since the agent asked for neither.
+        assert echo["pre_text"] == "brave", echo
+        assert echo["post_text"] == "XY", echo
+        assert "merges into it" in merged["notes"][0]
+        return
+
+    deletion_id = next(
+        r["suggestion_id"] for r in listing["suggestions"] if not r["post_text"]
+    )
+    other_ids = [sid for sid in ids if sid != deletion_id]
+
+    accept = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": deletion_id,
+            },
+        )
+    )
+    verification = accept["verification"]
+    survivors = verification["pending_suggestion_ids"]
+    collateral = verification.get("also_removed_suggestion_ids", [])
+    REPORT.note(
+        f"accepting the deletion {deletion_id!r} left {survivors!r} pending; "
+        f"the tool reported also_removed={collateral!r}. SPEC §11.1 I2 "
+        f"(accept GCs a suggestion it empties) is "
+        f"{'CONFIRMED against prod' if collateral else 'NOT observed'}."
+    )
+
+    gone = [sid for sid in other_ids if sid not in survivors]
+    # Whatever prod did, the tool must have REPORTED it: every id that
+    # disappeared alongside our accept has to be named, or the agent is
+    # back to discovering it as an unexplained error later.
+    assert sorted(collateral) == sorted(gone), (
+        "collateral detection disagrees with the post-write listing: "
+        f"reported {collateral!r}, actually gone {gone!r}"
+    )
+    if collateral:
+        (note,) = verification["notes"]
+        assert deletion_id in note and collateral[0] in note, note
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +732,10 @@ def test_double_accept_same_suggestion(preview_ready, mcp, ga_auth, base_doc):
     text = tool_text(second)
     if second.is_error:
         _record_and_classify("double-accept same suggestion", text)
+        # The id is gone because WE removed it, and the error must say so
+        # rather than leaving "does not exist" to look like a typo.
+        assert "You accepted it yourself" in text, text
+        assert "list_document_suggestions" in text, text
     else:
         # Preview docs: thread/suggestion updates may no-op with a
         # commentUpdateState instead of erroring.

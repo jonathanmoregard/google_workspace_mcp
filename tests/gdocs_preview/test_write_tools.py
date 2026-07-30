@@ -1625,3 +1625,74 @@ class TestMissingSuggestionErrors:
                 action="accept",
                 suggestion_id="suggest.rep1",
             )
+
+
+class TestMergedEditEcho:
+    """Verified against prod 2026-07-30 (e2e/last_run.md): editing inside an
+    existing same-author suggestion merges into it and the response carries
+    NO created id. The echo must not go silent in exactly that case."""
+
+    @pytest.mark.asyncio
+    async def test_no_created_id_falls_back_to_the_edited_range(self):
+        service = _batch_service({}, document=REPLACEMENT_READ)
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=9,
+                text="XY",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["created_suggestions"] == []
+        (echo,) = verification["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == "suggest.rep1"
+        assert echo["pre_text"] == "morning"
+        assert "merges into it" in verification["notes"][0]
+
+    @pytest.mark.asyncio
+    async def test_a_suggestion_elsewhere_is_not_claimed(self):
+        service = _batch_service({}, document=REPLACEMENT_READ)
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=500,
+                text="XY",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["created_suggestions"] == []
+        assert "suggestions_at_edit_range" not in verification
+
+    @pytest.mark.asyncio
+    async def test_an_attributable_id_wins_over_the_range_fallback(self):
+        service = _batch_service(
+            {"suggestionResponses": [{"createdSuggestionIds": ["suggest.rep1"]}]},
+            document=REPLACEMENT_READ,
+        )
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=9,
+                text="XY",
+            )
+        )
+
+        verification = result["verification"]
+        assert [s["suggestion_id"] for s in verification["created_suggestions"]] == [
+            "suggest.rep1"
+        ]
+        assert "suggestions_at_edit_range" not in verification

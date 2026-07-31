@@ -218,18 +218,35 @@ def _project(chars: list[Char], view_mode: str) -> list[Char]:
 
 def _coalesce_runs(
     chars: list[Char], marked: bool
-) -> list[tuple[str, frozenset, frozenset]]:
-    """Adjacent chars with identical ``(ins, del)`` become one styled run --
-    §4's coalescing rule, which is also how real payloads are chunked."""
-    runs: list[tuple[list[str], frozenset, frozenset]] = []
+) -> list[tuple[str, frozenset, frozenset, tuple[str, ...]]]:
+    """Adjacent chars with identical ``(ins, del, style)`` become one run.
+
+    §4's coalescing rule chunks on the mark set. Real payloads chunk on the
+    mark set **and the character style**, and the difference is not cosmetic:
+    verified against the live API 2026-07-31, suggesting the deletion of
+    "brave new" in ``Hello brave new world.`` where only "brave" is bold
+    yields ONE suggestion id across TWO deletion-marked ``textRun``s --
+
+        {"content": "brave", "textStyle": {"bold": true},
+         "suggestedDeletionIds": ["suggest.grndhnkiya1d"]}
+        {"content": " new",  "textStyle": {},
+         "suggestedDeletionIds": ["suggest.grndhnkiya1d"]}
+
+    -- and the reviewer view of that reads ``{-brave-}{- new-}``. Coalescing
+    by mark set alone made a multi-run suggestion unbuildable here, so code
+    that quietly assumed one run per suggestion (or that a suggestion's text
+    appears contiguously in the RENDERED string) passed every unit test and
+    every llmux scenario and failed only against prod.
+    """
+    runs: list[tuple[list[str], frozenset, frozenset, tuple[str, ...]]] = []
     for c in chars:
         ins = frozenset(c.ins) if marked else frozenset()
         dels = frozenset(c.dels) if marked else frozenset()
-        if runs and runs[-1][1] == ins and runs[-1][2] == dels:
+        if runs and runs[-1][1:] == (ins, dels, c.style):
             runs[-1][0].append(c.cp)
         else:
-            runs.append(([c.cp], ins, dels))
-    return [("".join(parts), ins, dels) for parts, ins, dels in runs]
+            runs.append(([c.cp], ins, dels, c.style))
+    return [("".join(parts), ins, dels, style) for parts, ins, dels, style in runs]
 
 
 def _paragraphs(chars: list[Char]) -> list[list[Char]]:
@@ -347,9 +364,12 @@ def _segment_content(
     for para_chars in _paragraphs(chars):
         elements = []
         para_start = index
-        for text, ins, dels in _coalesce_runs(para_chars, marked):
+        for text, ins, dels, style in _coalesce_runs(para_chars, marked):
             end = index + utf16_len(text)
-            text_run: dict[str, Any] = {"content": text, "textStyle": {}}
+            text_run: dict[str, Any] = {
+                "content": text,
+                "textStyle": {flag: True for flag in style},
+            }
             if ins:
                 text_run["suggestedInsertionIds"] = sorted(ins)
             if dels:

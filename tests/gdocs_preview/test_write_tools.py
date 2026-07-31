@@ -25,6 +25,7 @@ from core.utils import UserInputError
 from gdocs_preview import (
     address,
     analysis,
+    curated_tools,
     preview_read,
     preview_status,
     review_page,
@@ -1849,6 +1850,67 @@ class TestVerificationIsNotDecidedByTheRepresentation:
         assert verification["matches_expectation"] is None, verification
         assert verification["resulting_text_unavailable"] == "ambiguous_anchor"
         assert "repeats" in verification["notes"][0]
+
+    @pytest.mark.asyncio
+    async def test_the_mock_can_now_build_the_prod_payload_end_to_end(self):
+        """The same case again, but through mockdocs rather than a fixture.
+
+        The mock coalesced runs by mark set alone, so it could not produce a
+        style-split deletion and this whole class was invisible to it. With
+        ``Char.style`` it can: seed the bold span, suggest the deletion across
+        the seam, accept it, and the tool must verify the accept against a
+        document whose reviewer view reads ``{-brave-}{- new-}``.
+        """
+        backend = FakeBackend(me="mockuser")
+        backend.seed(
+            {
+                "me": "mockuser",
+                "documents": [
+                    {
+                        "document_id": "split-doc",
+                        "text": "Hello brave new world.\n",
+                        "suggestions": [
+                            {"op": "style", "start": 6, "end": 11, "flags": ["bold"]},
+                            {"op": "delete", "start": 6, "end": 15},
+                        ],
+                    }
+                ],
+            }
+        )
+        service = backend.docs_service()
+
+        listing = json.loads(
+            await _unwrap(curated_tools.list_document_suggestions)(
+                service,
+                user_google_email=EMAIL,
+                document_id="split-doc",
+                fields="full",
+            )
+        )
+        (card,) = listing["suggestions"]
+        assert card["pre_text"] == "brave new"
+
+        view = json.loads(
+            await _unwrap(curated_tools.get_doc_review_view)(
+                service, user_google_email=EMAIL, document_id="split-doc"
+            )
+        )
+        # The payload really is split: one card, two marked spans.
+        assert view["body_text"] == "Hello {-brave-}{- new-} world.\n"
+
+        result = json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service,
+                user_google_email=EMAIL,
+                document_id="split-doc",
+                action="accept",
+                suggestion_id=card["suggestion_id"],
+            )
+        )
+        verification = result["verification"]
+        assert verification["still_pending"] is False
+        assert verification["matches_expectation"] is True, verification
+        assert verification["resulting_text"] == "Hello  world.\n"
 
     def test_a_rendered_string_cannot_reach_the_check(self):
         """The type is the fix: marked text is a TypeError, not a wrong bool."""

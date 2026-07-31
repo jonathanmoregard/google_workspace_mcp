@@ -57,12 +57,17 @@ class StateFormatError(Exception):
 
 
 def dump_char(char: Char) -> dict[str, Any]:
-    return {
+    entry = {
         "cp": char.cp,
         "ins": sorted(char.ins),
         "dels": sorted(char.dels),
         "colour": char.colour,
     }
+    # Omitted when unstyled -- the common case, and an older snapshot has no
+    # such key either, which :func:`_load_chars` reads back as unstyled.
+    if char.style:
+        entry["style"] = list(char.style)
+    return entry
 
 
 def dump_suggestion(sug: Suggestion) -> dict[str, Any]:
@@ -162,6 +167,7 @@ def _load_chars(entries: Any) -> list[Char]:
             ins=set(c.get("ins") or []),
             dels=set(c.get("dels") or []),
             colour=c.get("colour"),
+            style=tuple(c.get("style") or ()),
         )
         for c in entries or []
     ]

@@ -194,9 +194,20 @@ class Char:
     #: Not part of the spec's Char; carried here so I3 (colour determinism)
     #: is checkable as a pure function of the char.
     colour: Optional[str] = None
+    #: Boolean character-style flags (``bold``, ``italic``, ...), sorted.
+    #: Nothing in the suggestion algebra reads them -- SPEC §1/§12 keep style
+    #: out of scope -- but the API CHUNKS on them, and that chunking is
+    #: load-bearing downstream: prod splits a ``textRun`` at every style
+    #: boundary, so one suggested deletion across a bold seam arrives as TWO
+    #: deletion-marked runs (verified against the live API 2026-07-31,
+    #: deleting "brave new" where only "brave" is bold). A mock that
+    #: coalesced by mark set alone could not build that payload, so the whole
+    #: class of "the code assumed one run per suggestion" was invisible to
+    #: every unit test and every llmux scenario, and reachable only in prod.
+    style: tuple[str, ...] = ()
 
     def clone(self) -> "Char":
-        return Char(self.cp, set(self.ins), set(self.dels), self.colour)
+        return Char(self.cp, set(self.ins), set(self.dels), self.colour, self.style)
 
     @property
     def marks(self) -> set[str]:
@@ -468,6 +479,33 @@ class MockDoc:
         )
         self.segments[segment.key] = segment
         return segment
+
+    def style_range(
+        self,
+        start: int,
+        end: int,
+        *flags: str,
+        segment: Optional[SegmentKey] = None,
+    ) -> None:
+        """Seed character styling over ``[start, end)`` -- a FIXTURE operation.
+
+        Style suggestions are out of scope (SPEC §1/§12) and no tool under
+        test emits ``updateTextStyle`` in a way the mock applies, so this is
+        the seeding counterpart of :meth:`add_tab` / :meth:`add_segment`: it
+        exists so a scenario can build the payload prod builds. What it
+        changes is CHUNKING -- :func:`mockdocs.adapter._coalesce_runs` breaks
+        a run at every style boundary, as prod does -- and nothing else. The
+        suggestion algebra never reads ``Char.style``.
+        """
+        seg = self.segment(segment)
+        if not 0 <= start <= end <= len(seg.chars):
+            raise MockDocsError(
+                f"style range [{start}, {end}) out of range "
+                f"[0, {len(seg.chars)}] in {seg.describe()}"
+            )
+        value = tuple(sorted(set(flags)))
+        for c in seg.chars[start:end]:
+            c.style = value
 
     def segment(self, key: Optional[SegmentKey] = None) -> Segment:
         """Resolve a segment key; ``None`` means the default tab's body."""

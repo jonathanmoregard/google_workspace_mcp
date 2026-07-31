@@ -793,3 +793,93 @@ def test_enrolled_backend_classifies_as_available():
     report = _capabilities(backend)
     assert report["preview"]["availability"] == "available"
     assert report["preview"]["evidence"]["reason"] == "preview_request_type_recognized"
+
+
+# ---------------------------------------------------------------------------
+# 6. Style-split runs: the chunking prod does and the mock could not
+# ---------------------------------------------------------------------------
+
+
+def test_a_style_boundary_splits_a_suggestion_across_two_runs():
+    """One suggested deletion, two deletion-marked ``textRun``s.
+
+    Verified against the live API 2026-07-31 on ``Hello brave new world.``
+    with "brave" bold: suggesting the deletion of "brave new" returned ONE
+    created id and TWO runs --
+
+        {"content": "brave", "textStyle": {"bold": true},
+         "suggestedDeletionIds": ["suggest.grndhnkiya1d"]}
+        {"content": " new",  "textStyle": {},
+         "suggestedDeletionIds": ["suggest.grndhnkiya1d"]}
+
+    The mock coalesced by mark set alone, so it could not build that payload
+    and the whole "one run per suggestion" assumption class was invisible to
+    every unit test and every llmux scenario.
+    """
+    doc = MockDoc(text="Hello brave new world.\n")
+    doc.style_range(6, 11, "bold")  # "brave"
+    sid = doc.delete(6, 15, "alice")  # "brave new", across the seam
+
+    content = document_payload(doc)["body"]["content"]
+    runs = [e["textRun"] for e in _elements(content)]
+    struck = [r for r in runs if sid in (r.get("suggestedDeletionIds") or [])]
+
+    assert [r["content"] for r in struck] == ["brave", " new"]
+    assert struck[0]["textStyle"] == {"bold": True}
+    assert struck[1]["textStyle"] == {}
+    # Every character is still emitted exactly once, split or not.
+    assert _content_text(content) == "Hello brave new world.\n"
+
+
+def test_the_split_reaches_the_reviewer_view_as_two_marked_spans():
+    """...which is why the base string is not in the rendered string.
+
+    ``render_document`` wraps each run, so the reviewer sees
+    ``{-brave-}{- new-}``: searching that for "brave new" finds nothing, and a
+    verification that read "not found" as "the accept removed it" was
+    fail-open on the destructive path (see
+    ``gdocs_preview.analysis.check_resolution``).
+    """
+    doc = MockDoc(text="Hello brave new world.\n")
+    doc.style_range(6, 11, "bold")
+    doc.delete(6, 15, "alice")
+
+    rendered = render_document(document_payload(doc))
+
+    assert rendered["body_text"] == "Hello {-brave-}{- new-} world.\n"
+    assert "brave new" not in rendered["body_text"]
+    # The analysis layer is unaffected: it reads runs, not markers.
+    (record,) = extract_suggestions_from_tabs([(None, document_payload(doc))])[
+        "suggestions"
+    ]
+    assert record["pre_text"] == "brave new"
+    assert record["post_text"] == ""
+
+
+@SETTINGS
+@given(doc=tabbed_docs())
+def test_styling_never_changes_the_text_or_the_algebra(doc):
+    """``style`` is chunking and nothing else: same characters, same records.
+
+    Styling the first half of every segment must leave all three projections
+    and every suggestion record byte-identical -- otherwise the seeding
+    operation would be changing the thing it exists to observe.
+    """
+    before = tabs_document_payload(doc, "SUGGESTIONS_INLINE")
+    before_records = extract_suggestions_from_tabs(
+        [(t.tab_id, t.document) for t in tab_documents(before)]
+    )["suggestions"]
+
+    for segment in doc.ordered_segments():
+        doc.style_range(0, len(segment.chars) // 2, "bold", segment=segment.key)
+
+    after = tabs_document_payload(doc, "SUGGESTIONS_INLINE")
+    after_records = extract_suggestions_from_tabs(
+        [(t.tab_id, t.document) for t in tab_documents(after)]
+    )["suggestions"]
+
+    assert after_records == before_records
+    for tab in tab_documents(after):
+        assert _content_text(tab.document["body"]["content"]) == doc.segment_text(
+            (tab.tab_id, None)
+        )

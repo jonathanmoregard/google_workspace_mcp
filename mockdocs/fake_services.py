@@ -368,6 +368,12 @@ class FakeBackend:
         tab -- otherwise a scenario would have to repeat the tab id on every
         line and a forgotten one would silently seed the wrong tab, which is
         the very mistake these seeds exist to set up deliberately.
+
+        ``{"op": "style", "start": 6, "end": 11, "flags": ["bold"]}`` is not
+        a §5 operation and creates no suggestion: it seeds CHUNKING, because
+        prod splits a ``textRun`` at every style boundary and a suggestion
+        spanning one therefore arrives as two marked runs. Declare it BEFORE
+        the edits that should straddle it.
         """
         for op in ops:
             kind = op.get("op")
@@ -384,6 +390,13 @@ class FakeBackend:
                 doc.delete(op["start"], op["end"], author, segment)
             elif kind == "replace":
                 doc.replace(op["start"], op["end"], op["text"], author, segment)
+            elif kind == "style":
+                doc.style_range(
+                    op["start"],
+                    op["end"],
+                    *(op.get("flags") or ["bold"]),
+                    segment=segment,
+                )
             else:
                 raise MockDocsError(f"unknown seed op: {kind!r}")
 

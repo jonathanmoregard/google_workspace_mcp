@@ -21,6 +21,21 @@ from gdocs_preview import preview_read
 from tests.gdocs_preview import fixtures as fx
 
 
+def _network_error(name: str) -> Exception:
+    """One of the transport failures a raw authorized GET can raise.
+
+    ``requests`` for the request itself, ``google.auth`` for the token
+    refresh it does first -- same network, two libraries.
+    """
+    import google.auth.exceptions
+    import requests.exceptions
+
+    for module in (requests.exceptions, google.auth.exceptions):
+        if hasattr(module, name):
+            return getattr(module, name)(f"simulated {name}")
+    raise AssertionError(f"no such transport error: {name}")  # pragma: no cover
+
+
 class TestCredentialsFromService:
     def test_reads_the_authorized_http_credentials(self):
         service = Mock()
@@ -120,6 +135,93 @@ class TestFetch:
                 await preview_read.fetch_document_with_threads(
                     service, "doc-1", "SUGGESTIONS_INLINE"
                 )
+
+    @pytest.mark.parametrize(
+        "error_name",
+        ["ConnectionError", "ReadTimeout", "TransportError"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_network_failure_is_a_read_error_not_an_escaped_exception(
+        self, error_name
+    ):
+        """``read_for_review`` degrades on PreviewReadError and on nothing
+        else, so a refused connection used to hard-fail a read the GA path
+        could have answered -- and the post-write verification read with it.
+        """
+        service = Mock()
+        service._http.credentials = "creds-object"
+        service.documents.return_value.get.side_effect = TypeError(
+            "Got an unexpected keyword argument commentsViewMode"
+        )
+        session = Mock()
+        session.get.side_effect = _network_error(error_name)
+
+        with patch(
+            "google.auth.transport.requests.AuthorizedSession", return_value=session
+        ):
+            with pytest.raises(preview_read.PreviewReadError, match=error_name):
+                await preview_read.fetch_document_with_threads(
+                    service, "doc-1", "SUGGESTIONS_INLINE"
+                )
+        # The session is still closed on the failure path.
+        session.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_network_failure_degrades_the_read_instead_of_failing_it(self):
+        service = Mock()
+        service._http.credentials = "creds-object"
+        service.documents.return_value.get.side_effect = TypeError(
+            "Got an unexpected keyword argument commentsViewMode"
+        )
+        session = Mock()
+        session.get.side_effect = _network_error("ConnectionError")
+
+        async def _ga(*args, **kwargs):
+            return fx.DOC_PLAIN_INSERTION
+
+        with patch(
+            "google.auth.transport.requests.AuthorizedSession", return_value=session
+        ):
+            with patch.object(preview_read, "fetch_ga_document", _ga):
+                read = await preview_read.read_for_review(
+                    service, "doc-1", "SUGGESTIONS_INLINE"
+                )
+
+        assert read.source == preview_read.READ_SOURCE_GA
+        assert "ConnectionError" in read.degraded_reason
+
+
+class TestAnEmptyTabsArrayIsNotAnEmptyDocument:
+    """MEDIUM: ``tabs: []`` parses, carries no content, and said nothing.
+
+    Every tool downstream then answered from nothing -- ``suggestion_count:
+    0``, ``body_text: ""`` -- with ``read_source: "preview_threads"`` and no
+    ``degraded_notice``, so "this read saw nothing" was delivered in the
+    words of "the document has no suggestions".
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_degrades_to_the_ga_read_and_says_so(self):
+        service = Mock()
+        empty = dict(fx.TABS_PAYLOAD, tabs=[])
+
+        async def _fetch(*args, **kwargs):
+            return empty
+
+        async def _ga(*args, **kwargs):
+            return fx.DOC_PLAIN_INSERTION
+
+        with patch.object(preview_read, "fetch_document_with_threads", _fetch):
+            with patch.object(preview_read, "fetch_ga_document", _ga):
+                read = await preview_read.read_for_review(
+                    service, "doc-1", "SUGGESTIONS_INLINE"
+                )
+
+        assert read.source == preview_read.READ_SOURCE_GA
+        assert "empty tabs array" in read.degraded_reason
+        # And the content the GA read CAN see is returned, rather than the
+        # empty answer the preview payload implied.
+        assert read.tabs == [(None, fx.DOC_PLAIN_INSERTION)]
 
 
 class TestThreadNormalization:

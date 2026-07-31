@@ -94,6 +94,20 @@ def credentials_from_service(service: Any) -> Any:
 def _fetch_via_authorized_session(
     service: Any, document_id: str, view_mode: str
 ) -> dict[str, Any]:
+    """The raw authorized GET, with EVERY failure shaped as a read failure.
+
+    ``read_for_review`` catches :class:`PreviewReadError` and ``HttpError``
+    and degrades to the GA read; anything else escapes the tool. A refused
+    connection, a DNS blip or a timeout on this one request is exactly the
+    transient condition the fallback exists for, and it used to come out as a
+    raw ``requests.ConnectionError`` -- so a network hiccup hard-failed a
+    read of a document the GA path could have answered, and hard-failed the
+    post-write verification read too (where it becomes
+    ``verification.source = "unavailable"`` instead of an exception only
+    because that caller catches everything).
+    """
+    import google.auth.exceptions
+    import requests.exceptions
     from google.auth.transport.requests import AuthorizedSession
 
     session = AuthorizedSession(credentials_from_service(service))
@@ -107,6 +121,17 @@ def _fetch_via_authorized_session(
             },
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
+    except (
+        requests.exceptions.RequestException,
+        google.auth.exceptions.GoogleAuthError,
+    ) as error:
+        # ConnectionError, Timeout, TooManyRedirects, SSLError; and the
+        # credential-side RefreshError/TransportError, which is the same
+        # network reaching the token endpoint instead.
+        raise PreviewReadError(
+            f"preview documents.get could not be performed: "
+            f"{type(error).__name__}: {error}"
+        ) from error
     finally:
         session.close()
     if response.status_code != 200:
@@ -363,6 +388,13 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
     property of the caller's GCP project, not of the document, so a failure
     here must never fail the read: the GA payload still carries the full
     suggestion algebra, just without authorship.
+
+    A preview payload that carries NO tabs degrades the same way. It is the
+    one shape that fails without failing: it parses, it yields zero tabs, and
+    the whole review layer answers from nothing -- ``suggestion_count: 0``,
+    ``body_text: ""`` -- while ``read_source`` still says the preview read
+    worked. "The document has no suggestions" and "this read saw nothing" are
+    not the same sentence, and the second one has to be said out loud.
     """
     from googleapiclient.errors import HttpError
 
@@ -383,6 +415,25 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
         )
 
     tabs = tab_documents(payload)
+    if not tabs:
+        # ``tabs: []`` parses fine and carries no content at all, so every
+        # tool downstream answered from nothing: suggestion_count 0,
+        # body_text "", read_source "preview_threads" and NOTHING saying the
+        # read had seen a document with no tabs in it. Every Google Doc has
+        # at least one tab, so this is a broken payload, not an empty
+        # document -- take the same fallback a failed read takes, which is
+        # also what puts ``degraded_notice`` in the response.
+        reason = (
+            "the preview read returned an empty tabs array, which carries no "
+            "document content at all; every Google Doc has at least one tab"
+        )
+        logger.info(f"[docs_preview] {reason} for {document_id}; falling back to GA")
+        document = await fetch_ga_document(service, document_id, view_mode)
+        return ReviewRead(
+            tabs=[(None, document)],
+            source=READ_SOURCE_GA,
+            degraded_reason=reason,
+        )
     preview_status.record(
         "available",
         {"http_status": 200, "reason": "preview_read_succeeded"},

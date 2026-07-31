@@ -26,6 +26,8 @@ e2e/last_run.md, resolving unknowns the plan flagged:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from e2e.mcp_session import tool_json, tool_text
@@ -57,13 +59,17 @@ def _suggest_insert(mcp, email: str, doc_id: str, text: str, *, index: int) -> d
     )
 
 
-def _list_suggestions(mcp, email: str, doc_id: str) -> dict:
-    return tool_json(
-        mcp.call_tool(
-            "list_document_suggestions",
-            {"user_google_email": email, "document_id": doc_id},
-        )
-    )
+def _list_suggestions(mcp, email: str, doc_id: str, **extra) -> dict:
+    """The listing, at ``fields='full'`` unless a test says otherwise.
+
+    The tool's own default is ``summary`` -- these tests are about the
+    per-suggestion analysis (pre/post text, replies, author objects), which
+    is what ``full`` carries. The default and the narrowing parameters have
+    their own tests.
+    """
+    args = {"user_google_email": email, "document_id": doc_id, "fields": "full"}
+    args.update(extra)
+    return tool_json(mcp.call_tool("list_document_suggestions", args))
 
 
 def _wait_for_suggestions(mcp, email: str, doc_id: str, minimum: int = 1) -> dict:
@@ -247,6 +253,270 @@ def test_summary_text_grammar_matches_the_mock_labels(
     ]
     REPORT.note(f"SuggestionThread.summaryText (insertion): {insert_summary!r}")
     assert insert_summary == "Add: “Say”"
+
+
+def test_fields_filters_and_pagination_against_the_real_api(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """The narrowing parameters, against prod rather than the mock.
+
+    The reduction they exist for was measured on mockdocs, whose records are
+    modelled on the preview shapes but are not byte-identical to them. What
+    prod has to confirm is not the ratio but the semantics: that summary
+    keeps the thread-derived fields (author, status, summaryText) it claims
+    to, that the author filter matches the display names Google actually
+    returns, that an index-range filter agrees with the indexes prod
+    reports, and that a page token issued by one call is honoured by the
+    next against a live document.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-page", content="Alpha beta gamma delta epsilon.")
+
+    # Three non-adjacent suggestions, highest index first so they cannot
+    # merge into each other (SPEC §6, confirmed against prod). Index 1 is the
+    # first character: "Alpha" is [1, 6), "gamma" [12, 17), "epsilon" [24, 31).
+    for start, end, text in ((24, 31, "OMEGA"), (12, 17, "GAMMA"), (1, 6, "ALPHA")):
+        tool_json(
+            mcp.call_tool(
+                "suggest_doc_edit",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "start_index": start,
+                    "end_index": end,
+                    "text": text,
+                },
+            )
+        )
+    _wait_for_suggestions(mcp, email, doc_id, minimum=3)
+    # No `fields` argument here: this call is the tool's own default.
+    listing = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    total = listing["suggestion_count"]
+    assert total >= 3, listing
+
+    # -- summary is the default, and keeps the thread-derived fields -------
+    assert listing["fields"] == "summary"
+    assert listing["read_source"] == "preview_threads", listing.get("degraded_reason")
+    assert listing["matched_count"] == total
+    assert listing["returned_count"] == total
+    assert listing["page"]["has_more"] is False
+    record = listing["suggestions"][0]
+    REPORT.note(f"list_document_suggestions fields='summary' record: {record!r}")
+    assert set(record) == {
+        "suggestion_id",
+        "type",
+        "author",
+        "summary_text",
+        "start_index",
+        "end_index",
+        "status",
+    }, record
+    assert isinstance(record["author"], str) and record["author"], record
+    assert record["status"] == "OPEN", record
+    assert record["summary_text"], record
+    assert record["start_index"] is not None and record["end_index"] is not None
+
+    # -- full still carries everything summary drops ----------------------
+    full = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "fields": "full"},
+        )
+    )
+    full_record = next(
+        r
+        for r in full["suggestions"]
+        if r["suggestion_id"] == record["suggestion_id"]
+    )
+    assert full_record["author"]["display_name"] == record["author"], (
+        "summary flattened the author to something other than the display "
+        f"name prod returned: {full_record['author']!r} vs {record['author']!r}"
+    )
+    assert full_record["summary_text"] == record["summary_text"]
+    assert full_record["status"] == record["status"]
+    assert full_record["pre_text"] is not None
+    assert full_record["author_source"] == "suggestion_thread"
+
+    # -- author filter, using the display name PROD reported ---------------
+    mine = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "author": record["author"],
+            },
+        )
+    )
+    assert mine["matched_count"] == total, mine["filters"]
+    assert mine["suggestion_count"] == total
+
+    absent = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "author": "Nobody At All",
+            },
+        )
+    )
+    assert absent["matched_count"] == 0
+    assert record["author"] in absent["filters"]["authors_present"]
+
+    # -- index range, against the indexes prod itself reported -------------
+    target = sorted(listing["suggestions"], key=lambda r: r["start_index"])[0]
+    ranged = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": target["start_index"],
+                "end_index": target["end_index"],
+            },
+        )
+    )
+    REPORT.note(
+        f"index-range filter [{target['start_index']}, {target['end_index']}) "
+        f"matched {ranged['matched_count']} of {ranged['suggestion_count']}"
+    )
+    assert target["suggestion_id"] in [
+        r["suggestion_id"] for r in ranged["suggestions"]
+    ], ranged
+    assert ranged["matched_count"] < total, (
+        "an index range covering one suggestion matched all of them"
+    )
+
+    # -- pagination round trip against a live document ---------------------
+    seen: list[str] = []
+    token = None
+    for _ in range(total + 2):
+        page = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "page_size": 1,
+                    **({"page_token": token} if token else {}),
+                },
+            )
+        )
+        assert page["suggestion_count"] == total
+        assert page["returned_count"] <= 1
+        seen.extend(r["suggestion_id"] for r in page["suggestions"])
+        token = page["page"]["next_page_token"]
+        if not token:
+            break
+    assert len(seen) == total, seen
+    assert len(set(seen)) == total, f"pagination repeated a suggestion: {seen}"
+    assert set(seen) == {r["suggestion_id"] for r in listing["suggestions"]}
+
+    # -- a token from another query is refused, not reinterpreted ----------
+    first = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "page_size": 1},
+        )
+    )
+    refused = mcp.call_tool_raw(
+        "list_document_suggestions",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "page_size": 1,
+            "fields": "full",
+            "page_token": first["page"]["next_page_token"],
+        },
+    )
+    assert refused.is_error, tool_text(refused)[:400]
+    assert "different query" in tool_text(refused), tool_text(refused)[:400]
+
+
+def test_review_view_fields_and_window_against_the_real_api(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """get_doc_review_view's field modes and index window, against prod.
+
+    The claim the default rests on is that the paragraph map's ``text``
+    values concatenate to exactly ``body_text``. That is a property of the
+    renderer, but it is only worth anything if prod's paragraph indexes line
+    up with it -- so the window is taken off prod's own map and checked
+    against prod's own text.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc(
+        "-view", content="First line.\nSecond line.\nThird line."
+    )
+
+    full = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {"user_google_email": email, "document_id": doc_id, "fields": "full"},
+        )
+    )
+    body_paragraphs = [p for p in full["paragraphs"] if p["segment"] == "body"]
+    assert "".join(p["text"] for p in body_paragraphs) == full["body_text"], (
+        "the paragraph map and body_text disagree against prod, which is the "
+        "assumption the default field mode rests on"
+    )
+
+    default = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    assert default["fields"] == "text"
+    assert default["body_text"] == full["body_text"]
+    assert "paragraphs" not in default
+    assert "paragraphs" in default["omitted_fields"]
+    assert len(json.dumps(default)) < len(json.dumps(full))
+
+    paragraphs_only = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "paragraphs",
+            },
+        )
+    )
+    assert "body_text" not in paragraphs_only
+    assert "".join(
+        p["text"] for p in paragraphs_only["paragraphs"] if p["segment"] == "body"
+    ) == full["body_text"]
+
+    # A window taken off prod's own paragraph map returns that paragraph.
+    target = body_paragraphs[1]
+    windowed = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "full",
+                "start_index": target["start_index"],
+                "end_index": target["end_index"],
+            },
+        )
+    )
+    REPORT.note(
+        f"get_doc_review_view window [{target['start_index']}, "
+        f"{target['end_index']}) -> {windowed['returned_paragraph_count']} of "
+        f"{windowed['paragraph_count']} paragraph(s)"
+    )
+    assert windowed["paragraph_count"] == len(full["paragraphs"])
+    assert windowed["returned_paragraph_count"] == 1
+    assert windowed["body_text"] == target["text"]
+    assert windowed["paragraphs"][0]["start_index"] == target["start_index"]
 
 
 def test_review_view_exposes_comment_threads_with_authors(

@@ -7,12 +7,20 @@ code must pass API indexes through untouched and must never recompute them
 with Python ``len()`` (code points != UTF-16 units for astral chars).
 """
 
+import pytest
+
 from tests.gdocs_preview import fixtures as fx
 from gdocs_preview.analysis import (
+    AMBIGUOUS_ANCHOR,
+    ANCHOR_NOT_FOUND,
+    CONTEXT_WINDOW,
+    BaseText,
+    check_resolution,
     extract_suggestions,
     extract_suggestions_from_tabs,
     render_document,
     render_tabs,
+    segment_base_texts,
 )
 from gdocs_preview.preview_read import suggestion_threads_by_id
 
@@ -183,9 +191,9 @@ class TestSegments:
             },
         )
         # The fixture must reproduce prod's omission, or it tests nothing.
-        element = document["headers"]["kix.h1"]["content"][0]["paragraph"][
-            "elements"
-        ][0]
+        element = document["headers"]["kix.h1"]["content"][0]["paragraph"]["elements"][
+            0
+        ]
         assert "startIndex" not in element, element
 
         s = by_id(document, "suggest.hdr0")
@@ -366,3 +374,142 @@ class TestRenderDocument:
         r = render_document(fx.DOC_EMPTY)
         assert r["body_text"] == "\n"
         assert r["suggestion_ids"] == []
+
+
+class TestSegmentBaseTexts:
+    """The projection a resolution is verified against: base text, per space."""
+
+    def test_base_text_strips_insertions_and_keeps_deletions(self):
+        texts = segment_base_texts(fx.DOC_REPLACEMENT)
+        assert texts[(None, None)] == "Good morning\n"
+        # ...and it is base text, so it carries none of the markers the
+        # reviewer view puts around the same runs.
+        assert "{" not in texts[(None, None)]
+        assert render_document(fx.DOC_REPLACEMENT)["body_text"] == (
+            "Good {-morning-}{+evening+}\n"
+        )
+
+    def test_every_segment_is_keyed_by_its_own_coordinate_space(self):
+        texts = segment_base_texts(fx.DOC_HEADER, tab_id="t.0")
+        assert texts[("t.0", None)] == "Body text.\n"
+        assert texts[("t.0", "kix.h1")] == "Header\n"
+
+    def test_the_values_are_the_only_minted_BaseText(self):
+        (value,) = set(segment_base_texts(fx.DOC_EMPTY).values())
+        assert isinstance(value, BaseText)
+        with pytest.raises(TypeError, match="minted only by"):
+            BaseText("anything")
+
+
+class TestCheckResolution:
+    """Positional, one representation, and never fail-open."""
+
+    HEAD = "Head "
+    TAIL = " tail.\n"
+
+    def _base(self, middle: str) -> BaseText:
+        document = fx.build_doc([fx.paragraph(fx.run(self.HEAD + middle + self.TAIL))])
+        return segment_base_texts(document)[(None, None)]
+
+    def _check(self, middle: str, expected: str, removed: str):
+        return check_resolution(
+            self._base(middle),
+            context_before=self.HEAD,
+            context_after=self.TAIL,
+            expected_text=expected,
+            removed_text=removed,
+        )
+
+    def test_accepted_deletion_that_landed(self):
+        assert self._check("", "", "gone").matches is True
+
+    def test_accepted_deletion_that_did_not_land(self):
+        assert self._check("gone", "", "gone").matches is False
+
+    def test_accepted_replacement_that_landed(self):
+        assert self._check("new", "new", "old").matches is True
+
+    def test_accepted_replacement_that_did_not_land(self):
+        assert self._check("old", "new", "old").matches is False
+
+    def test_a_range_reading_something_else_entirely_is_false(self):
+        """Not "cannot tell": the range does not read what was promised."""
+        assert self._check("neither", "new", "old").matches is False
+
+    def test_a_style_only_resolution_expects_the_text_unchanged(self):
+        """pre_text == post_text, so landing means nothing moved."""
+        assert self._check("same", "same", "same").matches is True
+        assert self._check("moved", "same", "same").matches is False
+
+    def test_an_empty_expectation_at_the_end_of_a_segment_is_not_vacuous(self):
+        """context_after ran out, so the prediction must consume the rest.
+
+        Without that rule ``startswith("")`` is true everywhere and accepting
+        a deletion at the end of a segment always "matched".
+        """
+        base = segment_base_texts(
+            fx.build_doc([fx.paragraph(fx.run("Keep this gone"))])
+        )[(None, None)]
+        landed = check_resolution(
+            base,
+            context_before="Keep this ",
+            context_after="",
+            expected_text="",
+            removed_text="gone",
+        )
+        assert landed.matches is False
+
+    def test_a_missing_anchor_is_reported_not_guessed(self):
+        check = check_resolution(
+            self._base("new"),
+            context_before="Somewhere else ",
+            context_after=self.TAIL,
+            expected_text="new",
+            removed_text="old",
+        )
+        assert check.matches is None
+        assert check.reason == ANCHOR_NOT_FOUND
+        assert check.window is None
+
+    def test_a_repeating_full_width_anchor_that_disagrees_gets_no_verdict(self):
+        anchor = "A" * CONTEXT_WINDOW
+        tail = "B" * CONTEXT_WINDOW
+        base = segment_base_texts(
+            fx.build_doc([fx.paragraph(fx.run(anchor + tail + anchor + "old" + tail))])
+        )[(None, None)]
+        check = check_resolution(
+            base,
+            context_before=anchor,
+            context_after=tail,
+            expected_text="",
+            removed_text="old",
+        )
+        assert check.matches is None
+        assert check.reason == AMBIGUOUS_ANCHOR
+
+    def test_a_repeating_anchor_that_agrees_still_answers(self):
+        anchor = "A" * CONTEXT_WINDOW
+        tail = "B" * CONTEXT_WINDOW
+        base = segment_base_texts(
+            fx.build_doc(
+                [fx.paragraph(fx.run(anchor + "old" + tail + anchor + "old" + tail))]
+            )
+        )[(None, None)]
+        check = check_resolution(
+            base,
+            context_before=anchor,
+            context_after=tail,
+            expected_text="",
+            removed_text="old",
+        )
+        assert check.matches is False
+
+    def test_marked_text_is_a_TypeError(self):
+        with pytest.raises(TypeError, match="segment_base_texts"):
+            check_resolution(
+                "Head {-old-} tail.\n",
+                context_before=self.HEAD,
+                context_after=self.TAIL,
+                expected_text="",
+                removed_text="old",
+            )

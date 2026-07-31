@@ -24,6 +24,7 @@ from googleapiclient.errors import HttpError
 from core.utils import UserInputError
 from gdocs_preview import (
     address,
+    analysis,
     preview_read,
     preview_status,
     review_page,
@@ -1458,6 +1459,308 @@ class TestManageSuggestionVerification:
         assert result["verification"]["matches_expectation"] is False
 
 
+class TestVerificationIsNotDecidedByTheRepresentation:
+    """A verdict must be a statement about the DOCUMENT, not about markers.
+
+    ``_PostWriteRead`` used to keep ``render_document(...)["body_text"]`` --
+    CriticMarkup-marked text, ``{-deleted-}`` / ``{+inserted+}`` -- while
+    every value compared against it (``pre_text``, ``post_text``,
+    ``context_before``) is BASE text, which carries no markers at all.
+    Nothing stripped them, so the comparison ran between two different
+    representations of the same document and each of its three failure modes
+    is reachable from prod:
+
+    1. **fail-open on the destructive path.** Prod splits a ``textRun`` at
+       every style boundary (verified against the live API 2026-07-31:
+       suggesting the deletion of "brave new" across a bold seam yields TWO
+       deletion-marked runs), so the struck text renders ``{-brave-}{- new-}``
+       and the base string "brave new" is not in it. The accept check is "is
+       the struck text gone", and not-found was taken as gone:
+       ``matches_expectation: true`` on a write that had NOT landed.
+    2. **false alarm on the constructive path.** A still-pending neighbouring
+       suggestion inside the resolved range renders a marker inside the text
+       the accept promised, so ``expected_text in resulting_text`` was False
+       about a write that landed perfectly -- which an agent may "fix" by
+       re-suggesting into a customer document.
+    3. **a fabricated diagnosis.** A marker inside the 40-character anchor
+       made ``find(anchor)`` return -1, reported as ``anchor_not_found``,
+       whose note asserts "the likeliest cause is a concurrent edit by
+       another editor". Nobody edited anything.
+
+    None of it is reproducible on mockdocs' coalescing alone, which is why
+    ``mockdocs`` also grew style-split runs (see
+    tests/mockdocs/test_tabs_and_segments.py).
+    """
+
+    @staticmethod
+    def _record(**overrides) -> dict:
+        record = {
+            "suggestion_id": "s.1",
+            "type": "deletion",
+            "segment": "body",
+            "segment_id": None,
+            "tab_id": "t.0",
+            "start_index": 7,
+            "end_index": 16,
+            "summary_text": "edit",
+            "status": "OPEN",
+        }
+        record.update(overrides)
+        return record
+
+    @staticmethod
+    async def _resolve(action: str, record: dict, document: dict) -> dict:
+        _observe(record)
+        sid = record["suggestion_id"]
+        service = _batch_service(
+            {"suggestionResponses": [{f"{action}edSuggestionIds": [sid]}]},
+            document=document,
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action=action,
+                suggestion_id=sid,
+            )
+        )
+        return result["verification"]
+
+    # -- 1. the style-split (multi-run) deletion --------------------------
+
+    #: What prod returns for "delete 'brave new'" when "brave" is bold and
+    #: " new" is not: ONE suggestion id across TWO deletion-marked runs.
+    STYLE_SPLIT_DELETION = fx.build_tabs_payload(
+        [
+            (
+                "t.0",
+                fx.build_doc(
+                    [
+                        fx.paragraph(
+                            fx.run("Hello "),
+                            fx.run("brave", dels=["s.1"]),
+                            fx.run(" new", dels=["s.1"]),
+                            fx.run(" world.\n"),
+                        )
+                    ]
+                ),
+            )
+        ]
+    )
+    #: The same document once the accept landed.
+    STYLE_SPLIT_ACCEPTED = fx.build_tabs_payload(
+        [("t.0", fx.build_doc([fx.paragraph(fx.run("Hello  world.\n"))]))]
+    )
+    MULTI_RUN_RECORD = dict(
+        pre_text="brave new",
+        post_text="",
+        context_before="Hello ",
+        context_after=" world.\n",
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_multi_run_deletion_that_did_not_land_is_flagged(self):
+        """The fail-open regression: this reported True with no check run.
+
+        The struck text renders ``{-brave-}{- new-}``, so searching the
+        rendered string for the base text "brave new" fails -- and failing to
+        find the text an accept was supposed to remove was the evidence that
+        it had been removed.
+        """
+        verification = await self._resolve(
+            "accept",
+            self._record(**self.MULTI_RUN_RECORD),
+            self.STYLE_SPLIT_DELETION,
+        )
+        assert verification["matches_expectation"] is False, verification
+        assert "brave new" in verification["resulting_text"], verification
+
+    @pytest.mark.asyncio
+    async def test_a_multi_run_deletion_that_landed_is_true(self):
+        verification = await self._resolve(
+            "accept",
+            self._record(**self.MULTI_RUN_RECORD),
+            self.STYLE_SPLIT_ACCEPTED,
+        )
+        assert verification["matches_expectation"] is True, verification
+        assert "brave" not in verification["resulting_text"], verification
+
+    @pytest.mark.asyncio
+    async def test_rejecting_a_multi_run_deletion_keeps_the_text(self):
+        """Reject expects the struck text BACK, unmarked and unsplit."""
+        verification = await self._resolve(
+            "reject",
+            self._record(**self.MULTI_RUN_RECORD),
+            fx.build_tabs_payload(
+                [
+                    (
+                        "t.0",
+                        fx.build_doc(
+                            [fx.paragraph(fx.run("Hello brave new world.\n"))]
+                        ),
+                    )
+                ]
+            ),
+        )
+        assert verification["expected_text"] == "brave new"
+        assert verification["matches_expectation"] is True, verification
+
+    # -- 2. a still-pending neighbour inside the resolved range ------------
+
+    @pytest.mark.asyncio
+    async def test_a_pending_neighbour_inside_the_range_is_not_a_failure(self):
+        """Accepting an insertion that brackets somebody else's pending one.
+
+        ``s.1``'s post_text is "NEW-AMORE-A"; ``s.2``'s insertion sits
+        between its two runs and stays pending, so the rendered text reads
+        ``NEW-A{+XX+}MORE-A`` and the substring check said the accept had not
+        landed. Base text has no markers and no such disagreement.
+        """
+        record = self._record(
+            suggestion_id="s.1",
+            type="insertion",
+            pre_text="",
+            post_text="NEW-AMORE-A",
+            context_before="Start ",
+            context_after=" end.\n",
+        )
+        verification = await self._resolve(
+            "accept",
+            record,
+            fx.build_tabs_payload(
+                [
+                    (
+                        "t.0",
+                        fx.build_doc(
+                            [
+                                fx.paragraph(
+                                    fx.run("Start "),
+                                    fx.run("NEW-A"),
+                                    fx.run("XX", ins=["s.2"]),
+                                    fx.run("MORE-A"),
+                                    fx.run(" end.\n"),
+                                )
+                            ]
+                        ),
+                    )
+                ],
+                suggestions=[thread_for("s.2")],
+            ),
+        )
+        assert verification["matches_expectation"] is True, verification
+        assert verification["still_pending"] is False
+        assert verification["pending_suggestion_ids"] == ["s.2"]
+
+    # -- 3. a marker inside the 40-character anchor ------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_pending_neighbour_in_the_anchor_does_not_fabricate_a_cause(self):
+        """Two pending cards ~11 characters apart; one is accepted.
+
+        ``s.2``'s pending insertion falls inside ``s.1``'s ``context_before``
+        window, so the rendered text reads ``one {+INSERTED-B +}two `` and
+        ``find("one two ")`` returned -1. The tool then reported
+        ``anchor_not_found`` and a note asserting a concurrent edit by another
+        editor -- a diagnosis with nothing behind it, on a write that landed.
+        """
+        record = self._record(
+            suggestion_id="s.1",
+            type="deletion",
+            pre_text="three",
+            post_text="",
+            context_before="one two ",
+            context_after=" four.\n",
+        )
+        verification = await self._resolve(
+            "accept",
+            record,
+            fx.build_tabs_payload(
+                [
+                    (
+                        "t.0",
+                        fx.build_doc(
+                            [
+                                fx.paragraph(
+                                    fx.run("one "),
+                                    fx.run("INSERTED-B ", ins=["s.2"]),
+                                    fx.run("two "),
+                                    fx.run(" four.\n"),
+                                )
+                            ]
+                        ),
+                    )
+                ],
+                suggestions=[thread_for("s.2")],
+            ),
+        )
+        assert verification["matches_expectation"] is True, verification
+        assert "resulting_text_unavailable" not in verification, verification
+        assert "notes" not in verification, verification
+
+    # -- the null verdict always names its reason --------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_before_or_after_says_why_it_cannot_check(self):
+        """MEDIUM: ``matches`` stayed null with ``unlocated`` null too.
+
+        The docstring guarantees a null verdict always carries
+        ``resulting_text_unavailable``; a record carrying neither pre_text nor
+        post_text produced a bare null and broke it.
+        """
+        verification = await self._resolve(
+            "accept",
+            self._record(suggestion_id="s.1", context_before="", context_after=""),
+            EMPTY_READ,
+        )
+        assert verification["matches_expectation"] is None
+        assert verification["resulting_text_unavailable"] == "nothing_to_compare"
+        assert "list_document_suggestions" in verification["notes"][0]
+
+    @pytest.mark.asyncio
+    async def test_an_anchor_that_repeats_and_disagrees_gets_no_verdict(self):
+        """A full-width anchor occurring twice, resolved at one of them.
+
+        ``find`` took the first occurrence and answered about it. Two places
+        read as the range and they disagree, so no verdict is reported --
+        never a guess on the destructive path.
+        """
+        anchor = "A" * 40
+        record = self._record(
+            suggestion_id="s.1",
+            type="deletion",
+            pre_text="gone",
+            post_text="",
+            context_before=anchor,
+            context_after="B" * 40,
+        )
+        body = anchor + "B" * 40 + anchor + "gone" + "B" * 40 + "\n"
+        verification = await self._resolve(
+            "accept",
+            record,
+            fx.build_tabs_payload(
+                [("t.0", fx.build_doc([fx.paragraph(fx.run(body))]))]
+            ),
+        )
+        assert verification["matches_expectation"] is None, verification
+        assert verification["resulting_text_unavailable"] == "ambiguous_anchor"
+        assert "repeats" in verification["notes"][0]
+
+    def test_a_rendered_string_cannot_reach_the_check(self):
+        """The type is the fix: marked text is a TypeError, not a wrong bool."""
+        with pytest.raises(TypeError, match="segment_base_texts"):
+            analysis.check_resolution(
+                "Hello {-brave-}{- new-} world.\n",
+                context_before="Hello ",
+                context_after=" world.\n",
+                expected_text="",
+                removed_text="brave new",
+            )
+        with pytest.raises(TypeError, match="minted only by"):
+            analysis.BaseText("Hello world.\n")
+
+
 class TestVerificationIsNotDecidedByTheEchoClip:
     """A verdict must be a statement about the document, not about the echo.
 
@@ -2053,13 +2356,20 @@ class TestMergedEditEcho:
 
         with pytest.raises(UserInputError, match="section break"):
             await fn(
-                service, user_google_email=EMAIL, document_id=DOC,
-                start_index=0, text="X",
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=0,
+                text="X",
             )
         json.loads(
             await fn(
-                service, user_google_email=EMAIL, document_id=DOC,
-                start_index=0, text="X", segment_id="kix.h1",
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=0,
+                text="X",
+                segment_id="kix.h1",
             )
         )
         request = service.documents.return_value.batchUpdate.call_args.kwargs["body"][
@@ -2081,13 +2391,16 @@ class TestMergedEditEcho:
             headers={
                 "kix.h1": [
                     fx.paragraph(
-                        fx.run("Head "), fx.run("edit", ins=["suggest.hdr1"]),
+                        fx.run("Head "),
+                        fx.run("edit", ins=["suggest.hdr1"]),
                         fx.run("\n"),
                     )
                 ]
             },
         )
-        service = _batch_service({}, document=fx.build_tabs_payload([("t.0", document)]))
+        service = _batch_service(
+            {}, document=fx.build_tabs_payload([("t.0", document)])
+        )
         fn = _unwrap(write_tools.suggest_doc_edit)
 
         # The header suggestion is [5, 9); this body edit sits on the same
@@ -2127,8 +2440,14 @@ class TestMergedEditEcho:
 
 #: Body suggestion and header suggestion in the same tab.
 DOC_BODY_AND_HEADER = fx.build_doc(
-    [fx.paragraph(fx.run("Good "), fx.run("morning", dels=["suggest.rep1"]),
-                  fx.run("evening", ins=["suggest.rep1"]), fx.run("\n"))],
+    [
+        fx.paragraph(
+            fx.run("Good "),
+            fx.run("morning", dels=["suggest.rep1"]),
+            fx.run("evening", ins=["suggest.rep1"]),
+            fx.run("\n"),
+        )
+    ],
     headers={
         "kix.h1": [
             fx.paragraph(fx.run("DRAFT", ins=["suggest.hdr1"]), fx.run(" header\n"))
@@ -2139,12 +2458,30 @@ DOC_BODY_AND_HEADER = fx.build_doc(
 #: Two tabs, each with a suggestion on the SAME local numbers.
 TWO_TAB_READ = fx.build_tabs_payload(
     [
-        ("t.0", fx.build_doc([fx.paragraph(fx.run("One "),
-                                           fx.run("alpha", ins=["suggest.t0"]),
-                                           fx.run(".\n"))])),
-        ("t.second", fx.build_doc([fx.paragraph(fx.run("Two "),
-                                                fx.run("bravo", ins=["suggest.t1"]),
-                                                fx.run(".\n"))])),
+        (
+            "t.0",
+            fx.build_doc(
+                [
+                    fx.paragraph(
+                        fx.run("One "),
+                        fx.run("alpha", ins=["suggest.t0"]),
+                        fx.run(".\n"),
+                    )
+                ]
+            ),
+        ),
+        (
+            "t.second",
+            fx.build_doc(
+                [
+                    fx.paragraph(
+                        fx.run("Two "),
+                        fx.run("bravo", ins=["suggest.t1"]),
+                        fx.run(".\n"),
+                    )
+                ]
+            ),
+        ),
     ]
 )
 
@@ -2273,12 +2610,30 @@ class TestOverlapSemanticsAreShared:
     is what stops them drifting apart again."""
 
     RECORDS = [
-        {"suggestion_id": "b.t0", "segment": "body", "segment_id": None,
-         "tab_id": "t.0", "start_index": 5, "end_index": 9},
-        {"suggestion_id": "h.t0", "segment": "header", "segment_id": "kix.h1",
-         "tab_id": "t.0", "start_index": 5, "end_index": 9},
-        {"suggestion_id": "b.t1", "segment": "body", "segment_id": None,
-         "tab_id": "t.second", "start_index": 5, "end_index": 9},
+        {
+            "suggestion_id": "b.t0",
+            "segment": "body",
+            "segment_id": None,
+            "tab_id": "t.0",
+            "start_index": 5,
+            "end_index": 9,
+        },
+        {
+            "suggestion_id": "h.t0",
+            "segment": "header",
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+            "start_index": 5,
+            "end_index": 9,
+        },
+        {
+            "suggestion_id": "b.t1",
+            "segment": "body",
+            "segment_id": None,
+            "tab_id": "t.second",
+            "start_index": 5,
+            "end_index": 9,
+        },
     ]
 
     #: The DOCUMENT's tabs. ``RECORDS`` occupy only two of the three.
@@ -2289,8 +2644,12 @@ class TestOverlapSemanticsAreShared:
         """The listing's range filter: ``("refused", why)`` or ``("ok", ids)``."""
         try:
             kept, _ = review_page.filter_records(
-                records, tab_ids=tab_ids, start_index=0, end_index=10_000,
-                segment_id=segment_id, tab_id=tab_id,
+                records,
+                tab_ids=tab_ids,
+                start_index=0,
+                end_index=10_000,
+                segment_id=segment_id,
+                tab_id=tab_id,
             )
         except ValueError as error:
             return ("refused", str(error))

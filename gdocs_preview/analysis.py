@@ -417,6 +417,210 @@ def extract_suggestions_from_tabs(
 
 
 # ---------------------------------------------------------------------------
+# Base text and structural resolution checking
+# ---------------------------------------------------------------------------
+#
+# A resolved suggestion is verified against the document by re-running THIS
+# layer over the post-write read and asking whether the base text now reads
+# what the algebra predicts. It is deliberately not done against
+# :func:`render_document`'s output: that is CriticMarkup-marked text
+# (``{-…-}`` / ``{+…+}``) while ``pre_text``/``post_text``/``context_before``/
+# ``context_after`` are base text, and every way of mixing the two is wrong in
+# a different direction. Verified against the live API 2026-07-31: prod splits
+# a ``textRun`` at every style boundary, so suggesting the deletion of
+# "brave new" across a bold/regular seam yields TWO deletion-marked runs and
+# renders ``{-brave-}{- new-}``. Substring-searching that for the base string
+# "brave new" fails, and on an accept -- where the check is "is the struck
+# text gone" -- failing to find it reported ``matches_expectation: true``
+# with no check having occurred: fail-open verification on the one
+# destructive path this package has.
+
+_BASE_TEXT_MINT = object()
+
+
+class BaseText(str):
+    """One ``(tab, segment)``'s BASE text: what the document really says.
+
+    Base text is the PREVIEW_WITHOUT_SUGGESTIONS projection of one segment --
+    every pending insertion stripped, every pending deletion kept -- which is
+    the exact representation ``pre_text``, ``post_text``, ``context_before``
+    and ``context_after`` are computed in (see the module docstring). It is a
+    distinct type, and it can only be minted by :func:`segment_base_texts`,
+    because the recurring bug in this package is a comparison whose two sides
+    come from different representations of the same document. Handing marked
+    text to a function that wants base text is then a ``TypeError`` at the
+    call, not a wrong boolean three layers later.
+
+    Being a ``str`` subclass keeps it ergonomic: slicing, ``find`` and
+    ``len`` all work and return plain ``str``/``int``, so a display window cut
+    out of one is not itself a ``BaseText`` and cannot be re-fed to a check.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, text: str, _mint: Any = None) -> "BaseText":
+        if _mint is not _BASE_TEXT_MINT:
+            raise TypeError(
+                "BaseText is minted only by gdocs_preview.analysis."
+                "segment_base_texts(): pass the value that function returned, "
+                "never a string you rendered. render_document() produces "
+                "CriticMarkup-marked text ({-deletion-} / {+insertion+}) while "
+                "pre_text/post_text/context_before/context_after are base text, "
+                "and comparing the two representations is the fail-open "
+                "verification bug this type exists to prevent."
+            )
+        return super().__new__(cls, text)
+
+
+def segment_base_texts(
+    document: dict[str, Any], *, tab_id: Optional[str] = None
+) -> dict[tuple[Optional[str], Optional[str]], BaseText]:
+    """Every segment's base text, keyed by ``(tab_id, segment_id)``.
+
+    The key is the coordinate space, not the document: a header's indexes and
+    context windows mean nothing against the body's text, and two tabs number
+    their bodies from the same start. ``segment_id`` is ``None`` for a body,
+    matching what the write tools pass to the API.
+    """
+    return {
+        (tab_id, seg.segment_id or None): BaseText(seg.base_text, _BASE_TEXT_MINT)
+        for seg in _collect_segments(document)
+    }
+
+
+#: :func:`check_resolution` could not reach a verdict because the resolved
+#: range's anchor -- the base text immediately before it, which accepting or
+#: rejecting does not touch -- is no longer in that segment.
+ANCHOR_NOT_FOUND = "anchor_not_found"
+
+#: :func:`check_resolution` found the anchor but the document reads as BOTH
+#: the resolved and the unresolved outcome (the two predictions overlap
+#: because the text repeats). No verdict, rather than a coin toss.
+AMBIGUOUS_ANCHOR = "ambiguous_anchor"
+
+
+@dataclass(frozen=True)
+class ResolutionCheck:
+    """Did the document end up reading what resolving a suggestion promised?
+
+    ``matches`` is ``None`` only when no check could run, and ``reason`` then
+    names which of :data:`ANCHOR_NOT_FOUND` / :data:`AMBIGUOUS_ANCHOR` it
+    was. ``window`` is the base text around the located range, for display.
+    """
+
+    matches: Optional[bool]
+    window: Optional[str]
+    reason: Optional[str] = None
+
+
+def _anchor_positions(base: str, context_before: str) -> list[int]:
+    """Where the resolved range can start, given its preceding base text.
+
+    ``context_before`` is ``seg.base_text[:range_start][-CONTEXT_WINDOW:]``,
+    so a value SHORTER than :data:`CONTEXT_WINDOW` means the anchor ran out of
+    document: the range starts at offset ``len(context_before)`` and nowhere
+    else. Only a full-width anchor can repeat, and then every occurrence is a
+    candidate rather than ``find``'s first one -- a document whose boilerplate
+    repeats would otherwise have its verdict decided by the first paragraph
+    that happened to match.
+    """
+    if len(context_before) < CONTEXT_WINDOW:
+        return [len(context_before)] if base.startswith(context_before) else []
+    return [
+        position + len(context_before)
+        for position in range(len(base) - len(context_before) + 1)
+        if base.startswith(context_before, position)
+    ]
+
+
+def _reads_as(base: str, start: int, text: str, context_after: str) -> bool:
+    """Does ``base`` read ``text`` at ``start``, followed by ``context_after``?
+
+    Positional, never a substring search: the range is bounded on the left by
+    the anchor and on the right by the untouched following base text, so
+    "the same words somewhere else in the segment" cannot answer for it. A
+    ``context_after`` shorter than :data:`CONTEXT_WINDOW` ran to the end of
+    the segment, and is therefore required to consume the rest of it -- which
+    is what stops an empty ``text`` (accepting a pure deletion at the end of a
+    segment) from matching vacuously.
+    """
+    if not base.startswith(text + context_after, start):
+        return False
+    if len(context_after) < CONTEXT_WINDOW:
+        return start + len(text) + len(context_after) == len(base)
+    return True
+
+
+def check_resolution(
+    base: BaseText,
+    *,
+    context_before: str,
+    context_after: str,
+    expected_text: str,
+    removed_text: str,
+) -> ResolutionCheck:
+    """Verify one accept/reject STRUCTURALLY against post-write base text.
+
+    ``expected_text`` is what the resolution promised the range would read
+    (``post_text`` for an accept, ``pre_text`` for a reject) and
+    ``removed_text`` is the other half -- what it should no longer read. Both
+    come from :func:`extract_suggestions`, and ``base`` must come from
+    :func:`segment_base_texts`: one representation, both sides.
+
+    The verdict is positional and two-sided. The range is located by its
+    anchor, and the segment must read ``expected_text`` there AND the
+    untouched ``context_after`` immediately behind it. Only that produces
+    ``True``. Reading ``removed_text`` there instead produces ``False`` --
+    the write did not land, or landed somewhere else. Anything else is also
+    ``False``: the range does not read what the card promised, whatever it
+    does read, and ``window`` shows the caller what that is.
+
+    There is no substring search anywhere in here, and no branch in which the
+    absence of a string is taken as evidence that something was removed. Both
+    were how the previous two versions of this check reported success on a
+    destructive write it had not verified.
+    """
+    if not isinstance(base, BaseText):
+        raise TypeError(
+            "check_resolution needs the BASE text of the resolved suggestion's "
+            "segment (gdocs_preview.analysis.segment_base_texts), not "
+            f"{type(base).__name__}. render_document()'s text carries "
+            "CriticMarkup markers and pre_text/post_text do not, so comparing "
+            "them decides the verdict by the representation."
+        )
+    widest = max(expected_text, removed_text, key=len)
+    verdicts: set[bool] = set()
+    window: Optional[str] = None
+    for start in _anchor_positions(base, context_before):
+        landed = _reads_as(base, start, expected_text, context_after)
+        unresolved = _reads_as(base, start, removed_text, context_after)
+        if window is None or landed or unresolved:
+            window = _window(base, start, context_before, widest)
+        if landed and unresolved and expected_text != removed_text:
+            # The two predictions both fit here (the text repeats in exactly
+            # the wrong way). Refuse rather than pick one.
+            return ResolutionCheck(None, window, AMBIGUOUS_ANCHOR)
+        verdicts.add(landed)
+    if not verdicts:
+        return ResolutionCheck(None, None, ANCHOR_NOT_FOUND)
+    if len(verdicts) > 1:
+        # A repeated full-width anchor whose occurrences disagree: one of them
+        # reads as resolved and another does not, and nothing here can say
+        # which one the write happened at.
+        return ResolutionCheck(None, window, AMBIGUOUS_ANCHOR)
+    return ResolutionCheck(verdicts.pop(), window)
+
+
+def _window(base: str, start: int, context_before: str, text: str) -> str:
+    """The base text around a located range, for the response echo.
+
+    Returned UNCLIPPED: the caller clips what it shows, never what it
+    compared -- and the comparison above never looks at this value at all.
+    """
+    return base[start - len(context_before) : start + len(text) + CONTEXT_WINDOW]
+
+
+# ---------------------------------------------------------------------------
 # Reviewer-view rendering
 # ---------------------------------------------------------------------------
 
@@ -426,6 +630,13 @@ def _marked_text(run: _Run) -> str:
 
     Style-only suggestions render unmarked (the text is unchanged); their
     ids still appear in the paragraph's ``suggestion_ids``.
+
+    **Marked text is for a human to read, never for a machine to compare.**
+    The markers are not in the document; ``pre_text``, ``post_text`` and the
+    context windows are all base text, so a comparison that puts one of each
+    on the two sides of ``in`` or ``==`` is comparing two different
+    representations of the document. :class:`BaseText` exists so that
+    comparison cannot be written -- see :func:`segment_base_texts`.
     """
     if run.ins_ids:
         return "{+" + run.text + "+}"

@@ -60,9 +60,12 @@ from gdocs_preview.address import (
     with_address,
 )
 from gdocs_preview.analysis import (
-    CONTEXT_WINDOW,
+    AMBIGUOUS_ANCHOR,
+    ANCHOR_NOT_FOUND,
+    BaseText,
+    check_resolution,
     extract_suggestions_from_tabs,
-    render_document,
+    segment_base_texts,
 )
 from gdocs_preview.preview_read import normalize_author, read_for_review
 
@@ -144,13 +147,28 @@ class _PostWriteRead:
     Not a dataclass because ``records`` and ``segment_texts`` are derived
     from the same payload and must not drift apart.
 
-    ``segment_texts`` is keyed by ``(tab_id, segment_id)`` -- the coordinate
+    ``base_texts`` is keyed by ``(tab_id, segment_id)`` -- the coordinate
     space, not the document -- because that is the only text a record's
     indexes and context windows mean anything against. A merged
     whole-document string (what ``render_tabs`` produces) concatenates every
     tab's body and drops headers, footers and footnotes entirely, so
     locating a header resolution in it either finds nothing or finds the
     same words somewhere else and calls that a match.
+
+    It holds :class:`~gdocs_preview.analysis.BaseText`, NOT rendered text.
+    It used to hold ``render_document(...)["body_text"]`` and the
+    header/footer/footnote maps beside it -- CriticMarkup-marked strings --
+    while every value compared against them (``pre_text``, ``post_text``,
+    ``context_before``) is base text, so the verification was a comparison
+    between two different representations of the same document. Its three
+    failure modes were all reachable from prod and none from the mock:
+    a deletion spanning two runs (prod splits a ``textRun`` at every style
+    boundary, so "brave new" renders ``{-brave-}{- new-}``) could not be
+    found, and "not found" was the evidence an accept had removed it; a
+    still-pending neighbour inside the window broke the mirror comparison and
+    raised a false alarm on a write that had landed; and a marker inside the
+    40-character anchor made the range unlocatable, which was then reported
+    as "the likeliest cause is a concurrent edit by another editor".
     """
 
     def __init__(self, read: Any) -> None:
@@ -166,20 +184,18 @@ class _PostWriteRead:
         #: single-tab, and the echo would name that tab's suggestions as the
         #: ones the edit landed on.
         self.tab_ids: list[Optional[str]] = [tab_id for tab_id, _ in read.tabs]
-        self.segment_texts: dict[tuple[Optional[str], Optional[str]], str] = {}
+        self.base_texts: dict[tuple[Optional[str], Optional[str]], BaseText] = {}
         for tab_id, document in read.tabs:
-            rendered = render_document(document, tab_id=tab_id)
-            self.segment_texts[(tab_id, None)] = rendered["body_text"]
-            for kind in ("headers", "footers", "footnotes"):
-                for segment_id, text in (rendered.get(kind) or {}).items():
-                    self.segment_texts[(tab_id, segment_id or None)] = text
+            self.base_texts.update(segment_base_texts(document, tab_id=tab_id))
 
     @property
     def live_ids(self) -> frozenset[str]:
         return frozenset(self.records)
 
-    def text_at(self, record: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-        """The rendered text of the ONE ``(tab, segment)`` ``record`` lives in.
+    def text_at(
+        self, record: dict[str, Any]
+    ) -> tuple[Optional[BaseText], Optional[str]]:
+        """The base text of the ONE ``(tab, segment)`` ``record`` lives in.
 
         Returns ``(text, None)``, or ``(None, reason)`` naming why this read
         cannot say. A record that names no tab is resolved the way
@@ -204,7 +220,7 @@ class _PostWriteRead:
             if len(candidates) > 1:
                 return None, "ambiguous_tab"
             tab_id = candidates[0] if candidates else None
-        text = self.segment_texts.get((tab_id, segment_id))
+        text = self.base_texts.get((tab_id, segment_id))
         if text is None:
             return None, "segment_not_in_read"
         return text, None
@@ -232,49 +248,6 @@ async def _post_write_read(
         return None, f"{type(error).__name__}: {error}"[:200]
 
 
-def _locate(
-    segment_text: Optional[str], anchor: Optional[str], expected: str
-) -> Optional[str]:
-    """The post-write text around a resolved range, located by its context.
-
-    ``segment_text`` is the rendered text of the ONE ``(tab, segment)`` the
-    resolved suggestion lives in (:meth:`_PostWriteRead.text_at`), never the
-    whole document. Both failure modes of the whole-document version are
-    structural, not unlucky: a suggestion at the very start of a header has
-    ``context_before == ""`` (:mod:`gdocs_preview.analysis`), so the empty
-    anchor returned the head of the BODY and compared a header resolution
-    against it; and the merged body text concatenates every tab, so
-    ``find(anchor)`` could land in a different tab than the one that was
-    written to.
-
-    ``anchor`` is the suggestion's ``context_before`` -- base text, so
-    accepting or rejecting leaves it untouched and it still identifies the
-    spot after the write. Returns a window starting at that anchor, the head
-    of the segment when there is no preceding text to anchor on, or ``None``
-    when the anchor cannot be found (a concurrent edit) or the segment could
-    not be identified at all.
-
-    The window is returned UNCLIPPED and is sized to hold ``expected`` in
-    full (plus a :data:`~gdocs_preview.analysis.CONTEXT_WINDOW` of following
-    text), because :func:`_verify_resolution` decides
-    ``matches_expectation`` by looking for ``expected`` inside it. Clipping
-    here truncated the window to :data:`ECHO_MAX_CHARS` while the comparison
-    still used the full ``pre_text``/``post_text``, so any suggestion longer
-    than ``ECHO_MAX_CHARS - CONTEXT_WINDOW`` had its verdict decided by the
-    truncation instead of by the document -- see :func:`_clip`. The caller
-    clips what it echoes.
-    """
-    if not segment_text:
-        return None
-    if not anchor:
-        return segment_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW]
-    position = segment_text.find(anchor)
-    if position < 0:
-        return None
-    end = position + len(anchor) + len(expected) + CONTEXT_WINDOW
-    return segment_text[position:end]
-
-
 #: The reason codes :func:`_verify_resolution` reports as
 #: ``resulting_text_unavailable``. Every one of them means the same thing
 #: about the verdict -- ``matches_expectation: null`` because NO CHECK RAN --
@@ -284,7 +257,9 @@ UNLOCATED_REASONS = (
     "suggestion_not_listed",
     "ambiguous_tab",
     "segment_not_in_read",
-    "anchor_not_found",
+    ANCHOR_NOT_FOUND,
+    AMBIGUOUS_ANCHOR,
+    "nothing_to_compare",
 )
 
 _NOT_A_FAILED_WRITE = (
@@ -328,6 +303,22 @@ def _unlocated_note(
             f"not be located -- read_source is {read.source!r}, and the GA "
             "documents.get carries no tabs at all, so a read that degraded "
             f"loses every tab id. {_NOT_A_FAILED_WRITE} Retry the read."
+        )
+    if reason == AMBIGUOUS_ANCHOR:
+        return (
+            f"the base text around suggestion {suggestion_id!r}'s range repeats "
+            "in that segment, so more than one place reads as its range and "
+            "they do not agree on whether the resolution landed. No verdict is "
+            f"reported rather than one picked at random. {_NOT_A_FAILED_WRITE} "
+            "Read the range back with get_doc_review_view(start_index=..., "
+            "end_index=...) to see the one place you resolved."
+        )
+    if reason == "nothing_to_compare":
+        return (
+            f"suggestion {suggestion_id!r} was listed without the before/after "
+            "text a resolution is checked against, so there was nothing to "
+            f"compare the document to. {_NOT_A_FAILED_WRITE} Call "
+            "list_document_suggestions(fields='full') before resolving."
         )
     return (
         f"the base text immediately before suggestion {suggestion_id!r}'s range "
@@ -1062,28 +1053,32 @@ async def _verify_resolution(
 
     Three questions, answered from one read: is the target gone, does the
     document now read the way the suggestion promised, and what else
-    disappeared. ``expected_text`` is the analysis layer's ``post_text``
-    for an accept and ``pre_text`` for a reject -- the definition of what
-    resolving that suggestion means -- taken from the last listing, so it is
-    ``None`` when the caller resolved an id it never listed.
+    disappeared. The first is STRUCTURAL and is the evidence about the write
+    itself -- ``still_pending``, i.e. is the id absent from the post-write
+    pending set, which it must be after any accept or reject.
 
-    ``matches_expectation`` reads the OTHER half when ``expected_text`` is
-    empty: accepting a pure deletion (or rejecting a pure insertion) leaves
-    nothing to find, so the check becomes "is the text that should be gone
-    actually gone from that window". Both are scoped to the located window,
-    never the whole document, so an identical word elsewhere cannot fake a
-    verdict.
+    The second is :func:`gdocs_preview.analysis.check_resolution`, run over
+    the post-write read's BASE text: the suggestion's own ``(tab, segment)``
+    must read ``expected_text`` (``post_text`` for an accept, ``pre_text``
+    for a reject) at the range located by its anchor, with the untouched
+    ``context_after`` behind it. Every value on both sides of that comparison
+    is produced by the same projection layer that produced the card, so there
+    is one representation and no substring search -- see
+    :class:`~gdocs_preview.analysis.BaseText`. THREE consecutive review
+    rounds found this check reporting success on a destructive write it had
+    not verified, each time through a different way of comparing two
+    differently-projected strings; the type is what retires the class.
 
-    Both comparisons run on the FULL located window against the FULL
-    ``pre_text``/``post_text``; only the copies that go into the response are
-    clipped (:func:`_clip`). Comparing against the clipped window made the
-    verdict a function of :data:`ECHO_MAX_CHARS` rather than of the write --
-    fail-open on the destructive path, false-alarm on the constructive one.
+    ``expected_text`` is ``None`` when the caller resolved an id it never
+    listed -- there is no promise to check the document against.
+
+    Only the copies that go into the response are clipped (:func:`_clip`);
+    the check never sees them.
 
     A ``matches_expectation`` of ``None`` always carries
     ``resulting_text_unavailable`` naming which of
     :data:`UNLOCATED_REASONS` prevented the check, plus a note saying so in
-    words. Silence made four different situations -- one of them entirely
+    words. Silence made several different situations -- one of them entirely
     benign -- arrive at the agent as the same ``null``.
     """
     if not verify:
@@ -1117,23 +1112,33 @@ async def _verify_resolution(
         expected_text = resolved_record.get(kept)
         removed_text = resolved_record.get(dropped)
         # Scoped to the resolved suggestion's OWN (tab, segment): its indexes
-        # and its context window are numbered there and nowhere else. Full
-        # width, not the echo width -- the comparison below is the whole
-        # point of the read, and a clipped window answers about the clip.
-        segment_text, unlocated = read.text_at(resolved_record)
-        resulting_text = _locate(
-            segment_text,
-            resolved_record.get("context_before"),
-            expected_text or removed_text or "",
-        )
-        if resulting_text is not None:
-            if expected_text:
-                matches = expected_text in resulting_text
-            elif removed_text:
-                matches = removed_text not in resulting_text
-        elif unlocated is None:
-            # The segment was found; the anchor inside it was not.
-            unlocated = "anchor_not_found"
+        # and its context window are numbered there and nowhere else. Base
+        # text, at full width -- the check below is the whole point of the
+        # read, and it is typed so that rendered text cannot reach it.
+        base_text, unlocated = read.text_at(resolved_record)
+        if base_text is not None:
+            if expected_text is None and removed_text is None:
+                # A record with no before/after at all: nothing was promised,
+                # so nothing can be checked. Reported rather than returned as
+                # a bare null verdict -- the docstring's guarantee is that
+                # matches_expectation: null ALWAYS names its reason.
+                unlocated = "nothing_to_compare"
+            else:
+                check = check_resolution(
+                    base_text,
+                    context_before=resolved_record.get("context_before") or "",
+                    context_after=resolved_record.get("context_after") or "",
+                    expected_text=expected_text or "",
+                    removed_text=removed_text or "",
+                )
+                matches = check.matches
+                resulting_text = check.window
+                unlocated = check.reason
+    if matches is None and unlocated is None:  # pragma: no cover - belt and braces
+        # The docstring promises a null verdict always names its reason, and
+        # a promise a caller reads is worth more than one the code merely
+        # happens to keep: a future branch that forgets is caught here.
+        unlocated = "nothing_to_compare"
 
     verification: dict[str, Any] = {
         "source": "post_write_read",
@@ -1157,14 +1162,14 @@ async def _verify_resolution(
         # said nothing at all, so "the read could not see that tab", "the
         # anchor is gone" and "we never listed this id" arrived identical.
         verification["resulting_text_unavailable"] = unlocated
-        verification["notes"] = [
+        verification.setdefault("notes", []).append(
             _unlocated_note(
                 unlocated,
                 suggestion_id=suggestion_id,
                 record=resolved_record,
                 read=read,
             )
-        ]
+        )
 
     collateral = (
         sorted((known_before - read.live_ids) - {suggestion_id})

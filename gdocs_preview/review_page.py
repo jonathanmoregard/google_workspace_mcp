@@ -163,12 +163,14 @@ def validate_fields(
 def _overlaps(record: dict[str, Any], low: Optional[int], high: Optional[int]) -> bool:
     """Does the record's UTF-16 range overlap the half-open ``[low, high)``?
 
-    Half-open, because that is the convention the caller's numbers already
-    come in: Docs ``endIndex`` is exclusive, so the paragraph map an agent
-    reads a section boundary off reports the next paragraph's start as this
-    one's end. Treating the filter as inclusive would pull in the paragraph
-    on the far side of every seam -- an off-by-one that shows up as "why is
-    the heading of the next section in my results".
+    Pure index arithmetic, and therefore only ever correct for two records in
+    the SAME coordinate space -- see :func:`in_range_scope`, which is what
+    decides that. Half-open, because that is the convention the caller's
+    numbers already come in: Docs ``endIndex`` is exclusive, so the paragraph
+    map an agent reads a section boundary off reports the next paragraph's
+    start as this one's end. Treating the filter as inclusive would pull in
+    the paragraph on the far side of every seam -- an off-by-one that shows
+    up as "why is the heading of the next section in my results".
 
     Either bound may be ``None``, meaning unbounded on that side. A record
     with a degenerate (zero-width) range is treated as covering one unit, so
@@ -186,6 +188,72 @@ def _overlaps(record: dict[str, Any], low: Optional[int], high: Optional[int]) -
     return True
 
 
+# ---------------------------------------------------------------------------
+# Range scope: which coordinate space an index range is in
+# ---------------------------------------------------------------------------
+#
+# A Docs index is unique only within a ``(tabId, segmentId)`` pair. Comparing
+# raw numbers across pairs -- which is what a bare ``_overlaps`` does -- makes
+# an index range match the body AND every header, footer, footnote and other
+# tab whose LOCAL index happens to fall in the window, so ``matched_count``
+# is wrong and the extra cards look like they are in the section under
+# review. Every index range therefore names exactly one space.
+
+
+def resolve_range_scope(
+    records: Sequence[dict[str, Any]],
+    *,
+    segment_id: Optional[str],
+    tab_id: Optional[str],
+) -> dict[str, Any]:
+    """The one ``(tab, segment)`` an index range is interpreted in.
+
+    ``segment_id=None`` means the body: a non-body segment always carries an
+    id (:func:`gdocs_preview.analysis._collect_segments`), so ``None`` is not
+    ambiguous. ``tab_id=None`` is resolved from the records -- a single-tab
+    or GA read has exactly one, and the caller should not have to name it --
+    but a genuinely multi-tab document is REFUSED rather than guessed at,
+    because each tab is numbered from its own start and picking one silently
+    would answer a different question than the one asked.
+    """
+    if tab_id is None:
+        present = sorted({r.get("tab_id") for r in records if r.get("tab_id")})
+        if len(present) > 1:
+            raise ValueError(
+                "An index range needs a tab_id in this document: it has "
+                f"{len(present)} tabs ({', '.join(present)}) and Docs numbers "
+                "each tab from its own start, so [start_index, end_index) "
+                "names a different place in each one. Pass tab_id together "
+                "with the range (the tab id is on every suggestion record), "
+                "or filter without a range."
+            )
+        tab_id = present[0] if present else None
+    segment = (
+        "body"
+        if segment_id is None
+        else next(
+            (
+                r.get("segment")
+                for r in records
+                if (r.get("segment_id") or None) == segment_id
+            ),
+            None,
+        )
+    )
+    return {"segment": segment, "segment_id": segment_id, "tab_id": tab_id}
+
+
+def in_range_scope(record: dict[str, Any], scope: dict[str, Any]) -> bool:
+    """Is ``record`` numbered in the space ``scope`` names?"""
+    if (record.get("segment_id") or None) != (scope.get("segment_id") or None):
+        return False
+    if scope.get("tab_id") is not None and (
+        (record.get("tab_id") or None) != scope["tab_id"]
+    ):
+        return False
+    return True
+
+
 def filter_records(
     records: Sequence[dict[str, Any]],
     *,
@@ -193,6 +261,8 @@ def filter_records(
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
     status: Optional[str] = None,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Narrow ``records``; return them plus an accounting of what was dropped.
 
@@ -201,6 +271,13 @@ def filter_records(
     and "Danielle" would resolve the wrong cards. When an ``author`` or
     ``status`` filter matches nothing, the accounting lists the values that
     ARE present so the next call is informed rather than a guess.
+
+    ``segment_id`` and ``tab_id`` are filters in their own right AND the
+    coordinate space an index range is read in: with a range and no
+    ``segment_id`` the range means the BODY, and every card in a header,
+    footer or footnote is excluded from it and counted in
+    ``excluded_other_segments``. That default is what makes an index range
+    mean one thing; see :func:`resolve_range_scope`.
     """
     wants_range = start_index is not None or end_index is not None
     if (
@@ -220,9 +297,17 @@ def filter_records(
     status_key = (
         status.strip().upper() if isinstance(status, str) and status.strip() else None
     )
+    segment_key = segment_id.strip() if isinstance(segment_id, str) else None
+    tab_key = tab_id.strip() if isinstance(tab_id, str) else None
+    scope = (
+        resolve_range_scope(records, segment_id=segment_key, tab_id=tab_key)
+        if wants_range
+        else None
+    )
 
     kept: list[dict[str, Any]] = []
     unindexed_excluded = 0
+    other_segment_excluded = 0
     for record in records:
         if author_key is not None:
             name = author_display_name(record.get("author"))
@@ -232,7 +317,14 @@ def filter_records(
             value = record.get("status")
             if not value or str(value).strip().upper() != status_key:
                 continue
+        if segment_key is not None and (record.get("segment_id") or None) != segment_key:
+            continue
+        if tab_key is not None and (record.get("tab_id") or None) != tab_key:
+            continue
         if wants_range:
+            if not in_range_scope(record, scope or {}):
+                other_segment_excluded += 1
+                continue
             if record.get("start_index") is None or record.get("end_index") is None:
                 unindexed_excluded += 1
                 continue
@@ -245,14 +337,22 @@ def filter_records(
         applied["author"] = author
     if status_key is not None:
         applied["status"] = status
+    if segment_key is not None:
+        applied["segment_id"] = segment_key
+    if tab_key is not None:
+        applied["tab_id"] = tab_key
     if wants_range:
         applied["start_index"] = start_index
         applied["end_index"] = end_index
         applied["range_match"] = (
-            "overlap with the half-open range [start_index, end_index)"
+            "overlap with the half-open range [start_index, end_index), within "
+            "one (tab, segment): Docs numbers each from its own start"
         )
+        applied["range_scope"] = scope
     if unindexed_excluded:
         applied["excluded_without_indexes"] = unindexed_excluded
+    if other_segment_excluded:
+        applied["excluded_other_segments"] = other_segment_excluded
 
     if not kept and applied:
         if author_key is not None:
@@ -266,6 +366,14 @@ def filter_records(
         if status_key is not None:
             applied["statuses_present"] = sorted(
                 {str(r.get("status")) for r in records if r.get("status")}
+            )
+        if segment_key is not None or wants_range:
+            applied["segments_present"] = sorted(
+                {
+                    f"{r.get('segment')}:{r.get('segment_id')}"
+                    for r in records
+                    if r.get("segment")
+                }
             )
     return kept, applied
 
@@ -285,7 +393,8 @@ def _fingerprint(document_id: str, fields: str, applied: dict[str, Any]) -> str:
     stable = {
         k: v
         for k, v in sorted(applied.items())
-        if k in ("author", "status", "start_index", "end_index")
+        if k
+        in ("author", "status", "start_index", "end_index", "segment_id", "tab_id")
     }
     return json.dumps(
         {"d": document_id, "f": fields, "q": stable}, sort_keys=True, ensure_ascii=False
@@ -460,6 +569,8 @@ def build_listing(
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
     status: Optional[str] = None,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Filter, project and paginate an analysis result into a response body.
 
@@ -479,6 +590,8 @@ def build_listing(
         start_index=start_index,
         end_index=end_index,
         status=status,
+        segment_id=segment_id,
+        tab_id=tab_id,
     )
     window, page = paginate(
         kept,
@@ -523,9 +636,12 @@ VIEW_FIELD_MODES = (VIEW_FIELDS_TEXT, VIEW_FIELDS_PARAGRAPHS, VIEW_FIELDS_FULL)
 
 
 def _paragraph_in_window(
-    paragraph: dict[str, Any], low: Optional[int], high: Optional[int]
+    paragraph: dict[str, Any],
+    low: Optional[int],
+    high: Optional[int],
+    scope: dict[str, Any],
 ) -> bool:
-    return _overlaps(paragraph, low, high)
+    return in_range_scope(paragraph, scope) and _overlaps(paragraph, low, high)
 
 
 def build_review_view(
@@ -534,6 +650,8 @@ def build_review_view(
     fields: str,
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Narrow a rendered document to ``fields`` and an optional index window.
 
@@ -547,6 +665,12 @@ def build_review_view(
     addressable half (same characters, plus indexes, styles and the
     suggestion ids touching each paragraph), and ``full`` is both -- the
     shape this tool always returned, kept verbatim for callers that parse it.
+
+    The window is read in exactly one ``(tab, segment)`` -- the body of the
+    document's single tab unless ``segment_id`` / ``tab_id`` say otherwise --
+    for the same reason the listing's range filter is
+    (:func:`resolve_range_scope`): a header paragraph numbered from 0 would
+    otherwise fall inside every window taken off the body's first page.
     """
     fields = validate_fields(fields, VIEW_FIELD_MODES)
     windowed = start_index is not None or end_index is not None
@@ -563,9 +687,17 @@ def build_review_view(
         )
     paragraphs = list(rendered.get("paragraphs") or [])
     total_paragraphs = len(paragraphs)
+    scope: dict[str, Any] = {}
     if windowed:
+        scope = resolve_range_scope(
+            paragraphs,
+            segment_id=segment_id.strip() if isinstance(segment_id, str) else None,
+            tab_id=tab_id.strip() if isinstance(tab_id, str) else None,
+        )
         paragraphs = [
-            p for p in paragraphs if _paragraph_in_window(p, start_index, end_index)
+            p
+            for p in paragraphs
+            if _paragraph_in_window(p, start_index, end_index, scope)
         ]
 
     result: dict[str, Any] = {
@@ -610,8 +742,11 @@ def build_review_view(
             "start_index": start_index,
             "end_index": end_index,
             "match": (
-                "paragraphs overlapping the half-open range [start_index, end_index)"
+                "paragraphs of one (tab, segment) overlapping the half-open "
+                "range [start_index, end_index); Docs numbers each tab and "
+                "each header/footer/footnote from its own start"
             ),
+            "scope": scope,
             "paragraphs_outside_window": total_paragraphs - len(paragraphs),
         }
     if omitted:

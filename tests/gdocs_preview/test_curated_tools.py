@@ -205,6 +205,35 @@ class TestListSuggestions:
         assert body["start_index"] < header["end_index"]
         assert header["start_index"] < body["end_index"]
 
+        # And an index range covering both numbers means the BODY, unless
+        # the caller names the header segment.
+        in_body = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=20,
+            )
+        )
+        assert [s["suggestion_id"] for s in in_body["suggestions"]] == [
+            "suggest.body1"
+        ]
+        assert in_body["filters"]["excluded_other_segments"] == 1
+        in_header = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=20,
+                segment_id="kix.h1",
+            )
+        )
+        assert [s["suggestion_id"] for s in in_header["suggestions"]] == [
+            "suggest.hdr1"
+        ]
+
     @pytest.mark.asyncio
     async def test_multi_tab_records_carry_their_tab_id(self):
         service = _docs_get_service(fx.TABS_PAYLOAD_MULTI)

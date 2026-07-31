@@ -1696,3 +1696,53 @@ class TestMergedEditEcho:
             "suggest.rep1"
         ]
         assert "suggestions_at_edit_range" not in verification
+
+    @pytest.mark.asyncio
+    async def test_a_suggestion_in_another_segment_is_not_at_the_edit(self):
+        """Docs numbers a header from its own start, so a header suggestion
+        can carry the same numbers as a body edit without being anywhere
+        near it. Echoing it would tell the caller its merge landed in a
+        place it did not."""
+        document = fx.build_doc(
+            [fx.paragraph(fx.run("Body only.\n"))],
+            headers={
+                "kix.h1": [
+                    fx.paragraph(
+                        fx.run("Head "), fx.run("edit", ins=["suggest.hdr1"]),
+                        fx.run("\n"),
+                    )
+                ]
+            },
+        )
+        service = _batch_service({}, document=fx.build_tabs_payload([("t.0", document)]))
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        # The header suggestion is [5, 9); this body edit sits on the same
+        # numbers, in the body.
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="XY",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["created_suggestions"] == []
+        assert "suggestions_at_edit_range" not in verification
+
+        # Naming the header finds it.
+        in_header = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="XY",
+                segment_id="kix.h1",
+            )
+        )
+        (echo,) = in_header["verification"]["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == "suggest.hdr1"

@@ -339,6 +339,97 @@ class TestFilters:
         assert listing(ladder(3))["filters"] == {}
 
 
+class TestRangeScope:
+    """An index range names one ``(tab, segment)``, never raw numbers.
+
+    Docs numbers the body, each header/footer/footnote and each tab from its
+    own start, so comparing indexes across them makes an index-range filter
+    match cards that are nowhere near the section under review -- and
+    ``matched_count`` then reports a number that is simply wrong.
+    """
+
+    def body_and_header(self) -> list[dict]:
+        return [
+            record("s.body", start=100, end=140),
+            record("s.far", start=900, end=940),
+            record(
+                "s.header",
+                start=100,
+                end=140,
+                segment="header",
+                segment_id="kix.h1",
+            ),
+            record(
+                "s.note",
+                start=110,
+                end=120,
+                segment="footnote",
+                segment_id="kix.fn1",
+            ),
+        ]
+
+    def test_a_range_means_the_body_unless_a_segment_is_named(self):
+        result = listing(self.body_and_header(), start_index=90, end_index=200)
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["s.body"]
+        assert result["matched_count"] == 1
+        assert result["filters"]["excluded_other_segments"] == 2
+        assert result["filters"]["range_scope"]["segment"] == "body"
+        assert result["filters"]["range_scope"]["segment_id"] is None
+
+    def test_naming_a_segment_reads_the_range_there(self):
+        result = listing(
+            self.body_and_header(),
+            start_index=90,
+            end_index=200,
+            segment_id="kix.h1",
+        )
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["s.header"]
+        assert result["filters"]["range_scope"]["segment"] == "header"
+
+    def test_a_segment_filter_works_without_a_range(self):
+        result = listing(self.body_and_header(), segment_id="kix.fn1")
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["s.note"]
+        assert result["filters"]["segment_id"] == "kix.fn1"
+
+    def test_a_multi_tab_document_refuses_a_range_without_a_tab(self):
+        records = [
+            record("s.one", tab_id="t.0", start=100, end=140),
+            record("s.two", tab_id="t.second", start=100, end=140),
+        ]
+        with pytest.raises(ValueError, match="needs a tab_id"):
+            listing(records, start_index=90, end_index=200)
+
+    def test_naming_the_tab_makes_the_range_answerable(self):
+        records = [
+            record("s.one", tab_id="t.0", start=100, end=140),
+            record("s.two", tab_id="t.second", start=100, end=140),
+        ]
+        result = listing(records, start_index=90, end_index=200, tab_id="t.second")
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["s.two"]
+        assert result["filters"]["range_scope"]["tab_id"] == "t.second"
+
+    def test_a_single_tab_document_does_not_have_to_name_its_tab(self):
+        result = listing(ladder(5), start_index=0, end_index=25)
+        assert result["matched_count"] == 3
+        assert result["filters"]["range_scope"]["tab_id"] == "t.0"
+
+    def test_a_range_that_matches_nothing_lists_the_segments_that_exist(self):
+        result = listing(self.body_and_header(), start_index=5000, end_index=6000)
+        assert result["matched_count"] == 0
+        assert "body:None" in result["filters"]["segments_present"]
+        assert "header:kix.h1" in result["filters"]["segments_present"]
+
+    def test_a_token_scoped_to_one_segment_is_refused_under_another(self):
+        records = [
+            record(f"s.h{i}", start=i * 10, end=i * 10 + 5, segment="header",
+                   segment_id="kix.h1")
+            for i in range(6)
+        ] + [record(f"s.b{i}", start=i * 10, end=i * 10 + 5) for i in range(6)]
+        first = listing(records, segment_id="kix.h1", page_size=4)
+        with pytest.raises(rp.PageTokenError, match="different query"):
+            listing(records, page_size=4, page_token=first["page"]["next_page_token"])
+
+
 # ---------------------------------------------------------------------------
 # Pagination
 # ---------------------------------------------------------------------------
@@ -643,3 +734,54 @@ class TestReviewView:
     def test_unknown_field_mode_is_rejected(self):
         with pytest.raises(ValueError, match="Invalid fields"):
             rp.build_review_view(rendered_document(), fields="prose")
+
+
+def rendered_with_header() -> dict:
+    """A document whose header paragraph is numbered from 0, like prod's."""
+    source = rendered_document()
+    source["paragraphs"] = [
+        {
+            "segment": "header",
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+            "start_index": 0,
+            "end_index": 12,
+            "text": "Header.\n",
+            "named_style": "NORMAL_TEXT",
+            "is_list_item": False,
+            "in_table": False,
+            "suggestion_ids": ["s.h"],
+        },
+        *source["paragraphs"],
+    ]
+    source["headers"] = {"kix.h1": "Header.\n"}
+    return source
+
+
+class TestReviewViewWindowScope:
+    def test_a_body_window_does_not_pull_in_the_header(self):
+        view = rp.build_review_view(
+            rendered_with_header(), fields="full", start_index=1, end_index=8
+        )
+        assert [p["text"] for p in view["paragraphs"]] == ["First.\n"]
+        assert view["window"]["scope"]["segment"] == "body"
+        assert view["body_text"] == "First.\n"
+
+    def test_naming_the_segment_reads_the_window_in_the_header(self):
+        view = rp.build_review_view(
+            rendered_with_header(),
+            fields="full",
+            start_index=0,
+            end_index=12,
+            segment_id="kix.h1",
+        )
+        assert [p["text"] for p in view["paragraphs"]] == ["Header.\n"]
+        assert view["window"]["scope"]["segment_id"] == "kix.h1"
+        # The window is in the header, so nothing of the body is claimed.
+        assert view["body_text"] == ""
+
+    def test_a_multi_tab_document_refuses_a_window_without_a_tab(self):
+        source = rendered_document()
+        source["paragraphs"][1]["tab_id"] = "t.second"
+        with pytest.raises(ValueError, match="needs a tab_id"):
+            rp.build_review_view(source, fields="full", start_index=1, end_index=30)

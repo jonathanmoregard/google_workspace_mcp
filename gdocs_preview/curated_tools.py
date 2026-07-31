@@ -100,6 +100,8 @@ async def list_document_suggestions(
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
     status: Optional[str] = None,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
 ) -> str:
     """List the pending edit suggestions in a document, one record each, with
     filtering, field selection and pagination.
@@ -169,12 +171,27 @@ async def list_document_suggestions(
         author (str): Only suggestions by this author display name
             (case-insensitive, exact -- not a substring match). When nothing
             matches, the response lists the authors that are present.
-        start_index (int): Only suggestions whose UTF-16 range overlaps
-            [start_index, end_index], inclusive of both bounds. Either bound
-            may be given alone. This is how you review one section.
+        start_index (int): Only suggestions whose UTF-16 range overlaps the
+            half-open [start_index, end_index) -- endIndex is exclusive, as
+            everywhere else in the Docs API. Either bound may be given alone.
+            This is how you review one section. The range is read in ONE
+            (tab, segment): the body of the document's only tab unless
+            segment_id/tab_id say otherwise, because Docs numbers each tab
+            and each header/footer/footnote from its own start. Cards outside
+            that space are excluded and counted in
+            filters.excluded_other_segments, and the space actually used is
+            echoed as filters.range_scope.
         end_index (int): See start_index.
         status (str): Only suggestions with this thread status, e.g. "OPEN"
             (case-insensitive, exact).
+        segment_id (str): Only suggestions in this header/footer/footnote
+            segment (take the value from a record's own segment_id); also the
+            coordinate space start_index/end_index are read in. Omit for the
+            document body.
+        tab_id (str): Only suggestions in this tab, and the tab an index
+            range is read in. Omit for a single-tab document -- it is
+            resolved from the records; a document with more than one tab
+            REFUSES an index range without it rather than guessing.
 
     Returns:
         str: JSON with document_id, title, suggestion_count, matched_count,
@@ -204,6 +221,8 @@ async def list_document_suggestions(
             start_index=start_index,
             end_index=end_index,
             status=status,
+            segment_id=segment_id,
+            tab_id=tab_id,
         )
     except (PageTokenError, ValueError) as error:
         raise UserInputError(str(error)) from error
@@ -340,6 +359,8 @@ async def get_doc_review_view(
     fields: str = "text",
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
     include_comments: bool = True,
 ) -> str:
     """Read a document the way a reviewer sees it: plain text with inline
@@ -367,10 +388,16 @@ async def get_doc_review_view(
     - ``fields='full'``: both, the shape this tool has always returned.
 
     ``start_index``/``end_index`` narrow the response to the paragraphs
-    overlapping that UTF-16 range (inclusive of both bounds) -- the way to
-    read one section of a long document. ``body_text`` is then recomputed
-    from exactly the paragraphs returned, so text and map can never describe
-    different windows, and ``suggestion_ids`` lists only the ids inside it.
+    overlapping that half-open UTF-16 range ``[start_index, end_index)`` --
+    the way to read one section of a long document. ``body_text`` is then
+    recomputed from exactly the paragraphs returned, so text and map can
+    never describe different windows, and ``suggestion_ids`` lists only the
+    ids inside it. The window is read in ONE (tab, segment) -- the body of
+    the document's only tab unless ``segment_id``/``tab_id`` say otherwise --
+    because Docs numbers each tab and each header/footer/footnote from its
+    own start, so a header paragraph numbered from 0 would otherwise fall
+    inside every window taken off the body's first page. ``window.scope``
+    reports the space that was used.
 
     ``comments`` carries the Docs-side comment threads: comment_id,
     anchor_id, status, quoted_text, the head post's author/content/times and
@@ -387,10 +414,17 @@ async def get_doc_review_view(
         view_mode (str): One of SUGGESTIONS_INLINE,
             PREVIEW_SUGGESTIONS_ACCEPTED, PREVIEW_WITHOUT_SUGGESTIONS.
         fields (str): "text" (default), "paragraphs" or "full". See above.
-        start_index (int): Only paragraphs overlapping [start_index,
-            end_index], inclusive of both bounds. Either bound may be given
-            alone.
+        start_index (int): Only paragraphs overlapping the half-open
+            [start_index, end_index) -- endIndex is exclusive, as everywhere
+            else in the Docs API. Either bound may be given alone.
         end_index (int): See start_index.
+        segment_id (str): Read the window in this header/footer/footnote
+            segment instead of the body (take the value from a paragraph's
+            own segment_id).
+        tab_id (str): Read the window in this tab. Omit for a single-tab
+            document -- it is resolved from the paragraphs; a document with
+            more than one tab REFUSES a window without it rather than
+            guessing.
         include_comments (bool): Return the comment threads. Default True;
             pass False when you only want the prose.
 
@@ -421,6 +455,8 @@ async def get_doc_review_view(
             fields=fields,
             start_index=start_index,
             end_index=end_index,
+            segment_id=segment_id,
+            tab_id=tab_id,
         )
     except ValueError as error:
         raise UserInputError(str(error)) from error

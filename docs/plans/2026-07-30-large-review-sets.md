@@ -254,13 +254,38 @@ it twice (default `fields="text"`), plus the window the failing run's agent
 explicitly wanted when it worked out that "Limitations of this evidence" was
 indices 6841-8518 and had no way to ask for it.
 
-**4. Index ranges are half-open `[start_index, end_index)`.** The
-recommendation said "range overlap" without picking an end. Half-open,
-because that is the convention the caller's numbers arrive in: Docs
-`endIndex` is exclusive, so a paragraph map reports the next paragraph's
-start as this one's end, and an inclusive filter pulls in the paragraph on
-the far side of every seam. `end_index <= start_index` is refused with the
-convention spelled out rather than silently returning nothing.
+**4. Index ranges are half-open `[start_index, end_index)`, and scoped to one
+`(tab, segment)`.** The recommendation said "range overlap" without picking
+an end. Half-open, because that is the convention the caller's numbers arrive
+in: Docs `endIndex` is exclusive, so a paragraph map reports the next
+paragraph's start as this one's end, and an inclusive filter pulls in the
+paragraph on the far side of every seam. `end_index <= start_index` is
+refused with the convention spelled out rather than silently returning
+nothing.
+
+Scoped, because an index is only unique within a `(tabId, segmentId)` pair.
+Comparing raw numbers made an index range match the body AND every header,
+footer, footnote and other tab whose *local* index fell in the window, so
+`matched_count` was wrong and the extra cards looked like they were in the
+section under review. The semantics now (`review_page.resolve_range_scope`,
+added 2026-07-31):
+
+- a range means the **body** unless `segment_id` names a segment — a non-body
+  segment always has an id, so `None` is not ambiguous;
+- `tab_id` is **resolved** when the document has one tab and **required**
+  when it has more than one (refused with the tab ids listed, rather than
+  silently answering about one of them);
+- `segment_id` / `tab_id` are ordinary filters in their own right, so nothing
+  passed is ever silently ignored;
+- cards outside the scope are counted in `filters.excluded_other_segments`,
+  and the space used is echoed as `filters.range_scope` (`window.scope` for
+  `get_doc_review_view`);
+- the page token's fingerprint includes both, so a token minted in one
+  segment cannot be replayed in another.
+
+The same segment blindness was in `write_tools._overlaps`, which decides the
+`suggestions_at_edit_range` echo; it now compares only within the
+`(tabId, segmentId)` the edit itself named.
 
 ### The parts that were taken as written
 

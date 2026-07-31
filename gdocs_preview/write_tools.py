@@ -166,15 +166,30 @@ def _locate(body_text: str, anchor: Optional[str], expected: str) -> Optional[st
     return _clip(body_text[position:end])
 
 
-def _overlaps(record: dict[str, Any], edit_range: tuple[int, int]) -> bool:
+def _overlaps(
+    record: dict[str, Any],
+    edit_range: tuple[int, int],
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
+) -> bool:
     """Does a suggestion's index range touch the range an edit targeted?
 
     Bounds are inclusive on both sides so an insertion (a zero-width edit)
     at the seam of a suggestion still counts -- that is precisely the case
     where the API merges instead of creating a new suggestion.
+
+    The comparison is confined to the ``(tabId, segmentId)`` the edit named,
+    because Docs numbers each from its own start: a footnote suggestion whose
+    LOCAL range happens to cover the same numbers as a body edit is not at
+    the edit, and echoing it as ``suggestions_at_edit_range`` would tell the
+    caller its merge landed somewhere it did not.
     """
     start, end = record.get("start_index"), record.get("end_index")
     if start is None or end is None:
+        return False
+    if (record.get("segment_id") or None) != (segment_id or None):
+        return False
+    if tab_id is not None and (record.get("tab_id") or None) != tab_id:
         return False
     edit_start, edit_end = edit_range
     return start <= edit_end and end >= edit_start
@@ -502,6 +517,8 @@ async def suggest_doc_edit(
                 start_index,
                 end_index if end_index is not None else start_index,
             ),
+            segment_id=segment_id,
+            tab_id=tab_id,
             verify=verify,
         ),
         "link": _doc_link(document_id),
@@ -518,6 +535,8 @@ async def _verify_suggest(
     known_before: Optional[frozenset[str]],
     edit_range: tuple[int, int],
     verify: bool,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Post-write echo for :func:`suggest_doc_edit`.
 
@@ -562,7 +581,7 @@ async def _verify_suggest(
         overlapping = [
             _echo_suggestion(record)
             for record in read.records.values()
-            if _overlaps(record, edit_range)
+            if _overlaps(record, edit_range, segment_id, tab_id)
         ]
         if overlapping:
             verification["suggestions_at_edit_range"] = overlapping

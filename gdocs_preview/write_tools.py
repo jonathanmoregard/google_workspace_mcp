@@ -481,6 +481,86 @@ def _still_pending_note(
     return note
 
 
+#: What each ``commentUpdateState`` says about "was the thread update
+#: persisted?". A state the API did NOT send is absent from this mapping, and
+#: absence answers ``None``: it is not a report of failure.
+#: ``ALL_FAILED_UNKNOWN_REASON`` never reaches a verdict --
+#: :func:`_execute_preview_batch_update` raises on it with
+#: ``enforce_comment_update=True`` -- but it is spelled out because the
+#: mapping is the definition of the field, not a lookup table for the paths
+#: that happen to be reachable today.
+_COMMENT_UPDATE_SAVED: dict[str, bool] = {
+    "ALL_SAVED": True,
+    "ALL_FAILED_UNKNOWN_REASON": False,
+}
+
+
+def _saved_from_state(comment_update_state: Optional[str]) -> Optional[bool]:
+    """Did the thread update save? Only ``commentUpdateState`` can say."""
+    return _COMMENT_UPDATE_SAVED.get(comment_update_state or "")
+
+
+@dataclass(frozen=True)
+class _ThreadWriteVerdict:
+    """``saved`` for a thread write -- derived from the state, never asserted.
+
+    ``reply_to_doc_thread`` and ``create_anchored_doc_comment`` verify for
+    free off the batchUpdate response, and both used to write
+    ``"saved": comment_update_state == "ALL_SAVED"``. That is an ASSERTION
+    wearing a comparison: an absent state produced ``saved: false`` beside a
+    fully populated stored Post -- ``post_id``, ``create_time``, and
+    ``stored_content`` equal to what was sent -- which is a report of failure
+    for a write that most likely landed. The reply an agent then sends again
+    is a duplicate in a customer's document, and duplicate comments cannot be
+    un-sent by re-reading.
+
+    So the field is three-valued, on the same rule
+    :class:`_ResolutionVerdict` follows: the API's own ``commentUpdateState``
+    is the only evidence about persistence, and where it is silent so is this.
+    The stored Post is reported alongside as what it is -- evidence about the
+    CONTENT (``matches_request``), not about the save.
+    """
+
+    comment_update_state: Optional[str]
+    saved: Optional[bool]
+
+    def __post_init__(self) -> None:
+        entailed = _saved_from_state(self.comment_update_state)
+        if self.saved is not entailed:
+            raise ValueError(
+                f"saved={self.saved!r} is not what "
+                f"comment_update_state={self.comment_update_state!r} entails "
+                f"({entailed!r}). Build this with _ThreadWriteVerdict.derive()."
+            )
+
+    @classmethod
+    def derive(cls, comment_update_state: Optional[str]) -> "_ThreadWriteVerdict":
+        return cls(
+            comment_update_state=comment_update_state,
+            saved=_saved_from_state(comment_update_state),
+        )
+
+    def note(self, *, what: str, post_id: Optional[str]) -> str:
+        """One sentence for a save nothing reported on, and what NOT to do."""
+        return (
+            f"this response carries no commentUpdateState, which is the only "
+            f"thing that reports whether the {what} was persisted, so whether "
+            "it saved is UNKNOWN -- not false. "
+            + (
+                f"The API did return a stored post ({post_id!r}), and "
+                "stored_content/matches_request compare it with what was "
+                "sent -- but that is evidence about the CONTENT, not about "
+                "the save. "
+                if post_id
+                else "No stored post came back either. "
+            )
+            + f"Do NOT repeat the {what} on the strength of this response: "
+            "check with list_document_comments or get_doc_review_view first, "
+            "because a retry that was not needed leaves a duplicate in the "
+            "document."
+        )
+
+
 def _is_ours(record: dict[str, Any]) -> bool:
     """Did the AUTHENTICATED user write this suggestion?
 
@@ -1442,7 +1522,17 @@ async def reply_to_doc_thread(
             the API recorded it), content (as stored), create_time,
             comment_update_state, link, and verification {source:
             "batch_update_response", saved, stored_content,
-            matches_request}.
+            matches_request, and -- only when saved is null --
+            saved_unavailable and notes}.
+
+            saved is the API's own commentUpdateState and nothing else:
+            true when it said ALL_SAVED, false when it reported a failure
+            state, and NULL when it sent no state at all. Null is not false.
+            The stored post echoed beside it (post_id, stored_content,
+            matches_request) is evidence about the CONTENT the API received,
+            not about persistence -- so on a null, read the thread back rather
+            than replying again, since a needless retry leaves a duplicate
+            reply in the document.
     """
     if (comment_id is None) == (suggestion_id is None):
         raise UserInputError("Provide exactly one of comment_id or suggestion_id.")
@@ -1500,25 +1590,33 @@ async def reply_to_doc_thread(
 
     stored_content = post.get("content")
     comment_update_state = response.get("commentUpdateState")
+    post_id = post.get("postId")
+    verdict = _ThreadWriteVerdict.derive(comment_update_state)
+    verification: dict[str, Any] = {
+        # No extra read: the batchUpdate response already carries the
+        # stored Post, so the echo costs nothing.
+        "source": "batch_update_response",
+        "saved": verdict.saved,
+        "stored_content": _clip(stored_content),
+        "matches_request": (
+            stored_content == reply_content if stored_content is not None else None
+        ),
+    }
+    if verdict.saved is None:
+        verification["saved_unavailable"] = "no_comment_update_state"
+        verification.setdefault("notes", []).append(
+            verdict.note(what="reply", post_id=post_id)
+        )
     result = {
         "document_id": document_id,
         "thread_type": thread_type,
         thread_id_key: thread_id,
-        "post_id": post.get("postId"),
+        "post_id": post_id,
         "author": normalize_author(post.get("author")),
         "content": _clip(stored_content),
         "create_time": post.get("createTime"),
         "comment_update_state": comment_update_state,
-        "verification": {
-            # No extra read: the batchUpdate response already carries the
-            # stored Post, so the echo costs nothing.
-            "source": "batch_update_response",
-            "saved": comment_update_state == "ALL_SAVED",
-            "stored_content": _clip(stored_content),
-            "matches_request": (
-                stored_content == reply_content if stored_content is not None else None
-            ),
-        },
+        "verification": verification,
         "link": _doc_link(document_id),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1610,8 +1708,21 @@ async def create_anchored_doc_comment(
             thread head post's PostAuthor as the API recorded it), content
             (as stored), create_time, anchor_id, quoted_text, status,
             comment_update_state, link, and verification {source:
-            "batch_update_response", saved, anchored_range, anchored_text,
-            stored_content, matches_request}.
+            "batch_update_response", saved, requested_range, anchored_text,
+            stored_content, matches_request, and -- only when saved is null --
+            saved_unavailable and notes}.
+
+            requested_range is the range this call ASKED for, echoed back; it
+            is not evidence about where the comment landed, because no read is
+            made and the API does not echo a resolved range. anchored_text
+            (the thread's plainTextQuote) IS that evidence: compare it with
+            the text you meant to comment on.
+
+            saved is the API's own commentUpdateState and nothing else: true
+            when it said ALL_SAVED, false when it reported a failure state,
+            and NULL when it sent no state at all. Null is not false -- read
+            the comments back rather than creating the comment again, since a
+            needless retry leaves a duplicate in the document.
     """
     if not content or not content.strip():
         raise UserInputError("content must be non-empty.")
@@ -1665,10 +1776,51 @@ async def create_anchored_doc_comment(
     quoted_text = thread.get("plainTextQuote")
     stored_content = head_post.get("content")
     comment_update_state = response.get("commentUpdateState")
+    post_id = head_post.get("postId")
+    verdict = _ThreadWriteVerdict.derive(comment_update_state)
+    verification: dict[str, Any] = {
+        # No extra read: InsertCommentResponse carries the CommentThread,
+        # plainTextQuote included -- the anchored text for free.
+        "source": "batch_update_response",
+        "saved": verdict.saved,
+        # The range this call ASKED for, echoed back under a name that says
+        # so. It was ``anchored_range``, which reads as the range the comment
+        # ended up on -- a claim nothing here supports: this tool makes no
+        # read, and the API does not echo the resolved range. The one piece of
+        # evidence about where the comment actually landed is
+        # ``anchored_text`` (the thread's plainTextQuote), so compare THAT
+        # with the text you meant to comment on; an off-by-one shows up there
+        # and nowhere in these numbers.
+        #
+        # Built from ADDRESS_FIELDS like every other index block. ``segment``
+        # is null rather than guessed when a segment_id was given: this tool
+        # makes no read, so it knows the id but not the kind -- the same
+        # convention resolve_range_scope uses for an unrecognised id.
+        "requested_range": with_address(
+            {},
+            {
+                "segment": "body" if segment_id is None else None,
+                "segment_id": segment_id,
+                "tab_id": tab_id,
+                "start_index": start_index,
+                "end_index": end_index,
+            },
+        ),
+        "anchored_text": _clip(quoted_text),
+        "stored_content": _clip(stored_content),
+        "matches_request": (
+            stored_content == content if stored_content is not None else None
+        ),
+    }
+    if verdict.saved is None:
+        verification["saved_unavailable"] = "no_comment_update_state"
+        verification.setdefault("notes", []).append(
+            verdict.note(what="comment", post_id=post_id)
+        )
     result = {
         "document_id": document_id,
         "comment_id": thread.get("commentId"),
-        "post_id": head_post.get("postId"),
+        "post_id": post_id,
         "author": normalize_author(head_post.get("author")),
         "content": _clip(stored_content),
         "create_time": head_post.get("createTime"),
@@ -1676,33 +1828,7 @@ async def create_anchored_doc_comment(
         "quoted_text": _clip(quoted_text),
         "status": thread.get("status"),
         "comment_update_state": comment_update_state,
-        "verification": {
-            # No extra read: InsertCommentResponse carries the CommentThread,
-            # plainTextQuote included -- the anchored text for free.
-            "source": "batch_update_response",
-            "saved": comment_update_state == "ALL_SAVED",
-            # The last agent-facing index block that was not built from
-            # ADDRESS_FIELDS; it omitted ``segment``, so the echo of a
-            # footnote comment read like a body one. ``segment`` is null
-            # rather than guessed when a segment_id was given: this tool
-            # makes no read, so it knows the id but not the kind -- the same
-            # convention resolve_range_scope uses for an unrecognised id.
-            "anchored_range": with_address(
-                {},
-                {
-                    "segment": "body" if segment_id is None else None,
-                    "segment_id": segment_id,
-                    "tab_id": tab_id,
-                    "start_index": start_index,
-                    "end_index": end_index,
-                },
-            ),
-            "anchored_text": _clip(quoted_text),
-            "stored_content": _clip(stored_content),
-            "matches_request": (
-                stored_content == content if stored_content is not None else None
-            ),
-        },
+        "verification": verification,
         "link": _doc_link(document_id),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)

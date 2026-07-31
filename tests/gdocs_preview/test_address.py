@@ -7,7 +7,7 @@ was only true of the payloads routed through it. Two of them --
 ``analysis.render_document``'s paragraph map and the suggestion records
 ``review_page.project`` returns verbatim under ``fields="full"`` -- built the
 same five keys as dict literals, and ``create_anchored_doc_comment``'s
-``anchored_range`` built four of them and omitted ``segment``. Correct on the
+``requested_range`` built four of them and omitted ``segment``. Correct on the
 day they were written; unguarded against the day they are edited.
 
 This module is the guard. It enumerates every block the service emits that
@@ -148,7 +148,7 @@ class TestWritePayloadsCarryTheWholeAddress:
         assert _addressed(write_tools._echo_suggestion(record)) == ADDRESS
 
     @pytest.mark.asyncio
-    async def test_the_anchored_range_echo_is_addressable(self):
+    async def test_the_requested_range_echo_is_addressable(self):
         """MEDIUM 4: this one really was missing ``segment``."""
         service = _batch_service(
             {
@@ -181,7 +181,7 @@ class TestWritePayloadsCarryTheWholeAddress:
             )
         )
 
-        anchored = result["verification"]["anchored_range"]
+        anchored = result["verification"]["requested_range"]
         assert _addressed(anchored) == ADDRESS
         assert anchored["segment_id"] == "kix.fn1"
         assert anchored["tab_id"] == "t.0"
@@ -206,7 +206,7 @@ class TestWritePayloadsCarryTheWholeAddress:
                 end_index=4,
             )
         )
-        assert result["verification"]["anchored_range"]["segment"] == "body"
+        assert result["verification"]["requested_range"]["segment"] == "body"
 
 
 class TestScopeEchoesAreCompleteToo:

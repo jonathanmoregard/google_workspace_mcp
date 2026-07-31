@@ -2213,7 +2213,10 @@ class TestFreeVerificationEchoes:
         assert result["verification"] == {
             "source": "batch_update_response",
             "saved": True,
-            "anchored_range": {
+            # ``requested_range``, not ``anchored_range``: the numbers are
+            # what this call ASKED for. ``anchored_text`` is the only evidence
+            # about where the comment actually landed.
+            "requested_range": {
                 "segment": "body",
                 "segment_id": None,
                 "tab_id": None,
@@ -3548,3 +3551,158 @@ class TestAStillPendingSuggestionIsNeverAMatch:
             write_tools._ResolutionVerdict(
                 still_pending=True, text_check=None, matches_expectation=None
             )
+
+
+class TestAThreadWriteReportsWhatTheApiSaid:
+    """Round 6 MEDIUM 4: ``"saved": comment_update_state == "ALL_SAVED"``.
+
+    An ASSERTION wearing a comparison. A response with no state at all
+    produced ``saved: false`` beside a fully populated stored Post -- post_id,
+    create_time and content equal to what was sent -- which reads as "your
+    reply did not save". The agent's remedy for that is to send it again, and
+    a duplicate reply in a customer's document cannot be un-sent.
+    """
+
+    @staticmethod
+    def _reply_service(state=None):
+        response = {
+            "replies": [
+                {"addCommentReply": {"post": {"postId": "p1", "content": "Hi"}}}
+            ]
+        }
+        if state is not None:
+            response["commentUpdateState"] = state
+        return _batch_service(response)
+
+    @staticmethod
+    async def _reply(service) -> dict:
+        return json.loads(
+            await _unwrap(write_tools.reply_to_doc_thread)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                reply_content="Hi",
+                comment_id="c1",
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_missing_state_is_unknown_not_a_failure(self):
+        verification = (await self._reply(self._reply_service()))["verification"]
+
+        assert verification["saved"] is None, verification
+        assert verification["saved_unavailable"] == "no_comment_update_state"
+        # The stored Post is still reported -- as evidence about the CONTENT.
+        assert verification["matches_request"] is True
+        (note,) = verification["notes"]
+        assert "UNKNOWN -- not false" in note
+        assert "duplicate" in note
+        assert "'p1'" in note
+
+    @pytest.mark.asyncio
+    async def test_all_saved_is_still_a_yes(self):
+        verification = (await self._reply(self._reply_service("ALL_SAVED")))[
+            "verification"
+        ]
+        assert verification["saved"] is True
+        assert "saved_unavailable" not in verification
+        assert "notes" not in verification
+
+    @pytest.mark.asyncio
+    async def test_an_anchored_comment_without_a_state_is_unknown_too(self):
+        service = _batch_service(
+            {
+                "replies": [
+                    {
+                        "insertComment": {
+                            "commentThread": {
+                                "commentId": "c7",
+                                "plainTextQuote": "The q",
+                                "headPost": {"postId": "p7", "content": "Needs work"},
+                            }
+                        }
+                    }
+                ]
+            }
+        )
+        result = json.loads(
+            await _unwrap(write_tools.create_anchored_doc_comment)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                content="Needs work",
+                start_index=1,
+                end_index=6,
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["saved"] is None, verification
+        assert verification["saved_unavailable"] == "no_comment_update_state"
+        (note,) = verification["notes"]
+        assert "UNKNOWN -- not false" in note
+        assert "duplicate" in note
+
+    def test_saved_cannot_be_asserted_past_the_evidence(self):
+        for state, expected in (
+            ("ALL_SAVED", True),
+            ("ALL_FAILED_UNKNOWN_REASON", False),
+            (None, None),
+            ("COMMENT_UPDATE_STATE_UNSPECIFIED", None),
+            ("SOME_FUTURE_STATE", None),
+        ):
+            verdict = write_tools._ThreadWriteVerdict.derive(state)
+            assert verdict.saved is expected, state
+        with pytest.raises(ValueError, match="saved"):
+            write_tools._ThreadWriteVerdict(comment_update_state=None, saved=True)
+        with pytest.raises(ValueError, match="saved"):
+            write_tools._ThreadWriteVerdict(comment_update_state=None, saved=False)
+
+
+class TestTheRangeEchoIsLabelledAsRequested:
+    """Round 6 MEDIUM 5: ``anchored_range`` echoed the REQUESTED range.
+
+    The tool makes no read and the API does not echo a resolved range, so
+    those five numbers are the argument list coming back. Under a name that
+    says "this is where the comment is anchored", an off-by-one range reads as
+    confirmed. ``anchored_text`` (plainTextQuote) is the evidence, and it is
+    the only thing in the block that came from the document.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_echoed_numbers_say_they_are_the_request(self):
+        service = _batch_service(
+            {
+                "commentUpdateState": "ALL_SAVED",
+                "replies": [
+                    {
+                        "insertComment": {
+                            "commentThread": {
+                                "commentId": "c7",
+                                # The comment really anchored one character
+                                # off what was asked for.
+                                "plainTextQuote": "he qu",
+                                "headPost": {"postId": "p7", "content": "?"},
+                            }
+                        }
+                    }
+                ],
+            }
+        )
+        result = json.loads(
+            await _unwrap(write_tools.create_anchored_doc_comment)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                content="?",
+                start_index=1,
+                end_index=6,
+            )
+        )
+
+        verification = result["verification"]
+        assert "anchored_range" not in verification, verification
+        assert verification["requested_range"]["start_index"] == 1
+        assert verification["anchored_text"] == "he qu"
+        doc = _unwrap(write_tools.create_anchored_doc_comment).__doc__
+        assert "requested_range is the range this call ASKED for" in doc

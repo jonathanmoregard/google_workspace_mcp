@@ -47,6 +47,8 @@ import binascii
 import json
 from typing import Any, Iterable, Optional, Sequence
 
+from gdocs_preview.address import ADDRESS_FIELDS
+
 # ---------------------------------------------------------------------------
 # Field modes
 # ---------------------------------------------------------------------------
@@ -72,16 +74,16 @@ LIST_FIELD_MODES = (FIELDS_SUMMARY, FIELDS_FULL)
 #: silently, with nothing in the response to warn it. They cost ~45
 #: characters a card in the common (body, single-tab) case; being addressable
 #: is what the record is FOR.
+#:
+#: The five address fields come from :data:`gdocs_preview.address.ADDRESS_FIELDS`
+#: rather than being spelled out here, so dropping one from a summary card is
+#: not something a local edit to this tuple can do.
 SUMMARY_FIELDS = (
     "suggestion_id",
     "type",
     "author",
     "summary_text",
-    "segment",
-    "segment_id",
-    "tab_id",
-    "start_index",
-    "end_index",
+    *ADDRESS_FIELDS,
     "status",
 )
 

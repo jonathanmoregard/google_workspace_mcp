@@ -932,7 +932,8 @@ class TestPreviewGating:
 ACCEPTED_READ = fx.build_tabs_payload(
     [("t.0", fx.build_doc([fx.paragraph(fx.run("Good evening\n"))]))]
 )
-#: The analysis record of ``suggest.rep1`` as a listing would report it.
+#: The analysis record of ``suggest.rep1`` as a listing would report it --
+#: address included, because that is what a listing reports.
 REP1_RECORD = {
     "suggestion_id": "suggest.rep1",
     "type": "replacement",
@@ -940,6 +941,9 @@ REP1_RECORD = {
     "post_text": "evening",
     "context_before": "Good ",
     "context_after": "\n",
+    "segment": "body",
+    "segment_id": None,
+    "tab_id": "t.0",
     "start_index": 6,
     "end_index": 20,
     "summary_text": "Replace: “morning” with “evening”",
@@ -1774,3 +1778,129 @@ class TestMergedEditEcho:
         )
         (echo,) = in_header["verification"]["suggestions_at_edit_range"]
         assert echo["suggestion_id"] == "suggest.hdr1"
+
+
+# ---------------------------------------------------------------------------
+# Round 2 -- an index is only half of an address, on the WRITE path
+# ---------------------------------------------------------------------------
+
+#: Body suggestion and header suggestion in the same tab.
+DOC_BODY_AND_HEADER = fx.build_doc(
+    [fx.paragraph(fx.run("Good "), fx.run("morning", dels=["suggest.rep1"]),
+                  fx.run("evening", ins=["suggest.rep1"]), fx.run("\n"))],
+    headers={
+        "kix.h1": [
+            fx.paragraph(fx.run("DRAFT", ins=["suggest.hdr1"]), fx.run(" header\n"))
+        ]
+    },
+)
+
+ADDRESS_KEYS = {"segment", "segment_id", "tab_id", "start_index", "end_index"}
+
+
+class TestEveryEchoedIndexCarriesItsAddress:
+    """The BLOCKER: an echoed index the agent can hand back to a write tool
+    has to say WHICH (tab, segment) it is numbered in. ``suggest_doc_edit``
+    and ``create_anchored_doc_comment`` default to the body of the default
+    tab, so a bare header index aimed back at them writes into the body of a
+    customer document. Index 0 fails loud on the floor check; nothing else
+    does."""
+
+    @pytest.mark.asyncio
+    async def test_created_suggestion_echo_is_a_complete_address(self):
+        service = _batch_service(
+            {"suggestionResponses": [{"createdSuggestionIds": ["suggest.hdr1"]}]},
+            document=fx.build_tabs_payload([("t.0", DOC_BODY_AND_HEADER)]),
+        )
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=0,
+                text="DRAFT",
+                segment_id="kix.h1",
+            )
+        )
+
+        (echo,) = result["verification"]["created_suggestions"]
+        assert ADDRESS_KEYS <= set(echo)
+        assert echo["segment"] == "header"
+        assert echo["segment_id"] == "kix.h1"
+        assert echo["tab_id"] == "t.0"
+        assert echo["start_index"] == 0
+
+    @pytest.mark.asyncio
+    async def test_merged_edit_echo_is_a_complete_address(self):
+        service = _batch_service(
+            {}, document=fx.build_tabs_payload([("t.0", DOC_BODY_AND_HEADER)])
+        )
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=1,
+                text="XY",
+                segment_id="kix.h1",
+            )
+        )
+
+        (echo,) = result["verification"]["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == "suggest.hdr1"
+        assert echo["segment_id"] == "kix.h1"
+        assert echo["tab_id"] == "t.0"
+
+    @pytest.mark.asyncio
+    async def test_resolved_suggestion_echo_is_a_complete_address(self):
+        """The ledger drops nothing an index needs: it is what
+        ``resolved_suggestion`` is built from."""
+        _observe(
+            {
+                "suggestion_id": "suggest.hdr1",
+                "type": "insertion",
+                "pre_text": "",
+                "post_text": "DRAFT",
+                "context_before": "",
+                "context_after": " header\n",
+                "segment": "header",
+                "segment_id": "kix.h1",
+                "tab_id": "t.0",
+                "start_index": 0,
+                "end_index": 5,
+                "summary_text": "Add: “DRAFT”",
+                "status": "OPEN",
+            }
+        )
+        service = _batch_service(
+            {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.hdr1"]}]},
+            document=fx.build_tabs_payload([("t.0", fx.DOC_EMPTY)]),
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id="suggest.hdr1",
+            )
+        )
+
+        echo = result["verification"]["resolved_suggestion"]
+        assert ADDRESS_KEYS <= set(echo)
+        assert echo["segment"] == "header"
+        assert echo["segment_id"] == "kix.h1"
+        assert echo["tab_id"] == "t.0"
+
+    def test_the_ledger_keeps_the_address_it_was_given(self):
+        suggestion_ledger.observe(EMAIL, DOC, [REP1_RECORD])
+        kept = suggestion_ledger.record_of(EMAIL, DOC, "suggest.rep1")
+        assert ADDRESS_KEYS <= set(kept)
+        assert kept["tab_id"] == "t.0"
+        assert kept["segment"] == "body"

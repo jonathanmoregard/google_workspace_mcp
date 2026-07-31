@@ -45,6 +45,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+from gdocs_preview.address import ADDRESS_FIELDS
+
 #: Documents tracked at once, per process. Eviction is oldest-touched-first.
 MAX_DOCUMENTS = 64
 
@@ -54,9 +56,16 @@ MAX_DOCUMENTS = 64
 MAX_RESOLUTIONS = 128
 
 #: Record fields kept for the echo. Everything else the analysis layer
-#: produces (replies, author blocks, tab/segment ids) is dropped here -- this
-#: cache exists to answer "what did the suggestion I just resolved say?", and
-#: it is copied straight into an LLM's context window.
+#: produces (replies, author blocks) is dropped here -- this cache exists to
+#: answer "what did the suggestion I just resolved say?", and it is copied
+#: straight into an LLM's context window.
+#:
+#: The ``(tab, segment)`` ids are NOT droppable, which is why they come from
+#: :data:`gdocs_preview.address.ADDRESS_FIELDS` rather than being listed by
+#: hand. They used to be dropped as metadata, and
+#: ``manage_document_suggestion``'s ``resolved_suggestion`` echo -- built
+#: straight from this record -- then handed an agent a bare index it would
+#: aim a follow-up write at, in the body of the default tab.
 _KEPT_FIELDS = (
     "suggestion_id",
     "type",
@@ -64,8 +73,7 @@ _KEPT_FIELDS = (
     "post_text",
     "context_before",
     "context_after",
-    "start_index",
-    "end_index",
+    *ADDRESS_FIELDS,
     "summary_text",
     "status",
 )

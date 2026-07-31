@@ -54,6 +54,7 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, suggestion_ledger
+from gdocs_preview.address import with_address
 from gdocs_preview.analysis import (
     CONTEXT_WINDOW,
     extract_suggestions_from_tabs,
@@ -89,19 +90,30 @@ def _echo_suggestion(record: dict[str, Any]) -> dict[str, Any]:
     semantics unchanged -- the base text of the affected range, and that
     range with this suggestion (and only this one) applied -- which is
     exactly the before/after an agent would otherwise have to re-read for.
+
+    The indexes come through :func:`gdocs_preview.address.with_address`, so
+    they arrive with ``segment``/``segment_id``/``tab_id`` or not at all.
+    This echo is the agent's ONLY record of the suggestion it just made, and
+    the next thing it does with it is hand the numbers to
+    ``create_anchored_doc_comment`` or ``suggest_doc_edit`` -- both of which
+    default to the body of the default tab. A header echo reading
+    ``start_index: 5`` with no ``segment_id`` therefore aims the follow-up
+    write at character 5 of the BODY of a customer document, silently: index
+    0 fails loud on the floor check, every other index does not.
     """
-    return {
-        "suggestion_id": record.get("suggestion_id"),
-        "type": record.get("type"),
-        "pre_text": _clip(record.get("pre_text")),
-        "post_text": _clip(record.get("post_text")),
-        "context_before": record.get("context_before"),
-        "context_after": record.get("context_after"),
-        "start_index": record.get("start_index"),
-        "end_index": record.get("end_index"),
-        "summary_text": record.get("summary_text"),
-        "status": record.get("status"),
-    }
+    return with_address(
+        {
+            "suggestion_id": record.get("suggestion_id"),
+            "type": record.get("type"),
+            "pre_text": _clip(record.get("pre_text")),
+            "post_text": _clip(record.get("post_text")),
+            "context_before": record.get("context_before"),
+            "context_after": record.get("context_after"),
+            "summary_text": record.get("summary_text"),
+            "status": record.get("status"),
+        },
+        record,
+    )
 
 
 class _PostWriteRead:
@@ -425,11 +437,17 @@ async def suggest_doc_edit(
             created_suggestion_ids, requests_applied, link, and
             verification {source, read_source, created_suggestions
             [suggestion_id, type, pre_text, post_text, context_before,
-            context_after, start_index, end_index, summary_text, status],
-            pending_suggestion_count, and -- only when they apply --
-            suggestions_at_edit_range (when the API reported no new id,
-            which happens when the edit merged into an existing same-author
-            suggestion), also_removed_suggestion_ids, and notes}.
+            context_after, segment, segment_id, tab_id, start_index,
+            end_index, summary_text, status], pending_suggestion_count, and
+            -- only when they apply -- suggestions_at_edit_range (when the
+            API reported no new id, which happens when the edit merged into
+            an existing same-author suggestion), also_removed_suggestion_ids,
+            and notes}.
+
+            Every echoed suggestion carries segment/segment_id/tab_id
+            alongside its indexes, because a Docs index is only unique
+            within one (tabId, segmentId): pass all of them back, not just
+            the numbers.
     """
     # The body's first insertable position is 1 (index 0 is the section
     # break). A header/footer/footnote segment is numbered from its own start,
@@ -683,10 +701,12 @@ async def manage_document_suggestion(
         str: JSON with document_id, action, suggestion_id,
             accepted_suggestion_ids or rejected_suggestion_ids,
             comment_update_state (when sent), link, and verification
-            {source, read_source, still_pending, resolved_suggestion,
-            expected_text, resulting_text, matches_expectation,
-            pending_suggestion_count, pending_suggestion_ids, and -- only
-            when non-empty -- also_removed_suggestion_ids + notes}.
+            {source, read_source, still_pending, resolved_suggestion
+            (including its segment/segment_id/tab_id, so its indexes are a
+            complete address), expected_text, resulting_text,
+            matches_expectation, pending_suggestion_count,
+            pending_suggestion_ids, and -- only when non-empty --
+            also_removed_suggestion_ids + notes}.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":

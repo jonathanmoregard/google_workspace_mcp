@@ -1929,7 +1929,7 @@ class TestVerificationIsNotDecidedByTheRepresentation:
 class TestVerificationIsNotDecidedByTheEchoClip:
     """A verdict must be a statement about the document, not about the echo.
 
-    ``_locate`` used to return a window clipped to ``ECHO_MAX_CHARS`` (200)
+    The post-write window used to be clipped to ``ECHO_MAX_CHARS`` (200)
     while ``_verify_resolution`` compared the UNCLIPPED ``pre_text`` /
     ``post_text`` against it. Any suggestion longer than
     ``ECHO_MAX_CHARS - CONTEXT_WINDOW`` (~160 characters) therefore had its
@@ -2943,10 +2943,12 @@ class TestOverlapSemanticsAreShared:
 
 
 class TestResolutionIsLocatedInItsOwnSegment:
-    """HIGH 2: ``_locate`` used to search the merged body text of every tab.
+    """HIGH 2: the check used to search the merged body text of every tab.
     A suggestion at the very start of a header has ``context_before == ""``
     (analysis.py), so the empty anchor returned the head of the BODY and
-    ``matches_expectation`` for a header resolution was computed there."""
+    ``matches_expectation`` for a header resolution was computed there. The
+    window now comes from ``segment_base_texts``, keyed by ``(tab, segment)``
+    -- there is no merged string to search."""
 
     #: The header suggestion accepted: "DRAFT header\n" stays in the header.
     ACCEPTED_HEADER_READ = fx.build_tabs_payload(

@@ -90,18 +90,19 @@ def _clip(text: Optional[str], limit: int = ECHO_MAX_CHARS) -> Optional[str]:
     the last thing that happens to a string before it enters the response
     dict. A clipped value that is then fed to ``in`` / ``==`` does not compare
     the document, it compares the first :data:`ECHO_MAX_CHARS` characters of
-    it, and the answer is decided by the truncation rather than by the write:
-    ``_locate`` used to return a clipped window, and
-    :func:`_verify_resolution` compared the UNCLIPPED ``pre_text`` against it,
-    so accepting a deletion whose ``pre_text`` exceeded the window forced
-    ``removed_text not in resulting_text`` TRUE and reported
-    ``matches_expectation: true`` on the destructive path without any check
-    having occurred -- fail-open verification. The mirror case, a long
-    replacement, forced ``expected_text in resulting_text`` FALSE and raised a
-    false alarm on a write that had landed perfectly, which an agent may
-    "fix" by re-suggesting into a customer document.
+    it, and the answer is decided by the truncation rather than by the write.
+    The post-write window handed to :func:`_verify_resolution` used to be
+    clipped here while the comparison used the UNCLIPPED
+    ``pre_text``/``post_text``, so accepting a deletion whose ``pre_text``
+    exceeded the window reported ``matches_expectation: true`` on the
+    destructive path without any check having occurred -- fail-open
+    verification -- and the mirror case, a long replacement, raised a false
+    alarm on a write that had landed perfectly, which an agent may "fix" by
+    re-suggesting into a customer document.
 
-    Locate and compare on the FULL text; clip on the way out.
+    The verdict now comes from
+    :func:`gdocs_preview.analysis.check_resolution`, which never sees a
+    clipped value: this function runs on the way out and nowhere else.
     """
     if text is None:
         return None
@@ -144,7 +145,7 @@ def _echo_suggestion(record: dict[str, Any]) -> dict[str, Any]:
 class _PostWriteRead:
     """The one read a write tool makes to verify itself.
 
-    Not a dataclass because ``records`` and ``segment_texts`` are derived
+    Not a dataclass because ``records`` and ``base_texts`` are derived
     from the same payload and must not drift apart.
 
     ``base_texts`` is keyed by ``(tab_id, segment_id)`` -- the coordinate

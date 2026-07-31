@@ -268,3 +268,38 @@ Both tools' new parameters are pinned against the real enrolled API in
 (`test_fields_filters_and_pagination_against_the_real_api`,
 `test_review_view_fields_and_window_against_the_real_api`), so the caveat
 above is now discharged for the semantics; the ratios remain mock-derived.
+
+### What it did to the curve
+
+Batch `20260731-091321`, same corpus, same models, same runner flags as
+`20260730-224247` -- and with the harness defects that contaminated that
+batch fixed (`llmux/runner/toolprobe.py`, `session.BUILTIN_TOOLS_DENIED`,
+rate-limit parsing, INCONCLUSIVE).
+
+| cards | sonnet before | sonnet after | opus before | opus after |
+| ---: | ---: | ---: | ---: | ---: |
+| 30 | 1.00 | **1.00** | 1.00 | **1.00** |
+| 60 | 0.85 | **1.00** | 0.88 | **1.00** |
+| 90 | 1.00 * | **1.00** | 0.40 | **1.00** |
+| 120 | 0.35 † | **1.00** | 0.35 | **1.00** |
+
+\* not a result: that run got a shell through the leaked `Monitor` built-in
+and used it to parse the tool output the client had spilled to a file.
+† not a result either: killed by the wall clock at exactly the do-nothing
+baseline score.
+
+8/8 at 1.00, 450 turns, $17.08, 45.7 min wall. No leaked built-ins in any
+run, no non-MCP tool calls, no rate limiting (each run emitted one
+`rate_limit_event`, all `status: allowed`). Zero errors on either read tool
+across 23 calls.
+
+The agents used the parameters unprompted and differently from each other,
+which is the ergonomic result worth having: sonnet went `fields='summary'`
+and then narrowed with `status='OPEN'`; opus preferred `fields='full'` with
+`page_size=40` and walked three pages of the 120-card set by token. The
+120-card tier now costs 92 turns and $2.11 on sonnet, against a run that
+previously never saw a suggestion id.
+
+One caveat: the opus 120 run terminated on `error_max_budget_usd` ($6.58
+against a $6.00 cap) -- after resolving every card correctly, so nothing is
+hidden by it, but the tier is at the edge of that budget on opus.

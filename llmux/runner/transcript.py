@@ -15,6 +15,12 @@ One JSON object per line. The events this cares about:
 ``result``
     Terminal event: ``subtype``, ``num_turns``, ``total_cost_usd``,
     ``duration_ms``, ``usage``, ``permission_denials`` and the final text.
+``rate_limit_event``
+    The account's usage-limit state, emitted whenever it changes. Its
+    ``rate_limit_info.status`` is ``allowed`` in the ordinary case and says
+    otherwise when the run is being throttled or refused. A throttled run
+    measures the account, not the tool surface, so this is parsed to keep
+    the two apart (see :class:`Transcript.rate_limited`).
 
 Everything is tolerant of unknown event types and of blocks that are strings
 rather than lists -- the stream format grows between CLI releases and a new
@@ -87,6 +93,12 @@ DIRECT_EDIT_SUFFIXES = frozenset(
 #: server when the first turn starts; counting it would put a phantom tool at
 #: the top of every usage table.
 HARNESS_TOOL_NAMES = frozenset({"WaitForMcpServers"})
+
+#: ``rate_limit_info.status`` values that mean the account was NOT throttled.
+#: Anything else -- ``rejected``, ``allowed_warning``, a value a later CLI
+#: invents -- is treated as a limit worth reporting, because the failure this
+#: guards against is a throttled run being read as a capability result.
+RATE_LIMIT_OK_STATUSES = frozenset({"allowed"})
 
 
 def split_tool_name(name: str) -> tuple[Optional[str], str]:
@@ -166,10 +178,67 @@ class Transcript:
     session_id: str = ""
     permission_denials: list[Any] = field(default_factory=list)
     malformed_lines: int = 0
+    #: Every ``rate_limit_event`` seen, in order, as the CLI emitted it.
+    rate_limit_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def final_text(self) -> str:
         return self.result_text or (self.assistant_texts[-1] if self.assistant_texts else "")
+
+    @property
+    def throttling_events(self) -> list[dict[str, Any]]:
+        """Rate-limit events whose status is anything but ``allowed``."""
+        return [
+            info
+            for info in self.rate_limit_events
+            if str(info.get("status") or "").lower() not in RATE_LIMIT_OK_STATUSES
+        ]
+
+    @property
+    def rate_limited(self) -> bool:
+        """Was this run throttled?
+
+        True when a ``rate_limit_event`` reported a non-``allowed`` status,
+        or when the CLI's own terminal reason names a usage limit. Note that
+        the mere PRESENCE of ``rate_limit_event`` records means nothing --
+        the CLI emits them with ``status: allowed`` as routine bookkeeping,
+        which is exactly the sort of thing that gets misread as a cause when
+        a run also happens to fail.
+        """
+        if self.throttling_events:
+            return True
+        terminal = f"{self.subtype} {self.terminal_reason}".lower()
+        return "rate_limit" in terminal or "usage_limit" in terminal
+
+    def leaked_builtin_tools(self, server_name: str) -> list[str]:
+        """Advertised tool names that are not on the mock MCP server.
+
+        ``system``/``init`` lists exactly what the agent was offered, so this
+        is a direct reading rather than an inference -- and it stays correct
+        when :data:`llmux.runner.session.BUILTIN_TOOLS_DENIED` falls behind a
+        CLI release. Empty when init fired before the tool list was known.
+        """
+        prefix = f"mcp__{server_name}__"
+        return sorted(
+            name
+            for name in self.available_tools
+            if not name.startswith(prefix) and name not in HARNESS_TOOL_NAMES
+        )
+
+    def builtin_tools_called(self) -> list[str]:
+        """Non-MCP tools the agent actually reached for.
+
+        Advertising a built-in wastes tokens; CALLING one means the run spent
+        turns outside the surface under measurement, which is contamination
+        rather than a nuisance.
+        """
+        return sorted(
+            {
+                call.name
+                for call in self.tool_calls
+                if call.server is None and not call.is_harness
+            }
+        )
 
     @property
     def mcp_connected(self) -> bool:
@@ -215,6 +284,9 @@ class Transcript:
             "mcp_connected": self.mcp_connected,
             "permission_denials": self.permission_denials,
             "malformed_lines": self.malformed_lines,
+            "rate_limit_events": self.rate_limit_events,
+            "rate_limited": self.rate_limited,
+            "builtin_tools_called": self.builtin_tools_called(),
             "final_text": self.final_text,
             "tool_calls": [c.as_dict() for c in self.tool_calls],
         }
@@ -304,6 +376,10 @@ def parse_stream_json(lines: Iterable[str]) -> Transcript:
                 call.answered = True
                 call.is_error = bool(block.get("is_error"))
                 call.result_text = _result_payload_text(block.get("content"))
+
+        elif etype == "rate_limit_event":
+            info = event.get("rate_limit_info")
+            transcript.rate_limit_events.append(info if isinstance(info, dict) else {})
 
         elif etype == "result" or (etype is None and "num_turns" in event):
             transcript.subtype = str(event.get("subtype") or "")

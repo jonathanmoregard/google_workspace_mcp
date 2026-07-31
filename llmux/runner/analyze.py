@@ -75,10 +75,24 @@ class Aggregate:
     harness_errors: list[str] = field(default_factory=list)
     #: One entry per run of a scenario that declared a concurrent editor.
     interference: list[dict[str, Any]] = field(default_factory=list)
+    #: Runs whose grade is not a capability result: throttled, killed by the
+    #: wall clock, or off the measured tool surface. Reported alongside the
+    #: pass rate rather than folded into it -- the arithmetic is unchanged so
+    #: batches stay comparable, but the caveat is impossible to miss.
+    inconclusive: list[dict[str, Any]] = field(default_factory=list)
+    #: Non-MCP tools any run was offered or reached for.
+    contamination: list[str] = field(default_factory=list)
+    #: Problems hit while folding a run in, so a broken record costs one row
+    #: rather than the whole report.
+    aggregation_errors: list[str] = field(default_factory=list)
 
     @property
     def pass_rate(self) -> float:
         return self.total_passes / self.total_runs if self.total_runs else 0.0
+
+    @property
+    def conclusive_runs(self) -> int:
+        return self.total_runs - len(self.inconclusive)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -86,10 +100,15 @@ class Aggregate:
                 "runs": self.total_runs,
                 "passes": self.total_passes,
                 "pass_rate": round(self.pass_rate, 3),
+                "inconclusive": len(self.inconclusive),
+                "conclusive_runs": self.conclusive_runs,
                 "cost_usd": round(self.total_cost_usd, 4),
                 "wall_s": round(self.total_wall_s, 1),
                 "turns": self.total_turns,
             },
+            "inconclusive": self.inconclusive,
+            "contamination": self.contamination,
+            "aggregation_errors": self.aggregation_errors,
             "by_model": {k: v.as_dict() for k, v in self.by_model.items()},
             "by_difficulty": {k: v.as_dict() for k, v in self.by_difficulty.items()},
             "by_model_difficulty": {
@@ -114,64 +133,95 @@ def aggregate(results: Sequence[Any]) -> Aggregate:
     per_run_findings: list[Sequence[Finding]] = []
 
     for result in results:
-        agg.total_runs += 1
-        agg.total_passes += int(bool(result.passed))
-        agg.total_cost_usd += float(result.transcript.cost_usd or 0.0)
-        agg.total_wall_s += float(result.wall_s or 0.0)
-        agg.total_turns += int(result.transcript.num_turns or 0)
-
-        score = float(result.grade.score)
-        agg.by_model.setdefault(result.model, Cell()).add(result.passed, score)
-        agg.by_difficulty.setdefault(result.difficulty, Cell()).add(
-            result.passed, score
-        )
-        agg.by_model_difficulty.setdefault(result.model, {}).setdefault(
-            result.difficulty, Cell()
-        ).add(result.passed, score)
-
-        entry = agg.by_scenario.setdefault(
-            result.scenario_id,
-            {"difficulty": result.difficulty, "runs": {}},
-        )
-        agent_calls = result.transcript.agent_tool_calls
-        entry["runs"][result.model] = {
-            "pass": bool(result.passed),
-            "score": round(score, 3),
-            "turns": result.transcript.num_turns,
-            "cost_usd": round(float(result.transcript.cost_usd or 0.0), 4),
-            "wall_s": round(float(result.wall_s or 0.0), 1),
-            "tool_calls": len(agent_calls),
-            "failed_tool_calls": sum(1 for c in agent_calls if c.failed),
-            "failures": list(result.grade.failures),
-            "codes": sorted({f.code for f in result.findings}),
-            "tool_sequence": result.transcript.tool_sequence(),
-        }
-
-        for call in agent_calls:
-            usage = agg.tool_usage.setdefault(
-                call.tool or call.name, {"calls": 0, "errors": 0}
+        try:
+            _fold(agg, result, per_run_findings)
+        except Exception as exc:  # noqa: BLE001 - one bad row, not the report
+            agg.aggregation_errors.append(
+                f"{getattr(result, 'scenario_id', '?')} "
+                f"[{getattr(result, 'model', '?')}]: "
+                f"{type(exc).__name__}: {exc}"
             )
-            usage["calls"] += 1
-            usage["errors"] += int(bool(call.failed))
 
-        if result.harness_error:
-            agg.harness_errors.append(
-                f"{result.scenario_id} [{result.model}]: {result.harness_error}"
-            )
-        interference = getattr(result, "interference", None)
-        if interference:
-            agg.interference.append(
-                {
-                    "scenario_id": result.scenario_id,
-                    "model": result.model,
-                    "pass": bool(result.passed),
-                    **interference,
-                }
-            )
-        per_run_findings.append(result.findings)
-
-    agg.taxonomy = repeat_report(per_run_findings)
+    try:
+        agg.taxonomy = repeat_report(per_run_findings)
+    except Exception as exc:  # noqa: BLE001 - the pass table still stands
+        agg.aggregation_errors.append(f"taxonomy: {type(exc).__name__}: {exc}")
     return agg
+
+
+def _fold(
+    agg: Aggregate, result: Any, per_run_findings: list[Sequence[Finding]]
+) -> None:
+    """Add one run to the report model."""
+    agg.total_runs += 1
+    agg.total_passes += int(bool(result.passed))
+    agg.total_cost_usd += float(result.transcript.cost_usd or 0.0)
+    agg.total_wall_s += float(result.wall_s or 0.0)
+    agg.total_turns += int(result.transcript.num_turns or 0)
+
+    score = float(result.grade.score)
+    agg.by_model.setdefault(result.model, Cell()).add(result.passed, score)
+    agg.by_difficulty.setdefault(result.difficulty, Cell()).add(result.passed, score)
+    agg.by_model_difficulty.setdefault(result.model, {}).setdefault(
+        result.difficulty, Cell()
+    ).add(result.passed, score)
+
+    reasons = list(getattr(result, "inconclusive_reasons", ()) or ())
+    outcome = getattr(result, "outcome", "PASS" if result.passed else "FAIL")
+
+    entry = agg.by_scenario.setdefault(
+        result.scenario_id,
+        {"difficulty": result.difficulty, "runs": {}},
+    )
+    agent_calls = result.transcript.agent_tool_calls
+    entry["runs"][result.model] = {
+        "pass": bool(result.passed),
+        "outcome": outcome,
+        "inconclusive_reasons": reasons,
+        "score": round(score, 3),
+        "turns": result.transcript.num_turns,
+        "cost_usd": round(float(result.transcript.cost_usd or 0.0), 4),
+        "wall_s": round(float(result.wall_s or 0.0), 1),
+        "tool_calls": len(agent_calls),
+        "failed_tool_calls": sum(1 for c in agent_calls if c.failed),
+        "failures": list(result.grade.failures),
+        "codes": sorted({f.code for f in result.findings}),
+        "tool_sequence": result.transcript.tool_sequence(),
+    }
+
+    for call in agent_calls:
+        usage = agg.tool_usage.setdefault(
+            call.tool or call.name, {"calls": 0, "errors": 0}
+        )
+        usage["calls"] += 1
+        usage["errors"] += int(bool(call.failed))
+
+    if reasons:
+        agg.inconclusive.append(
+            {
+                "scenario_id": result.scenario_id,
+                "model": result.model,
+                "score": round(score, 3),
+                "reasons": reasons,
+            }
+        )
+    for note in getattr(result, "contamination", ()) or ():
+        agg.contamination.append(f"{result.scenario_id} [{result.model}]: {note}")
+    if result.harness_error:
+        agg.harness_errors.append(
+            f"{result.scenario_id} [{result.model}]: {result.harness_error}"
+        )
+    interference = getattr(result, "interference", None)
+    if interference:
+        agg.interference.append(
+            {
+                "scenario_id": result.scenario_id,
+                "model": result.model,
+                "pass": bool(result.passed),
+                **interference,
+            }
+        )
+    per_run_findings.append(result.findings)
 
 
 def _pct(value: float) -> str:
@@ -197,6 +247,56 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         f"${agg.total_cost_usd:.2f}, {agg.total_wall_s / 60:.1f} min wall."
     )
     lines.append("")
+
+    if agg.inconclusive:
+        lines.append("## Inconclusive runs (read these before the pass rate)")
+        lines.append("")
+        lines.append(
+            f"{len(agg.inconclusive)} of {agg.total_runs} run(s) did not "
+            "produce a capability result: the account was throttled, the "
+            "harness wall clock killed the run, or the agent got outside the "
+            "tool surface under measurement. Their scores are still counted "
+            "in every table below -- the arithmetic is deliberately unchanged "
+            "so batches stay comparable -- but a curve drawn through them is "
+            "measuring the harness, not the tools."
+        )
+        lines.append("")
+        lines.append("| scenario | model | score | why |")
+        lines.append("| --- | --- | ---: | --- |")
+        for entry in agg.inconclusive:
+            lines.append(
+                f"| {entry['scenario_id']} | {entry['model']} | "
+                f"{entry['score']:.2f} | " + "; ".join(entry["reasons"]) + " |"
+            )
+        lines.append("")
+
+    if agg.contamination:
+        lines.append("## Tool-surface contamination")
+        lines.append("")
+        lines.append(
+            "The agent is supposed to see the mock MCP server and nothing "
+            "else. Anything listed here means a built-in leaked past "
+            "`--disallowedTools` -- add the name to "
+            "`llmux.runner.session.BUILTIN_TOOLS_DENIED` and confirm with "
+            "`uv run python -m llmux.runner.toolprobe`."
+        )
+        lines.append("")
+        for note in agg.contamination:
+            lines.append(f"- {note}")
+        lines.append("")
+
+    if agg.aggregation_errors:
+        lines.append("## Report-building problems")
+        lines.append("")
+        lines.append(
+            "These runs finished but could not be folded into the tables "
+            "below. The runs themselves are intact on disk; rebuild with "
+            "`uv run python -m llmux.runner.analyze <reports>/<stamp>/runs`."
+        )
+        lines.append("")
+        for problem in agg.aggregation_errors:
+            lines.append(f"- {problem}")
+        lines.append("")
 
     if agg.harness_errors:
         lines.append("## Harness problems (read these first)")
@@ -315,16 +415,18 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
     lines.append("## Per-scenario scores")
     lines.append("")
     lines.append(
-        "| scenario | difficulty | model | pass | score | turns | calls (err) | $ |"
+        "| scenario | difficulty | model | outcome | score | turns | "
+        "calls (err) | $ |"
     )
     lines.append("| --- | --- | --- | :---: | ---: | ---: | ---: | ---: |")
     for scenario_id in sorted(agg.by_scenario):
         entry = agg.by_scenario[scenario_id]
         for model in sorted(entry["runs"]):
             run = entry["runs"][model]
+            outcome = run.get("outcome") or ("PASS" if run["pass"] else "FAIL")
             lines.append(
                 f"| {scenario_id} | {entry['difficulty']} | {model} | "
-                f"{'PASS' if run['pass'] else 'FAIL'} | {run['score']:.2f} | "
+                f"{outcome} | {run['score']:.2f} | "
                 f"{run['turns']} | {run['tool_calls']} ({run['failed_tool_calls']}) | "
                 f"{run['cost_usd']:.3f} |"
             )
@@ -379,7 +481,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
     instead of against synthetic ones.
     """
     from llmux.runner.interference import InterferenceReport
-    from llmux.runner.run import RunResult
+    from llmux.runner.run import RunResult, detect_contamination
     from llmux.runner.scenarios import GradeResult, load_scenario
     from llmux.runner.scenarios import grade_backend
     from llmux.runner.taxonomy import ScenarioFacts, classify
@@ -430,6 +532,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
                 harness_error=record.get("harness_error"),
                 scenario_path=scenario.path,
                 interference=report.as_dict() if report is not None else None,
+                contamination=detect_contamination(transcript),
             )
         )
     return results
@@ -442,26 +545,78 @@ def write_report(
     stamp: str,
     corpus: Optional[str] = None,
 ) -> dict[str, Path]:
-    """Write ``<stamp>.md`` and ``<stamp>.json``; return both paths."""
+    """Write ``<stamp>.md`` and ``<stamp>.json``; return the paths written.
+
+    Ordered so that the expensive thing survives the cheap thing going wrong.
+    The per-run records are serialized and written FIRST, because they are
+    what the batch paid for; the markdown -- which reads a taxonomy whose
+    rules change weekly -- is rendered last and its failure costs a file, not
+    a batch. Every step is independently guarded, and a step that fails
+    leaves its reason in the JSON rather than raising.
+    """
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    agg = aggregate(results)
+    written: dict[str, Path] = {}
+    problems: list[str] = []
 
-    markdown_path = reports_dir / f"{stamp}.md"
+    records: list[dict[str, Any]] = []
+    for result in results:
+        try:
+            records.append(result.as_dict())
+        except Exception as exc:  # noqa: BLE001 - one bad run, not the batch
+            records.append(
+                {
+                    "scenario_id": getattr(result, "scenario_id", "?"),
+                    "model": getattr(result, "model", "?"),
+                    "record_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            problems.append(
+                f"{getattr(result, 'scenario_id', '?')}: could not serialize "
+                f"the run record ({type(exc).__name__}: {exc})"
+            )
+
+    try:
+        agg = aggregate(results)
+        summary = agg.as_dict()
+    except Exception as exc:  # noqa: BLE001 - the runs still get written
+        agg = None
+        summary = {"aggregate_error": f"{type(exc).__name__}: {exc}"}
+        problems.append(f"aggregation: {type(exc).__name__}: {exc}")
+
     json_path = reports_dir / f"{stamp}.json"
-    markdown_path.write_text(
-        render_markdown(agg, stamp=stamp, corpus=corpus), encoding="utf-8"
-    )
-    payload = {
-        "stamp": stamp,
-        "corpus": corpus,
-        "summary": agg.as_dict(),
-        "runs": [r.as_dict() for r in results],
-    }
     json_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(
+            {
+                "stamp": stamp,
+                "corpus": corpus,
+                "summary": summary,
+                "report_problems": problems,
+                "runs": records,
+            },
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        ),
+        encoding="utf-8",
     )
-    return {"markdown": markdown_path, "json": json_path}
+    written["json"] = json_path
+
+    if agg is not None:
+        markdown_path = reports_dir / f"{stamp}.md"
+        try:
+            text = render_markdown(agg, stamp=stamp, corpus=corpus)
+        except Exception as exc:  # noqa: BLE001 - the JSON is already safe
+            text = (
+                f"# LLM UX run report -- {stamp}\n\n"
+                f"Rendering this report failed: {type(exc).__name__}: {exc}\n\n"
+                f"The runs are intact in `{json_path.name}` and in each run's "
+                "own `run.json`. Rebuild with `uv run python -m "
+                "llmux.runner.analyze <reports>/<stamp>/runs`.\n"
+            )
+        markdown_path.write_text(text, encoding="utf-8")
+        written["markdown"] = markdown_path
+    return written
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

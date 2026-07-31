@@ -73,6 +73,18 @@ class RunOptions:
     keep_going: bool = True
 
 
+#: A run's verdict. ``INCONCLUSIVE`` is the third state the batch needed: a
+#: run that was throttled, killed by the wall clock, or spent turns outside
+#: the surface under measurement did not measure the tool surface, and
+#: scoring it as FAIL puts the account's usage limits into the capability
+#: curve. It is deliberately NOT part of the pass/fail arithmetic -- clean
+#: runs grade exactly as they always did, so batches stay comparable -- it is
+#: an extra label the report leads with.
+OUTCOME_PASS = "PASS"
+OUTCOME_FAIL = "FAIL"
+OUTCOME_INCONCLUSIVE = "INCONCLUSIVE"
+
+
 @dataclass
 class RunResult:
     """One (scenario, model) run: what happened and how it was graded."""
@@ -91,10 +103,59 @@ class RunResult:
     scenario_path: Optional[Path] = None
     #: What the scripted second editor did, when the scenario declared one.
     interference: Optional[dict[str, Any]] = None
+    #: Non-MCP tools this run was offered or reached for. Advertising one
+    #: wastes the agent's turns; calling one means the run left the surface.
+    contamination: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
         return self.grade.passed
+
+    @property
+    def inconclusive_reasons(self) -> list[str]:
+        """Why this run's grade should not be read as a capability result.
+
+        Empty for a clean run, which is the only kind whose pass/fail is
+        quoted without a caveat.
+        """
+        reasons: list[str] = []
+        if self.transcript.rate_limited:
+            for info in self.transcript.throttling_events:
+                reasons.append(
+                    f"rate limited: status={info.get('status')!r} "
+                    f"type={info.get('rateLimitType')!r} "
+                    f"resets_at={info.get('resetsAt')!r}"
+                )
+            if not self.transcript.throttling_events:
+                reasons.append(
+                    "the CLI's terminal reason names a usage limit: "
+                    f"{self.transcript.subtype!r}/{self.transcript.terminal_reason!r}"
+                )
+        if self.timed_out:
+            reasons.append(
+                "killed by the harness wall clock, so what it would have "
+                "scored is unknown"
+            )
+        escaped = [
+            call.name
+            for call in self.transcript.tool_calls
+            if call.server is None and not call.is_harness and call.answered
+            and not call.failed
+        ]
+        if escaped:
+            reasons.append(
+                "succeeded in calling non-MCP tool(s) outside the measured "
+                "surface: " + ", ".join(sorted(set(escaped)))
+            )
+        if self.harness_error and not reasons:
+            reasons.append(self.harness_error)
+        return reasons
+
+    @property
+    def outcome(self) -> str:
+        if self.inconclusive_reasons:
+            return OUTCOME_INCONCLUSIVE
+        return OUTCOME_PASS if self.passed else OUTCOME_FAIL
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +163,8 @@ class RunResult:
             "model": self.model,
             "difficulty": self.difficulty,
             "pass": self.grade.passed,
+            "outcome": self.outcome,
+            "inconclusive_reasons": self.inconclusive_reasons,
             "score": self.grade.score,
             "failures": list(self.grade.failures),
             "grader_error": self.grade.error,
@@ -109,6 +172,7 @@ class RunResult:
             "returncode": self.returncode,
             "timed_out": self.timed_out,
             "harness_error": self.harness_error,
+            "contamination": list(self.contamination),
             "artifacts": str(self.artifacts) if self.artifacts else None,
             # Recorded so a report can be rebuilt from artifacts alone after
             # the taxonomy rules change (see analyze.reanalyze).
@@ -117,6 +181,29 @@ class RunResult:
             "findings": [f.as_dict() for f in self.findings],
             "transcript": self.transcript.as_dict(),
         }
+
+
+def detect_contamination(transcript: Transcript) -> list[str]:
+    """Anything in this transcript that is not the MCP surface under test.
+
+    Read straight off the CLI's own ``system``/``init`` tool list and the
+    agent's own calls, so it stays true even when the deny list in
+    :mod:`llmux.runner.session` has fallen behind a CLI release -- which is
+    exactly how batch ``20260730-224247`` shipped with five undenied
+    built-ins nobody noticed until a run ended by asking a question.
+    """
+    notes: list[str] = []
+    advertised = transcript.leaked_builtin_tools(session_mod.SERVER_NAME)
+    if advertised:
+        notes.append(
+            f"{len(advertised)} non-MCP tool(s) advertised to the agent: "
+            + ", ".join(advertised)
+            + " (add them to llmux.runner.session.BUILTIN_TOOLS_DENIED)"
+        )
+    called = transcript.builtin_tools_called()
+    if called:
+        notes.append("agent called non-MCP tool(s): " + ", ".join(called))
+    return notes
 
 
 def estimate_cost(scenario_count: int, models: Sequence[str]) -> float:
@@ -209,14 +296,25 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
             report.violations[:3]
         )
 
-    findings = classify(
-        ScenarioFacts.from_scenario(scenario),
-        transcript,
-        passed=grade.passed,
-        failures=grade.failures,
-        timed_out=timed_out,
-        interference=report,
-    )
+    contamination = detect_contamination(transcript)
+
+    # Classification is the most volatile code in the harness -- the taxonomy
+    # changes whenever we learn something -- and it runs AFTER the money has
+    # been spent. It must never be the reason a paid-for run is lost.
+    try:
+        findings = classify(
+            ScenarioFacts.from_scenario(scenario),
+            transcript,
+            passed=grade.passed,
+            failures=grade.failures,
+            timed_out=timed_out,
+            interference=report,
+        )
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        findings = []
+        note = f"classification failed ({type(exc).__name__}: {exc})"
+        harness_error = f"{harness_error}; {note}" if harness_error else note
+
     result = RunResult(
         scenario_id=scenario.id,
         model=model,
@@ -231,11 +329,33 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         harness_error=harness_error,
         scenario_path=scenario.path,
         interference=report.as_dict() if report is not None else None,
+        contamination=contamination,
     )
-    (run_dir / "run.json").write_text(
-        json.dumps(result.as_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    _write_run_record(run_dir, result)
     return result
+
+
+def _write_run_record(run_dir: Path, result: RunResult) -> None:
+    """Persist one run the moment it finishes.
+
+    This file is the batch's durable memory: ``analyze.reanalyze`` rebuilds a
+    whole report from these plus the transcripts, so a crash in aggregation
+    costs a command, not a batch.
+    """
+    try:
+        payload = json.dumps(result.as_dict(), indent=2, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001 - a serialisable subset beats nothing
+        payload = json.dumps(
+            {
+                "scenario_id": result.scenario_id,
+                "model": result.model,
+                "pass": bool(result.passed),
+                "score": float(result.grade.score),
+                "record_error": f"{type(exc).__name__}: {exc}",
+            },
+            indent=2,
+        )
+    (run_dir / "run.json").write_text(payload, encoding="utf-8")
 
 
 def _load_and_grade(
@@ -344,7 +464,12 @@ def run_batch(
     *,
     concurrency: int = 2,
 ) -> list[RunResult]:
-    """Run the full matrix, at most ``concurrency`` agents at a time."""
+    """Run the full matrix, at most ``concurrency`` agents at a time.
+
+    A run that blows up inside the harness comes back as a recorded
+    ``INCONCLUSIVE`` result rather than an exception: one bad run must not
+    take down the fifteen that already cost money and finished.
+    """
     jobs = [(scenario, model) for model in models for scenario in scenarios]
     workers = max(1, min(concurrency, MAX_CONCURRENCY))
     results: list[RunResult] = []
@@ -352,10 +477,28 @@ def run_batch(
     def one(job: tuple[Scenario, str]) -> RunResult:
         scenario, model = job
         print(f"  -> {scenario.id} [{model}] starting", flush=True)
-        result = execute_run(scenario, model, options)
+        try:
+            result = execute_run(scenario, model, options)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            import traceback
+
+            traceback.print_exc()
+            return RunResult(
+                scenario_id=scenario.id,
+                model=model,
+                difficulty=scenario.difficulty,
+                grade=GradeResult.crashed(f"{type(exc).__name__}: {exc}"),
+                transcript=Transcript(),
+                harness_error=f"the harness raised: {type(exc).__name__}: {exc}",
+                scenario_path=scenario.path,
+            )
+        for note in result.contamination:
+            print(f"     ! {scenario.id} [{model}] {note}", flush=True)
+        for reason in result.inconclusive_reasons:
+            print(f"     ! {scenario.id} [{model}] INCONCLUSIVE: {reason}", flush=True)
         print(
             f"  <- {scenario.id} [{model}] "
-            f"{'PASS' if result.passed else 'FAIL'} "
+            f"{result.outcome} "
             f"score={result.grade.score:.2f} turns={result.transcript.num_turns} "
             f"${result.transcript.cost_usd:.3f} {result.wall_s:.1f}s",
             flush=True,
@@ -516,14 +659,78 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     results = run_batch(scenarios, models, options, concurrency=args.concurrency)
 
-    from llmux.runner.analyze import write_report
+    # The runs are done and paid for. Everything below is analysis, and
+    # analysis is the part that breaks -- an import error in a module a
+    # concurrent edit was halfway through once destroyed a finished batch's
+    # report. So: report failures are caught, the raw records are written
+    # regardless, and the operator is told the one command that rebuilds
+    # everything from the per-run artifacts already on disk.
+    report_paths: dict[str, Path] = {}
+    report_error: Optional[str] = None
+    try:
+        from llmux.runner.analyze import write_report
 
-    report_paths = write_report(results, reports_dir, stamp=stamp)
-    print(f"\nreport: {report_paths['markdown']}")
-    print(f"json:   {report_paths['json']}")
-    failed = [r for r in results if not r.passed]
-    print(f"{len(results) - len(failed)}/{len(results)} runs passed")
+        report_paths = write_report(results, reports_dir, stamp=stamp, corpus=str(corpus))
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        import traceback
+
+        traceback.print_exc()
+        report_error = f"{type(exc).__name__}: {exc}"
+        report_paths = _write_raw_fallback(results, reports_dir, stamp)
+
+    for label in ("markdown", "json", "raw"):
+        if label in report_paths:
+            print(f"{label + ':':9s} {report_paths[label]}")
+    passed = sum(1 for r in results if r.outcome == OUTCOME_PASS)
+    inconclusive = [r for r in results if r.outcome == OUTCOME_INCONCLUSIVE]
+    print(f"{passed}/{len(results)} runs passed")
+    if inconclusive:
+        print(
+            f"{len(inconclusive)} run(s) INCONCLUSIVE (not a capability "
+            "result -- rate limit, wall clock, or an escape from the "
+            "measured tool surface):"
+        )
+        for result in inconclusive:
+            print(
+                f"  - {result.scenario_id} [{result.model}]: "
+                + "; ".join(result.inconclusive_reasons)
+            )
+    if report_error:
+        print(
+            f"\nthe report could not be built ({report_error}); the runs "
+            "themselves are intact. Rebuild with:\n"
+            f"  uv run python -m llmux.runner.analyze {workdir}",
+            file=sys.stderr,
+        )
+        return 3
     return 0
+
+
+def _write_raw_fallback(
+    results: Sequence[RunResult], reports_dir: Path, stamp: str
+) -> dict[str, Path]:
+    """Dump whatever the runs produced when the report itself blew up."""
+    raw_path = Path(reports_dir) / f"{stamp}-raw.json"
+    records: list[dict[str, Any]] = []
+    for result in results:
+        try:
+            records.append(result.as_dict())
+        except Exception as exc:  # noqa: BLE001 - one bad run, not the batch
+            records.append(
+                {
+                    "scenario_id": getattr(result, "scenario_id", "?"),
+                    "model": getattr(result, "model", "?"),
+                    "record_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    try:
+        raw_path.write_text(
+            json.dumps({"stamp": stamp, "runs": records}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 - the per-run artifacts still exist
+        return {}
+    return {"raw": raw_path}
 
 
 if __name__ == "__main__":

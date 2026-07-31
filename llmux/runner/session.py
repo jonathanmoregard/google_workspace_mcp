@@ -18,7 +18,9 @@ against Claude Code 2.1.220 rather than assumed:
     The only capability left is the mock MCP server -- the surface under
     measurement. Note that ``--tools ""`` does **not** work for this: it
     empties the model's tool list entirely, MCP tools included, and the agent
-    then narrates tool calls as prose instead of making them.
+    then narrates tool calls as prose instead of making them. The list is a
+    superset by design and is still not sufficient on its own -- see
+    :data:`BUILTIN_TOOLS_DENIED` and :mod:`llmux.runner.toolprobe`.
 ``ENABLE_TOOL_SEARCH=false``
     Without it this CLI hides MCP tools behind the ``ToolSearch`` deferral
     (``system/init`` reports ``mcp_servers: pending`` and no MCP tools), so
@@ -70,9 +72,21 @@ SERVER_ENV_PINS = {
 #: left with the mock MCP server and nothing else. Names it does not know are
 #: ignored, so the list is deliberately a superset (it must stay one as the
 #: CLI grows built-ins).
+#:
+#: **A deny list is a promise, not a guarantee.** Batch ``20260730-224247``
+#: proved it: five built-ins the list did not know about were advertised to
+#: the agent (``AskUserQuestion``, ``EnterPlanMode``, ``Monitor``,
+#: ``PushNotification``, ``RemoteTrigger``), and two runs spent turns calling
+#: ``Monitor`` -- which the ``dontAsk`` permission mode then denied at call
+#: time -- before ending by asking the absent operator to paste in a file.
+#: The names below have been added, but the structural fix is elsewhere:
+#: :mod:`llmux.runner.toolprobe` asks a real spawned agent what it can see,
+#: and every real run's ``system``/``init`` event is checked for non-MCP
+#: names so leakage is REPORTED even when this tuple has fallen behind.
 BUILTIN_TOOLS_DENIED = (
     "Agent",
     "Artifact",
+    "AskUserQuestion",
     "Bash",
     "BashOutput",
     "CronCreate",
@@ -80,6 +94,7 @@ BUILTIN_TOOLS_DENIED = (
     "CronList",
     "DesignSync",
     "Edit",
+    "EnterPlanMode",
     "EnterWorktree",
     "ExitPlanMode",
     "ExitWorktree",
@@ -87,15 +102,19 @@ BUILTIN_TOOLS_DENIED = (
     "Grep",
     "KillShell",
     "ListMcpResourcesTool",
+    "Monitor",
     "MultiEdit",
     "NotebookEdit",
     "NotebookRead",
+    "PushNotification",
     "Read",
     "ReadMcpResourceDirTool",
     "ReadMcpResourceTool",
+    "RemoteTrigger",
     "ReportFindings",
     "ScheduleWakeup",
     "SendMessage",
+    "SendUserMessage",
     "Skill",
     "SlashCommand",
     "Task",

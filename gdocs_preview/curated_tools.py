@@ -408,6 +408,10 @@ async def get_doc_review_view(
       without it the last line of one tab reads as continuous with the first
       line of the next. Everything after such a line is numbered from that
       tab's own start, and the id is what you pass back as ``tab_id``.
+      ``headers``/``footers``/``footnotes`` are LISTS, one entry per segment,
+      each carrying its ``text`` beside ``segment``/``segment_id``/``tab_id``
+      and its index range: a Docs segment id only resolves inside its own
+      tab, so an id without the tab it came from is not enough to write with.
     - ``fields='paragraphs'``: the addressable half -- one entry per
       paragraph with segment, tab id, start/end index, text, named style,
       list flag, table flag and the suggestion ids touching it. Same
@@ -421,7 +425,7 @@ async def get_doc_review_view(
     header/footer/footnote texts are then recomputed from exactly the
     paragraphs returned, so no part of the response describes a different
     window than another, and ``suggestion_ids`` lists only the ids inside it.
-    A body window therefore reports ``headers: {}`` (they are outside it),
+    A body window therefore reports ``headers: []`` (they are outside it),
     and a header-scoped window reports ``body_text: ""`` beside the header
     text it selected. The window is read in ONE (tab, segment) -- the body of
     the document's only tab unless ``segment_id``/``tab_id`` say otherwise --

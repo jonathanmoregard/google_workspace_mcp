@@ -854,9 +854,9 @@ def rendered_document() -> dict:
                 "suggestion_ids": ["s.2"],
             },
         ],
-        "headers": {},
-        "footers": {},
-        "footnotes": {},
+        "headers": [],
+        "footers": [],
+        "footnotes": [],
         "suggestion_ids": ["s.1", "s.2"],
     }
 
@@ -951,7 +951,16 @@ def rendered_with_header() -> dict:
         },
         *source["paragraphs"],
     ]
-    source["headers"] = {"kix.h1": "Header.\n"}
+    source["headers"] = [
+        {
+            "text": "Header.\n",
+            "segment": "header",
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+            "start_index": 0,
+            "end_index": 12,
+        }
+    ]
     return source
 
 
@@ -994,7 +1003,7 @@ class TestReviewViewWindowIsWholeResponse:
         assert view["body_text"] == "First.\n"
         # The header is a different coordinate space and outside this window;
         # returning it whole made the response describe two windows at once.
-        assert view["headers"] == {}
+        assert view["headers"] == []
 
     def test_a_header_window_returns_the_header_text_it_selected(self):
         view = review_view(
@@ -1004,14 +1013,32 @@ class TestReviewViewWindowIsWholeResponse:
             end_index=12,
             segment_id="kix.h1",
         )
-        assert view["headers"] == {"kix.h1": "Header.\n"}
+        assert view["headers"] == [
+            {
+                "text": "Header.\n",
+                "segment": "header",
+                "segment_id": "kix.h1",
+                "tab_id": "t.0",
+                "start_index": 0,
+                "end_index": 12,
+            }
+        ]
         # body_text is empty because no BODY paragraph is in this window --
         # legible now that headers is populated beside it.
         assert view["body_text"] == ""
 
     def test_an_unwindowed_read_still_returns_every_segment(self):
         view = review_view(rendered_with_header(), fields="full")
-        assert view["headers"] == {"kix.h1": "Header.\n"}
+        assert view["headers"] == [
+            {
+                "text": "Header.\n",
+                "segment": "header",
+                "segment_id": "kix.h1",
+                "tab_id": "t.0",
+                "start_index": 0,
+                "end_index": 12,
+            }
+        ]
         assert view["body_text"] == "First.\nSecond.\nThird.\n"
 
 

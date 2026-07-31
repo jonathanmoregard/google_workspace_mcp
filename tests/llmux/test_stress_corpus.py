@@ -36,9 +36,7 @@ from llmux.scenarios.stressgen.invariants import project, witness
 from llmux.scenarios.validate import validate_scenario
 
 STRESS_ROOT = stress_build.STRESS_ROOT
-SCENARIO_DIRS = sorted(
-    p for p in STRESS_ROOT.iterdir() if (p / "meta.json").exists()
-)
+SCENARIO_DIRS = sorted(p for p in STRESS_ROOT.iterdir() if (p / "meta.json").exists())
 CONTRACT_FILES = ("seed.json", "brief.md", "expected.json", "grade.py", "meta.json")
 
 
@@ -272,7 +270,7 @@ def test_every_edit_lands_on_a_linguistic_boundary(document):
                 left, right = text[index - 1], text[index]
                 assert not (left.isalpha() and right.isalpha()), (
                     f"{candidate.kind} splits a word at {index}: "
-                    f"{text[index - 12:index + 12]!r}"
+                    f"{text[index - 12 : index + 12]!r}"
                 )
 
 

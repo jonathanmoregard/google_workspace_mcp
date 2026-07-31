@@ -645,6 +645,39 @@ def _marked_text(run: _Run) -> str:
     return run.text
 
 
+def _segment_entry(seg: _Segment, text: str, tab_id: Optional[str]) -> dict[str, Any]:
+    """One header/footer/footnote's text, as a COMPLETE address.
+
+    ``headers``/``footers``/``footnotes`` were maps of ``segment_id -> text``,
+    the last agent-facing index surface in this package where a segment was
+    not a whole address. Verified against the live API 2026-07-31: a segment
+    id is resolved WITHIN the tab the request names, and a request carrying a
+    segment id from another tab is rejected --
+
+        Invalid requests[0].insertText: Segment with ID kix.6p5f85lujtvl was
+        not found. If a segment ID is provided, it must be a header, footer
+        or footnote ID. Use an empty segment ID to reference the body.
+
+    -- so an agent that read ``headers: {"kix.…": "…"}`` off a multi-tab
+    document and called ``suggest_doc_edit(segment_id="kix.…")`` got a 400
+    with nothing anywhere in the response telling it which ``tab_id`` would
+    have made the call work. A list of address-carrying records, exactly like
+    ``paragraphs``, cannot lose the tab and cannot collide on a key either.
+    """
+    starts = [p.start for p in seg.paragraphs if p.start is not None]
+    ends = [p.end for p in seg.paragraphs if p.end is not None]
+    return with_address(
+        {"text": text},
+        {
+            "segment": seg.segment,
+            "segment_id": seg.segment_id,
+            "tab_id": tab_id,
+            "start_index": min(starts) if starts else None,
+            "end_index": max(ends) if ends else None,
+        },
+    )
+
+
 def render_document(
     document: dict[str, Any], *, tab_id: Optional[str] = None
 ) -> dict[str, Any]:
@@ -653,17 +686,18 @@ def render_document(
     formatting fidelity beyond what review needs.
 
     ``tab_id`` tags every paragraph with the tab it came from (``None`` for
-    a single-tab or GA read).
+    a single-tab or GA read), and every header/footer/footnote entry too --
+    see :func:`_segment_entry`.
     """
     segments = _collect_segments(document)
 
     paragraphs = []
     suggestion_ids: list[str] = []
     seen: set[str] = set()
-    segment_texts: dict[str, dict[str, str]] = {
-        "header": {},
-        "footer": {},
-        "footnote": {},
+    segment_texts: dict[str, list[dict[str, Any]]] = {
+        "header": [],
+        "footer": [],
+        "footnote": [],
     }
     body_text = ""
 
@@ -707,7 +741,7 @@ def render_document(
         if seg.segment == "body":
             body_text = seg_text
         else:
-            segment_texts[seg.segment][seg.segment_id or ""] = seg_text
+            segment_texts[seg.segment].append(_segment_entry(seg, seg_text, tab_id))
 
     return {
         "document_id": document.get("documentId"),
@@ -737,10 +771,19 @@ def render_tabs(
 ) -> dict[str, Any]:
     """Render each tab with :func:`render_document` and merge the results.
 
-    ``body_text`` concatenates the tabs in document order, ``paragraphs``
-    carry their ``tab_id``, and header/footer/footnote texts stay keyed by
-    segment id (Docs segment ids are document-wide, not per-tab). A
+    ``body_text`` concatenates the tabs in document order, and ``paragraphs``
+    and the header/footer/footnote entries all carry their ``tab_id``. A
     single-element list reproduces the single-tab output exactly.
+
+    The three segment surfaces are CONCATENATED lists, not merged maps. They
+    used to be ``{segment_id: text}`` merged with ``.update()``, which is two
+    problems in one line: the entry lost the tab it belongs to (and a segment
+    id only resolves inside its own tab -- see :func:`_segment_entry`), and
+    the merge was silent about a key it overwrote. Prod does appear to mint
+    segment ids document-wide (verified 2026-07-31: a header created in each
+    of two tabs came back as two different ``kix.…`` ids), so the collision
+    was not observed -- but "not observed" is a thin thing to rest a silent
+    overwrite on, and a list cannot collide at all.
 
     **A multi-tab body is separated by :func:`tab_marker`.** This string is
     ``get_doc_review_view``'s DEFAULT output, and joining the tabs with
@@ -761,9 +804,9 @@ def render_tabs(
         "title": None,
         "body_text": "",
         "paragraphs": [],
-        "headers": {},
-        "footers": {},
-        "footnotes": {},
+        "headers": [],
+        "footers": [],
+        "footnotes": [],
         "suggestion_ids": [],
     }
     multi_tab = len(tabs) > 1
@@ -778,7 +821,7 @@ def render_tabs(
         body_parts.append(rendered["body_text"])
         merged["paragraphs"].extend(rendered["paragraphs"])
         for key in ("headers", "footers", "footnotes"):
-            merged[key].update(rendered[key])
+            merged[key].extend(rendered[key])
         for sid in rendered["suggestion_ids"]:
             if sid not in merged["suggestion_ids"]:
                 merged["suggestion_ids"].append(sid)

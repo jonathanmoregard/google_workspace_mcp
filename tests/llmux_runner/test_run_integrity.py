@@ -162,9 +162,7 @@ class TestToolLeakage:
     def test_advertised_builtins_are_named_and_actionable(self):
         transcript = parse_stream_json(
             [
-                _init(
-                    ["mcp__gdocsmock__list_document_suggestions", "Monitor", "Bash"]
-                ),
+                _init(["mcp__gdocsmock__list_document_suggestions", "Monitor", "Bash"]),
                 RESULT,
             ]
         )
@@ -611,9 +609,7 @@ class TestReanalyzeIsUnbreakable:
         assert [r.model for r in rebuilt] == ["good"]
         assert "cannot load the scenario" in capsys.readouterr().out
 
-    def test_a_taxonomy_crash_keeps_the_run_and_its_grade(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_taxonomy_crash_keeps_the_run_and_its_grade(self, tmp_path, monkeypatch):
         runs, _scenario = self._batch(tmp_path, models=("good",))
 
         def boom(*_a, **_kw):
@@ -689,7 +685,9 @@ class TestPreflightToolProbe:
         monkeypatch.setattr(
             toolprobe, "probe_advertised_tools", lambda **_kw: {"leaked": ["Monitor"]}
         )
-        monkeypatch.setattr(run_mod.session_mod, "claude_available", lambda: "/x/claude")
+        monkeypatch.setattr(
+            run_mod.session_mod, "claude_available", lambda: "/x/claude"
+        )
         monkeypatch.setattr(run_mod, "_confirm", lambda *_a, **_kw: True)
 
         def never(*_a, **_kw):  # pragma: no cover - the point is it is not called
@@ -709,7 +707,9 @@ class TestPreflightToolProbe:
             raise AssertionError("the probe ran despite --skip-toolprobe")
 
         monkeypatch.setattr(toolprobe, "probe_advertised_tools", never)
-        monkeypatch.setattr(run_mod.session_mod, "claude_available", lambda: "/x/claude")
+        monkeypatch.setattr(
+            run_mod.session_mod, "claude_available", lambda: "/x/claude"
+        )
         monkeypatch.setattr(run_mod, "_confirm", lambda *_a, **_kw: True)
         monkeypatch.setattr(run_mod, "run_batch", lambda *_a, **_kw: [])
         code = run_mod.main(
@@ -741,15 +741,11 @@ class TestReportContent:
         )
         assert "## Inconclusive runs" in text
         assert "sc-throttled" in text
-        assert text.index("## Inconclusive runs") < text.index(
-            "## Pass rate by model"
-        )
+        assert text.index("## Inconclusive runs") < text.index("## Pass rate by model")
 
     def test_contamination_gets_its_own_section(self):
         leaky = _run(
-            parse_stream_json(
-                [_init(["mcp__gdocsmock__x", "Monitor"]), RESULT]
-            ),
+            parse_stream_json([_init(["mcp__gdocsmock__x", "Monitor"]), RESULT]),
             scenario_id="sc-leaky",
         )
         text = render_markdown(aggregate([leaky]), stamp="20260731-000004")

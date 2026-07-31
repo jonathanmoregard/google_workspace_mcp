@@ -34,7 +34,9 @@ def _assistant_tool_use(tool_id: str, name: str, args: dict) -> str:
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": args}],
+                "content": [
+                    {"type": "tool_use", "id": tool_id, "name": name, "input": args}
+                ],
             },
         }
     )
@@ -87,7 +89,9 @@ def test_parses_calls_results_and_totals():
     transcript = parse_stream_json(
         [
             INIT,
-            _assistant_tool_use("t1", "mcp__gdocsmock__get_doc_review_view", {"document_id": "d"}),
+            _assistant_tool_use(
+                "t1", "mcp__gdocsmock__get_doc_review_view", {"document_id": "d"}
+            ),
             _tool_result("t1", '{"body_text": "hi"}'),
             _assistant_tool_use(
                 "t2", "mcp__gdocsmock__suggest_doc_edit", {"start_index": 0}
@@ -138,7 +142,16 @@ def test_string_content_and_unknown_events_are_tolerated():
 def test_result_event_without_a_type_field_is_still_the_result():
     """Some builds emit the terminal object with ``type`` late in the dict."""
     transcript = parse_stream_json(
-        [_line({"num_turns": 2, "total_cost_usd": 0.1, "result": "ok", "subtype": "success"})]
+        [
+            _line(
+                {
+                    "num_turns": 2,
+                    "total_cost_usd": 0.1,
+                    "result": "ok",
+                    "subtype": "success",
+                }
+            )
+        ]
     )
     assert transcript.num_turns == 2
     assert transcript.final_text == "ok"

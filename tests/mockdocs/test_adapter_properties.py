@@ -344,8 +344,13 @@ def test_rendered_markers_match_the_render_states(doc):
         rendered = render_document(tab.document, tab_id=tab.tab_id)
         assert unmark(rendered["body_text"]) == doc.segment_text((tab.tab_id, None))
         for field in ("headers", "footers", "footnotes"):
-            for seg_id, text in rendered[field].items():
-                assert unmark(text) == doc.segment_text((tab.tab_id, seg_id))
+            for entry in rendered[field]:
+                # Every entry is a whole address, so the segment it claims to
+                # be can be looked up in the tab it claims to be in.
+                assert entry["tab_id"] == tab.tab_id
+                assert unmark(entry["text"]) == doc.segment_text(
+                    (entry["tab_id"], entry["segment_id"])
+                )
         seen.update(rendered["suggestion_ids"])
     assert seen == set(doc.registry)
 

@@ -91,7 +91,11 @@ def test_difficulty_comes_from_tier_then_from_the_numeric_rank(tmp_path):
         write_scenario(
             tmp_path,
             "both",
-            **{"meta.json": json.dumps({"id": "both", "difficulty": 5, "tier": "adversarial"})},
+            **{
+                "meta.json": json.dumps(
+                    {"id": "both", "difficulty": 5, "tier": "adversarial"}
+                )
+            },
         )
     )
     assert both.difficulty == "adversarial"
@@ -99,7 +103,9 @@ def test_difficulty_comes_from_tier_then_from_the_numeric_rank(tmp_path):
 
     rank_only = scen.load_scenario(
         write_scenario(
-            tmp_path, "rank", **{"meta.json": json.dumps({"id": "rank", "difficulty": 4})}
+            tmp_path,
+            "rank",
+            **{"meta.json": json.dumps({"id": "rank", "difficulty": 4})},
         )
     )
     assert rank_only.difficulty == "hard"
@@ -189,7 +195,9 @@ def test_grade_result_shape_is_validated(tmp_path):
     assert result.error is None
 
     bad = scen.load_scenario(
-        write_scenario(tmp_path, "bad", **{"grade.py": "def grade(b):\n    return 42\n"})
+        write_scenario(
+            tmp_path, "bad", **{"grade.py": "def grade(b):\n    return 42\n"}
+        )
     )
     crashed = scen.grade_backend(bad, object())
     assert crashed.passed is False
@@ -197,7 +205,9 @@ def test_grade_result_shape_is_validated(tmp_path):
 
     missing_keys = scen.load_scenario(
         write_scenario(
-            tmp_path, "thin", **{"grade.py": "def grade(b):\n    return {'pass': True}\n"}
+            tmp_path,
+            "thin",
+            **{"grade.py": "def grade(b):\n    return {'pass': True}\n"},
         )
     )
     assert "score" in (scen.grade_backend(missing_keys, object()).error or "")
@@ -206,7 +216,9 @@ def test_grade_result_shape_is_validated(tmp_path):
 def test_a_crashing_grader_fails_the_run_instead_of_the_batch(tmp_path):
     scenario = scen.load_scenario(
         write_scenario(
-            tmp_path, "boom", **{"grade.py": "def grade(b):\n    raise ValueError('x')\n"}
+            tmp_path,
+            "boom",
+            **{"grade.py": "def grade(b):\n    raise ValueError('x')\n"},
         )
     )
     result = scen.grade_backend(scenario, object())
@@ -215,7 +227,9 @@ def test_a_crashing_grader_fails_the_run_instead_of_the_batch(tmp_path):
 
 
 def test_grade_normalisation_accepts_a_single_failure_string():
-    result = scen.normalise_grade({"pass": False, "score": 0.5, "failures": "one thing"})
+    result = scen.normalise_grade(
+        {"pass": False, "score": 0.5, "failures": "one thing"}
+    )
     assert result.failures == ("one thing",)
 
 

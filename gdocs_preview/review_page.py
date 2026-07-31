@@ -52,6 +52,7 @@ from gdocs_preview.address import (  # noqa: F401 - re-exported for callers
     SCOPE_FIELDS,
     in_range_scope,
     resolve_range_scope,
+    with_address,
 )
 
 # ---------------------------------------------------------------------------
@@ -147,8 +148,7 @@ DEFAULT_PAGE_SIZE = {
 #: necessarily wrong for one of them. The byte budget is the authority; these
 #: are its expression in cards.
 MAX_PAGE_SIZE = {
-    mode: max(1, MAX_PAGE_CHARS // CHARS_PER_RECORD[mode])
-    for mode in LIST_FIELD_MODES
+    mode: max(1, MAX_PAGE_CHARS // CHARS_PER_RECORD[mode]) for mode in LIST_FIELD_MODES
 }
 
 
@@ -344,7 +344,10 @@ def filter_records(
             value = record.get("status")
             if not value or str(value).strip().upper() != status_key:
                 continue
-        if segment_key is not None and (record.get("segment_id") or None) != segment_key:
+        if (
+            segment_key is not None
+            and (record.get("segment_id") or None) != segment_key
+        ):
             continue
         if tab_key is not None and (record.get("tab_id") or None) != tab_key:
             continue
@@ -461,9 +464,7 @@ def _fingerprint(document_id: str, fields: str, applied: dict[str, Any]) -> str:
     resume at a position that means something else entirely, so the token
     carries this and :func:`decode_page_token` refuses the mismatch.
     """
-    stable = {
-        k: v for k, v in sorted(applied.items()) if k in _FINGERPRINT_KEYS
-    }
+    stable = {k: v for k, v in sorted(applied.items()) if k in _FINGERPRINT_KEYS}
     return json.dumps(
         {"d": document_id, "f": fields, "q": stable}, sort_keys=True, ensure_ascii=False
     )
@@ -657,7 +658,8 @@ def _degraded_notice() -> str:
     """
     return (
         "This read degraded to the GA documents.get, which carries no "
-        "suggestion threads: " + ", ".join(f"`{f}`" for f in THREAD_DERIVED_FIELDS)
+        "suggestion threads: "
+        + ", ".join(f"`{f}`" for f in THREAD_DERIVED_FIELDS)
         + " are null on EVERY record here, in both field modes. That is a "
         "property of this read, not of the document -- do not conclude that a "
         "suggestion has no author or is not open. `pre_text`/`post_text` "
@@ -788,6 +790,45 @@ def _paragraph_in_window(
     return in_range_scope(paragraph, scope) and _overlaps(paragraph, low, high)
 
 
+def _narrow_segments(
+    paragraphs: Iterable[dict[str, Any]], kind: str
+) -> list[dict[str, Any]]:
+    """Rebuild one segment kind's entries from the paragraphs that survived.
+
+    Grouped by ``(tab_id, segment_id)`` -- the coordinate space -- not by
+    segment id alone: two tabs' segments are two entries even if they were
+    ever to share an id, and each entry carries the tab it belongs to,
+    because a segment id only resolves inside its own tab (verified against
+    the live API 2026-07-31; see ``analysis._segment_entry``).
+    """
+    entries: dict[tuple[Optional[str], Optional[str]], dict[str, Any]] = {}
+    for paragraph in paragraphs:
+        if paragraph.get("segment") != kind:
+            continue
+        key = (paragraph.get("tab_id"), paragraph.get("segment_id"))
+        entry = entries.get(key)
+        if entry is None:
+            entry = entries[key] = with_address(
+                {"text": ""},
+                {
+                    "segment": kind,
+                    "segment_id": paragraph.get("segment_id"),
+                    "tab_id": paragraph.get("tab_id"),
+                    "start_index": paragraph.get("start_index"),
+                    "end_index": paragraph.get("end_index"),
+                },
+            )
+        entry["text"] += paragraph.get("text") or ""
+        for bound, choose in (("start_index", min), ("end_index", max)):
+            value = paragraph.get(bound)
+            if value is None:
+                continue
+            entry[bound] = (
+                value if entry[bound] is None else choose(entry[bound], value)
+            )
+    return list(entries.values())
+
+
 def build_review_view(
     rendered: dict[str, Any],
     *,
@@ -878,12 +919,12 @@ def build_review_view(
     if fields in (VIEW_FIELDS_TEXT, VIEW_FIELDS_FULL):
         if windowed:
             # ALL FOUR text surfaces are recomputed from the surviving
-            # paragraphs, so the whole response describes one window. They
+            # paragraphs, so the whole response describes one window. (They
             # used to disagree: body_text was narrowed while headers, footers
             # and footnotes came back whole, so a body window silently
             # carried every header in the document, and a header-scoped
             # window returned `body_text: ""` next to the full header text of
-            # a segment it had not narrowed.
+            # a segment it had not narrowed.)
             result["body_text"] = "".join(
                 p.get("text") or "" for p in paragraphs if p.get("segment") == "body"
             )
@@ -892,17 +933,11 @@ def build_review_view(
                 ("footers", "footer"),
                 ("footnotes", "footnote"),
             ):
-                narrowed: dict[str, str] = {}
-                for paragraph in paragraphs:
-                    if paragraph.get("segment") != kind:
-                        continue
-                    seg = paragraph.get("segment_id") or ""
-                    narrowed[seg] = narrowed.get(seg, "") + (paragraph.get("text") or "")
-                result[key] = narrowed
+                result[key] = _narrow_segments(paragraphs, kind)
         else:
             result["body_text"] = rendered.get("body_text", "")
             for key in ("headers", "footers", "footnotes"):
-                result[key] = rendered.get(key) or {}
+                result[key] = list(rendered.get(key) or [])
     else:
         omitted.append("body_text")
         omitted.extend(("headers", "footers", "footnotes"))

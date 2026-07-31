@@ -449,15 +449,19 @@ class MockDoc:
             segment_id = "kix." + opaque_id(
                 f"mockdocs.segment.{kind}", len(self.segments)
             )
-        # Segment ids are DOCUMENT-wide, not per-tab: that is why
-        # ``analysis.render_tabs`` can key headers by id across the whole
-        # payload. Allowing the same id in two tabs would let the mock build a
-        # document Docs cannot, and the duplicate would silently clobber its
-        # twin the moment anything merged the tabs' segment maps.
+        # Prod MINTS segment ids document-wide but RESOLVES them per tab, and
+        # conflating the two is what let a header entry travel without its
+        # tab. Verified against the live API 2026-07-31: creating a header in
+        # each of two tabs returned two DIFFERENT ``kix.…`` ids, so refusing a
+        # duplicate builds the documents Docs builds -- while a request naming
+        # a segment id that belongs to another tab is REJECTED ("Segment with
+        # ID kix.… was not found"), so an id is not an address on its own,
+        # whatever its uniqueness. That half is :meth:`resolve_segment`.
         if any(s.segment_id == segment_id for s in self.segments.values()):
             raise MockDocsError(
                 f"segment id {segment_id!r} is already used in this document "
-                "(Docs segment ids are document-wide, not per-tab)"
+                "(Docs mints segment ids document-wide, though it resolves "
+                "them per tab)"
             )
         segment = Segment(
             kind, tab_id, segment_id, [Char(cp) for cp in split_graphemes(text)]
@@ -483,6 +487,12 @@ class MockDoc:
         dangerous: the write succeeds, in the wrong place. An omitted
         ``segmentId`` means that tab's body, which is likewise silent.
         An id that names nothing is an error, as it is in prod.
+
+        **A segment id is resolved WITHIN the resolved tab.** A header id
+        from tab 2 handed to a request that names no tab does not find that
+        header; it fails to find anything in tab 1. The message is prod's own,
+        verified verbatim against the live API 2026-07-31 by inserting at
+        ``{"index": 0, "segmentId": <a second tab's headerId>}``.
         """
         tab_id = tab_id or self.default_tab_id
         if not any(tab.tab_id == tab_id for tab in self.tabs):
@@ -491,7 +501,9 @@ class MockDoc:
         segment = self.segments.get(key)
         if segment is None:
             raise MockDocsError(
-                f"Invalid segment ID {segment_id} for tab {tab_id}."
+                f"Segment with ID {segment_id} was not found. If a segment ID "
+                "is provided, it must be a header, footer or footnote ID. Use "
+                "an empty segment ID to reference the body."
                 if segment_id
                 else f"Invalid tab ID {tab_id}."
             )

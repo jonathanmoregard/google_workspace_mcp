@@ -345,7 +345,7 @@ def test_an_unknown_segment_in_a_script_is_a_loud_error():
     that. A *script* naming one that does not exist is a different thing --
     a harness bug -- and must not quietly edit the body instead."""
     backend = tabbed_backend()
-    with pytest.raises(InterferenceError, match="Invalid segment ID"):
+    with pytest.raises(InterferenceError, match="Segment with ID .* was not found"):
         fire(
             backend,
             "shift_indexes",

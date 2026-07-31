@@ -563,7 +563,12 @@ def test_the_ga_read_returns_only_the_default_tab():
     assert only.tab_id is None
     rendered = render_document(only.document)
     assert rendered["body_text"] == BODY_TEXT
-    assert rendered["headers"] == {"kix.h1": HEADER_TEXT}
+    # A GA read has no tabs at all, so the header entry says so rather than
+    # implying it belongs to whichever tab the caller last saw.
+    (header,) = rendered["headers"]
+    assert header["text"] == HEADER_TEXT
+    assert header["segment_id"] == "kix.h1"
+    assert header["tab_id"] is None
 
 
 def test_add_document_tab_is_unsupported_in_suggest_mode():

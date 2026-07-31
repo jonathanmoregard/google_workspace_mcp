@@ -71,7 +71,9 @@ def test_missing_corpus_exits_with_a_usable_message(tmp_path, capsys):
     assert "scenario corpus problem" in capsys.readouterr().err
 
 
-def _stub_claude(tmp_path: Path, transcript_lines: list[dict], state_writer: str) -> Path:
+def _stub_claude(
+    tmp_path: Path, transcript_lines: list[dict], state_writer: str
+) -> Path:
     """A fake ``claude`` that prints a transcript and mutates the mock state.
 
     It receives the same argv the real CLI would, so the stub also proves the

@@ -39,9 +39,7 @@ def session_tool_allowlist() -> frozenset[str]:
 
 def _skip_unless_enabled() -> None:
     if not os.getenv("LLMUX_SMOKE"):
-        pytest.skip(
-            "real Claude CLI run: costs tokens. Set LLMUX_SMOKE=1 to enable."
-        )
+        pytest.skip("real Claude CLI run: costs tokens. Set LLMUX_SMOKE=1 to enable.")
     if not session.claude_available():
         pytest.skip("the `claude` CLI is not on PATH")
 
@@ -88,9 +86,7 @@ def test_one_real_run_against_a_fixture_scenario(tmp_path, capsys):
         f"servers={transcript['mcp_servers']}"
     )
     tools = [
-        t
-        for t in transcript["available_tools"]
-        if t not in session_tool_allowlist()
+        t for t in transcript["available_tools"] if t not in session_tool_allowlist()
     ]
     assert all(t.startswith("mcp__gdocsmock__") for t in tools), (
         "the agent had built-in tools available: "

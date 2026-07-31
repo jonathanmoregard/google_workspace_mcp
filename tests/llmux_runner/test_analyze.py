@@ -111,12 +111,16 @@ def test_markdown_report_contains_the_sections_a_reader_needs():
                 passed=False,
                 score=0.4,
                 failures=("final text is wrong",),
-                findings=[Finding("index_error", "suggest_doc_edit rejected on indexes")],
+                findings=[
+                    Finding("index_error", "suggest_doc_edit rejected on indexes")
+                ],
             ),
             run_result("s1", "opus", passed=True),
         ]
     )
-    markdown = render_markdown(agg, stamp="20260730-120000", corpus="llmux/scenarios/generated")
+    markdown = render_markdown(
+        agg, stamp="20260730-120000", corpus="llmux/scenarios/generated"
+    )
     assert "# LLM UX run report -- 20260730-120000" in markdown
     assert "## Mistake taxonomy" in markdown
     assert "`index_error`" in markdown

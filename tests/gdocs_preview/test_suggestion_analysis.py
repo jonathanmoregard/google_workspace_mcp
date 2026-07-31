@@ -329,6 +329,60 @@ class TestMultiTab:
         merged = render_tabs([(None, fx.DOC_HEADER)])
         assert merged == render_document(fx.DOC_HEADER)
 
+    def test_every_tabs_header_keeps_the_tab_it_lives_in(self):
+        """A segment id is only half of a segment's address.
+
+        The three segment surfaces were maps of ``segment_id -> text`` merged
+        across tabs with ``.update()``, so a header entry named no tab at all.
+        Verified against the live API 2026-07-31: a request carrying a segment
+        id that belongs to another tab is refused ("Segment with ID kix.… was
+        not found"), and the response gave the agent nothing to fix that with.
+        """
+        first = fx.build_doc(
+            [fx.paragraph(fx.run("Body one.\n"))],
+            headers={"kix.h1": [fx.paragraph(fx.run("Header one.\n"))]},
+        )
+        second = fx.build_doc(
+            [fx.paragraph(fx.run("Body two.\n"))],
+            headers={"kix.h2": [fx.paragraph(fx.run("Header two.\n"))]},
+        )
+
+        rendered = render_tabs([("t.0", first), ("t.second", second)])
+
+        assert rendered["headers"] == [
+            {
+                "text": "Header one.\n",
+                "segment": "header",
+                "segment_id": "kix.h1",
+                "tab_id": "t.0",
+                "start_index": 0,
+                "end_index": 12,
+            },
+            {
+                "text": "Header two.\n",
+                "segment": "header",
+                "segment_id": "kix.h2",
+                "tab_id": "t.second",
+                "start_index": 0,
+                "end_index": 12,
+            },
+        ]
+
+    def test_a_segment_id_repeated_across_tabs_is_two_entries(self):
+        """Prod appears to mint segment ids document-wide (verified
+        2026-07-31: a header created in each of two tabs came back as two
+        different ``kix.…`` ids), so this is defence rather than a reproduced
+        bug -- but a list cannot silently overwrite a key the way the merged
+        map did, and the property is worth pinning rather than assuming."""
+        document = fx.build_doc(
+            [fx.paragraph(fx.run("Body.\n"))],
+            headers={"kix.same": [fx.paragraph(fx.run("Mine.\n"))]},
+        )
+
+        rendered = render_tabs([("t.0", document), ("t.second", document)])
+
+        assert [h["tab_id"] for h in rendered["headers"]] == ["t.0", "t.second"]
+
 
 class TestRenderDocument:
     def test_insertion_markers(self):
@@ -364,8 +418,19 @@ class TestRenderDocument:
         assert cell_paras[1]["text"] == "Cell {+B-extra+}\n"
 
     def test_header_segment_rendered(self):
-        r = render_document(fx.DOC_HEADER)
-        assert r["headers"] == {"kix.h1": "Header{+ updated+}\n"}
+        r = render_document(fx.DOC_HEADER, tab_id="t.0")
+        # A complete address, not a bare segment_id -> text map: a Docs
+        # segment id only resolves inside its own tab.
+        assert r["headers"] == [
+            {
+                "text": "Header{+ updated+}\n",
+                "segment": "header",
+                "segment_id": "kix.h1",
+                "tab_id": "t.0",
+                "start_index": 0,
+                "end_index": 15,
+            }
+        ]
         header_paras = [p for p in r["paragraphs"] if p["segment"] == "header"]
         assert len(header_paras) == 1
         assert header_paras[0]["segment_id"] == "kix.h1"

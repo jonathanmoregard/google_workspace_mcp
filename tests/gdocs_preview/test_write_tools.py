@@ -1310,6 +1310,192 @@ class TestManageSuggestionVerification:
         assert result["verification"]["matches_expectation"] is False
 
 
+class TestVerificationIsNotDecidedByTheEchoClip:
+    """A verdict must be a statement about the document, not about the echo.
+
+    ``_locate`` used to return a window clipped to ``ECHO_MAX_CHARS`` (200)
+    while ``_verify_resolution`` compared the UNCLIPPED ``pre_text`` /
+    ``post_text`` against it. Any suggestion longer than
+    ``ECHO_MAX_CHARS - CONTEXT_WINDOW`` (~160 characters) therefore had its
+    verdict decided by the truncation:
+
+    - accepting a long **deletion** forced ``removed_text not in
+      resulting_text`` TRUE, so ``matches_expectation: true`` was emitted
+      with no check having occurred -- fail-open verification on the one
+      destructive path this tool has;
+    - accepting a long **replacement** (or rejecting a long insertion) forced
+      ``expected_text in resulting_text`` FALSE, raising a false alarm about
+      a write that had landed perfectly, which an agent may "fix" by
+      re-suggesting into a customer document.
+
+    Invisible to the prod e2e suite because its fixtures use short strings,
+    so these cases are pinned here at 300 characters -- comfortably past both
+    the 200-char echo cap and the 160-char effective threshold.
+    """
+
+    #: Past ECHO_MAX_CHARS (200) so a clipped window cannot contain it.
+    LONG_OLD = "old-" + "x" * 296
+    LONG_NEW = "new-" + "y" * 296
+    HEAD = "Head. "
+    TAIL = " Tail.\n"
+
+    @classmethod
+    def _body(cls, middle: str) -> dict:
+        """A one-paragraph document reading HEAD + ``middle`` + TAIL."""
+        return fx.build_tabs_payload(
+            [
+                (
+                    "t.0",
+                    fx.build_doc([fx.paragraph(fx.run(cls.HEAD + middle + cls.TAIL))]),
+                )
+            ]
+        )
+
+    @classmethod
+    def _record(cls, sid: str, kind: str, pre: str, post: str) -> dict:
+        return {
+            "suggestion_id": sid,
+            "type": kind,
+            "pre_text": pre,
+            "post_text": post,
+            "context_before": cls.HEAD,
+            "context_after": cls.TAIL,
+            "segment": "body",
+            "segment_id": None,
+            "tab_id": None,
+            "start_index": 1 + len(cls.HEAD),
+            "end_index": 1 + len(cls.HEAD) + len(pre or post),
+            "summary_text": "long edit",
+            "status": "OPEN",
+        }
+
+    async def _resolve(self, action: str, record: dict, middle: str) -> dict:
+        _observe(record)
+        sid = record["suggestion_id"]
+        service = _batch_service(
+            {"suggestionResponses": [{f"{action}edSuggestionIds": [sid]}]},
+            document=self._body(middle),
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action=action,
+                suggestion_id=sid,
+            )
+        )
+        return result["verification"]
+
+    # -- the two fail-open cases (long text GONE is the expectation) -------
+
+    @pytest.mark.asyncio
+    async def test_accepting_a_long_deletion_that_landed_is_true(self):
+        verification = await self._resolve(
+            "accept",
+            self._record("s.del", "deletion", self.LONG_OLD, ""),
+            middle="",
+        )
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_accepting_a_long_deletion_that_did_not_land_is_false(self):
+        """The fail-open regression: this returned True with no check run."""
+        verification = await self._resolve(
+            "accept",
+            self._record("s.del", "deletion", self.LONG_OLD, ""),
+            middle=self.LONG_OLD,
+        )
+        assert verification["matches_expectation"] is False
+
+    @pytest.mark.asyncio
+    async def test_rejecting_a_long_insertion_that_reverted_is_true(self):
+        verification = await self._resolve(
+            "reject",
+            self._record("s.ins", "insertion", "", self.LONG_NEW),
+            middle="",
+        )
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_rejecting_a_long_insertion_still_present_is_false(self):
+        """The same fail-open shape on the reject path."""
+        verification = await self._resolve(
+            "reject",
+            self._record("s.ins", "insertion", "", self.LONG_NEW),
+            middle=self.LONG_NEW,
+        )
+        assert verification["matches_expectation"] is False
+
+    # -- the two false-alarm cases (long text PRESENT is the expectation) --
+
+    @pytest.mark.asyncio
+    async def test_accepting_a_long_replacement_that_landed_is_true(self):
+        """The false-alarm regression: this returned False on a clean write."""
+        verification = await self._resolve(
+            "accept",
+            self._record("s.rep", "replacement", self.LONG_OLD, self.LONG_NEW),
+            middle=self.LONG_NEW,
+        )
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_accepting_a_long_replacement_that_did_not_land_is_false(self):
+        verification = await self._resolve(
+            "accept",
+            self._record("s.rep", "replacement", self.LONG_OLD, self.LONG_NEW),
+            middle=self.LONG_OLD,
+        )
+        assert verification["matches_expectation"] is False
+
+    @pytest.mark.asyncio
+    async def test_rejecting_a_long_replacement_that_reverted_is_true(self):
+        verification = await self._resolve(
+            "reject",
+            self._record("s.rep", "replacement", self.LONG_OLD, self.LONG_NEW),
+            middle=self.LONG_OLD,
+        )
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_accepting_a_long_insertion_that_landed_is_true(self):
+        verification = await self._resolve(
+            "accept",
+            self._record("s.ins", "insertion", "", self.LONG_NEW),
+            middle=self.LONG_NEW,
+        )
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_rejecting_a_long_deletion_that_reverted_is_true(self):
+        verification = await self._resolve(
+            "reject",
+            self._record("s.del", "deletion", self.LONG_OLD, ""),
+            middle=self.LONG_OLD,
+        )
+        assert verification["matches_expectation"] is True
+
+    # -- the echo stays a receipt --------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_the_echo_is_still_clipped_though_the_check_was_not(self):
+        """Comparing on the full window must not blow up the context cost."""
+        verification = await self._resolve(
+            "accept",
+            self._record("s.rep", "replacement", self.LONG_OLD, self.LONG_NEW),
+            middle=self.LONG_NEW,
+        )
+        resulting = verification["resulting_text"]
+        assert verification["matches_expectation"] is True
+        # The verdict was decided on a window wider than what is echoed: the
+        # echoed copy does not even contain the text it was checked against.
+        assert self.LONG_NEW not in resulting
+        assert len(resulting) == write_tools.ECHO_MAX_CHARS + 1
+        assert resulting.endswith(write_tools.TRUNCATION_MARKER)
+        assert len(verification["expected_text"]) == write_tools.ECHO_MAX_CHARS + 1
+
+
 class TestFreeVerificationEchoes:
     """reply_to_doc_thread / create_anchored_doc_comment verify for free."""
 

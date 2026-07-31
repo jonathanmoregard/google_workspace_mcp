@@ -81,7 +81,25 @@ def _doc_link(document_id: str) -> str:
 
 
 def _clip(text: Optional[str], limit: int = ECHO_MAX_CHARS) -> Optional[str]:
-    """Trim for display, marking the cut. ``None`` stays ``None``."""
+    """Trim for DISPLAY, marking the cut. ``None`` stays ``None``.
+
+    **Clip what is shown; never what is compared.** Every call here must be
+    the last thing that happens to a string before it enters the response
+    dict. A clipped value that is then fed to ``in`` / ``==`` does not compare
+    the document, it compares the first :data:`ECHO_MAX_CHARS` characters of
+    it, and the answer is decided by the truncation rather than by the write:
+    ``_locate`` used to return a clipped window, and
+    :func:`_verify_resolution` compared the UNCLIPPED ``pre_text`` against it,
+    so accepting a deletion whose ``pre_text`` exceeded the window forced
+    ``removed_text not in resulting_text`` TRUE and reported
+    ``matches_expectation: true`` on the destructive path without any check
+    having occurred -- fail-open verification. The mirror case, a long
+    replacement, forced ``expected_text in resulting_text`` FALSE and raised a
+    false alarm on a write that had landed perfectly, which an agent may
+    "fix" by re-suggesting into a customer document.
+
+    Locate and compare on the FULL text; clip on the way out.
+    """
     if text is None:
         return None
     return text if len(text) <= limit else text[:limit] + TRUNCATION_MARKER
@@ -217,16 +235,26 @@ def _locate(
     of the segment when there is no preceding text to anchor on, or ``None``
     when the anchor cannot be found (a concurrent edit) or the segment could
     not be identified at all.
+
+    The window is returned UNCLIPPED and is sized to hold ``expected`` in
+    full (plus a :data:`~gdocs_preview.analysis.CONTEXT_WINDOW` of following
+    text), because :func:`_verify_resolution` decides
+    ``matches_expectation`` by looking for ``expected`` inside it. Clipping
+    here truncated the window to :data:`ECHO_MAX_CHARS` while the comparison
+    still used the full ``pre_text``/``post_text``, so any suggestion longer
+    than ``ECHO_MAX_CHARS - CONTEXT_WINDOW`` had its verdict decided by the
+    truncation instead of by the document -- see :func:`_clip`. The caller
+    clips what it echoes.
     """
     if not segment_text:
         return None
     if not anchor:
-        return _clip(segment_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW])
+        return segment_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW]
     position = segment_text.find(anchor)
     if position < 0:
         return None
     end = position + len(anchor) + len(expected) + CONTEXT_WINDOW
-    return _clip(segment_text[position:end])
+    return segment_text[position:end]
 
 
 def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) -> bool:
@@ -878,6 +906,12 @@ async def _verify_resolution(
     actually gone from that window". Both are scoped to the located window,
     never the whole document, so an identical word elsewhere cannot fake a
     verdict.
+
+    Both comparisons run on the FULL located window against the FULL
+    ``pre_text``/``post_text``; only the copies that go into the response are
+    clipped (:func:`_clip`). Comparing against the clipped window made the
+    verdict a function of :data:`ECHO_MAX_CHARS` rather than of the write --
+    fail-open on the destructive path, false-alarm on the constructive one.
     """
     if not verify:
         # Still remember the resolution: a later "does not exist" for this id
@@ -909,7 +943,9 @@ async def _verify_resolution(
         expected_text = resolved_record.get(kept)
         removed_text = resolved_record.get(dropped)
         # Scoped to the resolved suggestion's OWN (tab, segment): its indexes
-        # and its context window are numbered there and nowhere else.
+        # and its context window are numbered there and nowhere else. Full
+        # width, not the echo width -- the comparison below is the whole
+        # point of the read, and a clipped window answers about the clip.
         resulting_text = _locate(
             read.text_at(resolved_record),
             resolved_record.get("context_before"),
@@ -928,8 +964,11 @@ async def _verify_resolution(
         "resolved_suggestion": (
             _echo_suggestion(resolved_record) if resolved_record else None
         ),
+        # Clipped for the context window; ``matches_expectation`` above was
+        # decided on the full strings, so a truncated echo never changes a
+        # verdict -- it only shortens the receipt.
         "expected_text": _clip(expected_text),
-        "resulting_text": resulting_text,
+        "resulting_text": _clip(resulting_text),
         "matches_expectation": matches,
         "pending_suggestion_count": len(read.records),
         "pending_suggestion_ids": sorted(read.records),

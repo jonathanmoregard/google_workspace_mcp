@@ -312,6 +312,9 @@ def test_fields_filters_and_pagination_against_the_real_api(
         "type",
         "author",
         "summary_text",
+        "segment",
+        "segment_id",
+        "tab_id",
         "start_index",
         "end_index",
         "status",
@@ -320,6 +323,10 @@ def test_fields_filters_and_pagination_against_the_real_api(
     assert record["status"] == "OPEN", record
     assert record["summary_text"], record
     assert record["start_index"] is not None and record["end_index"] is not None
+    # The address, not decoration: prod indexes are per (tabId, segmentId).
+    assert record["segment"] == "body", record
+    assert record["segment_id"] is None, record
+    assert record["tab_id"], record
 
     # -- full still carries everything summary drops ----------------------
     full = tool_json(
@@ -437,6 +444,139 @@ def test_fields_filters_and_pagination_against_the_real_api(
     )
     assert refused.is_error, tool_text(refused)[:400]
     assert "different query" in tool_text(refused), tool_text(refused)[:400]
+
+
+def test_a_header_suggestion_is_addressable_from_the_summary_listing(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """A summary card outside the body must say so, and be writable back.
+
+    Prod numbers each ``(tabId, segmentId)`` pair from its own start, so a
+    header suggestion's ``start_index`` collides with a body suggestion's.
+    ``suggest_doc_edit`` defaults to the body of the default tab: if the
+    default listing did not carry ``segment_id``, an agent reading a header
+    card would aim its index at the body of a customer document with nothing
+    warning it. This is that loop, closed against prod: create a header,
+    suggest into it, list at the default ``fields='summary'``, and write back
+    using only what the card says.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-segment", content="Body line one.")
+
+    # Returns prose, not JSON -- the header only has to exist.
+    created_header = tool_text(
+        mcp.call_tool(
+            "update_doc_headers_footers",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "section_type": "header",
+                "content": "Header line one.",
+            },
+        )
+    )
+    assert "Error" not in created_header, created_header
+
+    def _header_paragraph():
+        view = tool_json(
+            mcp.call_tool(
+                "get_doc_review_view",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "fields": "paragraphs",
+                },
+            )
+        )
+        return next(
+            (p for p in view["paragraphs"] if p["segment"] == "header"), None
+        )
+
+    header = poll_until(
+        _header_paragraph, timeout=30, description="the header segment to appear"
+    )
+    REPORT.note(
+        f"header segment from get_doc_review_view: segment_id="
+        f"{header['segment_id']!r}, tab_id={header['tab_id']!r}, "
+        f"[{header['start_index']}, {header['end_index']})"
+    )
+    assert header["segment_id"], header
+
+    # One suggestion in the body and one in the header, so the listing has to
+    # tell two cards apart that prod numbers in different coordinate spaces.
+    _suggest_insert(mcp, email, doc_id, "very ", index=1)
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": header["start_index"] + 1,
+                "text": "DRAFT ",
+                "segment_id": header["segment_id"],
+                **({"tab_id": header["tab_id"]} if header["tab_id"] else {}),
+            },
+        )
+    )
+
+    def _both():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        segments = {r["segment"] for r in listing["suggestions"]}
+        return listing if {"body", "header"} <= segments else None
+
+    listing = poll_until(
+        _both, timeout=30, description="a body card and a header card"
+    )
+    assert listing["fields"] == "summary"
+    body_card = next(r for r in listing["suggestions"] if r["segment"] == "body")
+    header_card = next(r for r in listing["suggestions"] if r["segment"] == "header")
+    REPORT.note(
+        f"summary cards by segment: body={body_card!r} header={header_card!r}"
+    )
+    assert body_card["segment_id"] is None, body_card
+    assert header_card["segment_id"] == header["segment_id"], header_card
+
+    # The card is a complete address: everything suggest_doc_edit needs to
+    # aim at the same place comes out of the summary record alone.
+    echo = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": header_card["start_index"],
+                "text": "X",
+                "segment_id": header_card["segment_id"],
+                **(
+                    {"tab_id": header_card["tab_id"]}
+                    if header_card["tab_id"]
+                    else {}
+                ),
+            },
+        )
+    )
+    assert echo["created_suggestion_ids"] or echo["verification"], echo
+    after = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    header_after = [r for r in after["suggestions"] if r["segment"] == "header"]
+    body_after = [r for r in after["suggestions"] if r["segment"] == "body"]
+    REPORT.note(
+        f"after writing back from the summary card: {len(header_after)} header "
+        f"card(s), {len(body_after)} body card(s)"
+    )
+    assert len(body_after) == 1, (
+        "writing back the header card's own indexes landed in the body: "
+        f"{body_after!r}"
+    )
 
 
 def test_review_view_fields_and_window_against_the_real_api(

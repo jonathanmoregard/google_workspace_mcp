@@ -162,6 +162,50 @@ class TestListSuggestions:
         assert "pre_text" not in s
 
     @pytest.mark.asyncio
+    async def test_summary_locates_a_header_card_in_its_own_segment(self):
+        """The blocker this field set exists for.
+
+        Docs indexes are local to a ``(tabId, segmentId)`` pair, so a header
+        run and a body run can carry the SAME start_index. ``suggest_doc_edit``
+        defaults to the body of the default tab, so a summary card without
+        ``segment_id`` would let an agent write a header's index into the
+        body of a customer document with nothing warning it.
+        """
+        document = fx.build_doc(
+            [
+                fx.paragraph(
+                    fx.run("Body "), fx.run("edit", ins=["suggest.body1"]),
+                    fx.run(" here.\n"),
+                )
+            ],
+            headers={
+                "kix.h1": [
+                    fx.paragraph(
+                        fx.run("Head "), fx.run("edit", ins=["suggest.hdr1"]),
+                        fx.run("\n"),
+                    )
+                ]
+            },
+        )
+        service = _docs_get_service(fx.build_tabs_payload([("t.0", document)]))
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        cards = {s["suggestion_id"]: s for s in result["suggestions"]}
+        assert set(cards) == {"suggest.body1", "suggest.hdr1"}
+        body, header = cards["suggest.body1"], cards["suggest.hdr1"]
+        assert body["segment"] == "body" and body["segment_id"] is None
+        assert header["segment"] == "header" and header["segment_id"] == "kix.h1"
+        assert header["tab_id"] == body["tab_id"] == "t.0"
+        # The ranges overlap numerically: [6,10) in the body, [5,9) in the
+        # header. Only the segment tells them apart.
+        assert body["start_index"] < header["end_index"]
+        assert header["start_index"] < body["end_index"]
+
+    @pytest.mark.asyncio
     async def test_multi_tab_records_carry_their_tab_id(self):
         service = _docs_get_service(fx.TABS_PAYLOAD_MULTI)
         fn = _unwrap(curated_tools.list_document_suggestions)

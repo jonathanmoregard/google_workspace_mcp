@@ -141,7 +141,11 @@ Priority order, by value per line of code:
    **~7,300 estimated tokens**. It is also exactly what a rule list needs:
    every predicate in all four stress tasks is decidable from those six
    fields. This alone changes the shape of the problem and is the single
-   highest-value change.
+   highest-value change. (Dropping `segment`, `segment_id` and `tab_id` was a
+   mistake in this recommendation, corrected on 2026-07-31 -- see [What was
+   built](#what-was-built-2026-07-31). Every predicate is decidable without
+   them; no *write* is, because an index without its segment and tab is not
+   an address.)
 2. **`page_size` / `page_token`.** Bounded responses, so a review can be
    worked incrementally and a re-read after writes costs one page rather than
    the document. Pagination must be stable across accept/reject, which
@@ -204,10 +208,20 @@ defaults against every-field-one-response:
 
 | cards | `list` full | `list` default | cut | `review_view` full | `review_view` default | cut | one read of each (est. tokens) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 30 | 23,732 | 6,117 | 74.2% | 33,727 | 13,136 | 61.1% | 16,423 -> 5,810 |
-| 60 | 47,736 | 11,703 | 75.5% | 44,588 | 19,036 | 57.3% | 26,121 -> 9,014 |
-| 90 | 70,354 | 16,837 | 76.1% | 45,349 | 20,956 | 53.8% | 32,683 -> 11,041 |
-| 120 | 93,636 | 21,952 | 76.6% | 54,980 | 23,954 | 56.4% | 41,811 -> 13,280 |
+| 30 | 23,732 | 7,556 | 68.2% | 33,727 | 13,136 | 61.1% | 16,423 -> 6,210 |
+| 60 | 47,736 | 14,642 | 69.3% | 44,588 | 19,036 | 57.3% | 26,121 -> 9,830 |
+| 90 | 70,354 | 21,276 | 69.8% | 45,349 | 20,956 | 53.8% | 32,683 -> 12,274 |
+| 120 | 93,636 | 27,891 | 70.2% | 54,980 | 23,954 | 56.4% | 41,811 -> 14,932 |
+
+An earlier revision of this table read 74.2–76.6% for the `list` cut. That
+number was bought by dropping `segment`, `segment_id` and `tab_id` from the
+summary record, which was wrong: Docs indexes are unique only within a
+`(tabId, segmentId)` pair, and `suggest_doc_edit` defaults to the body of the
+default tab, so a summary card carrying a bare `start_index` let an agent aim
+a footnote's or a header's or a second tab's local index at the body with
+nothing in the response to warn it. Putting the three fields back costs ~48
+characters a card (summary is now ~232–252 chars/card, was ~183–204) and
+takes the cut to **68.2–70.2%**. The honest headline is the one above.
 
 ### Four deviations from the recommendation, and why
 

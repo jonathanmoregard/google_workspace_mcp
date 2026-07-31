@@ -114,18 +114,28 @@ async def list_document_suggestions(
     characters and a real client answered that with "result exceeds maximum
     allowed tokens" and spilled it to a file the agent could not open -- the
     agent never saw a single suggestion id. A default response that cannot be
-    delivered is not the conservative choice. ``summary`` costs ~172
+    delivered is not the conservative choice. ``summary`` costs ~217
     characters per card and keeps everything a decision needs:
     ``suggestion_id``, ``type``, ``author`` (the display name as a plain
     string), ``summary_text`` (Google's own label, e.g. ``Replace: "x" with
-    "y"``), ``start_index``, ``end_index`` and ``status``. What it omits is
-    listed in the response's ``omitted_fields``.
+    "y"``), ``segment``, ``segment_id``, ``tab_id``, ``start_index``,
+    ``end_index`` and ``status``. What it omits is listed in the response's
+    ``omitted_fields``.
+
+    **An index is only meaningful together with its segment and tab.** Docs
+    counts indexes per ``(tabId, segmentId)``, so ``start_index`` 412 in a
+    footnote and 412 in the body are different places. Every record therefore
+    carries ``segment`` (``body``/``header``/``footer``/``footnote``),
+    ``segment_id`` (null for the body) and ``tab_id`` (null on a single-tab
+    or GA read), in BOTH field modes. Pass those same values back to
+    ``suggest_doc_edit`` / ``create_anchored_doc_comment``: those tools
+    default to the body of the default tab, so a header or footnote index
+    used without them lands in the wrong segment.
 
     **fields='full'** restores every field: ``pre_text`` (base text of the
     affected range: all insertions stripped, all deletions kept),
     ``post_text`` (that range with this suggestion -- and only this one --
     applied), the two ~40-char context windows computed on the base text,
-    segment location (body/header/footer/footnote incl. segment id), tab id,
     table flag, ``create_time``, ``author`` as the full
     display_name/me/anonymous/user object, ``author_source`` and the thread's
     ``replies``. Use it with a small ``page_size`` when you need the

@@ -24,6 +24,9 @@ def record(
     end: int = 10,
     status: str = "OPEN",
     kind: str = "insertion",
+    segment: str = "body",
+    segment_id: str | None = None,
+    tab_id: str | None = "t.0",
 ) -> dict:
     """One analysis record with every field the full mode reports."""
     return {
@@ -33,9 +36,9 @@ def record(
         "post_text": f"post-{sid}",
         "context_before": "before",
         "context_after": "after",
-        "segment": "body",
-        "segment_id": None,
-        "tab_id": "t.0",
+        "segment": segment,
+        "segment_id": segment_id,
+        "tab_id": tab_id,
         "in_table": False,
         "start_index": start,
         "end_index": end,
@@ -116,6 +119,76 @@ class TestProjection:
     def test_unknown_field_mode_is_rejected(self):
         with pytest.raises(ValueError, match="Invalid fields"):
             listing(ladder(1), fields="everything")
+
+
+class TestSummaryIsAddressable:
+    """A summary card must be enough to write back to the RIGHT place.
+
+    Docs indexes are unique only within a ``(tabId, segmentId)`` pair, and
+    ``suggest_doc_edit`` defaults to the body of the default tab. A card that
+    carried a bare ``start_index`` would therefore let an agent aim a
+    footnote's index at the body -- silently, since nothing in the response
+    would say the card was not in the body.
+    """
+
+    def test_summary_carries_the_disambiguators(self):
+        projected = rp.project(record("s.1"), rp.FIELDS_SUMMARY)
+        assert {"segment", "segment_id", "tab_id"} <= set(projected)
+
+    def test_a_footnote_card_is_distinguishable_from_a_body_card(self):
+        records = [
+            record("s.body", start=6, end=10),
+            record(
+                "s.note",
+                start=6,
+                end=10,
+                segment="footnote",
+                segment_id="kix.fn1",
+                tab_id="t.0",
+            ),
+        ]
+        cards = {s["suggestion_id"]: s for s in listing(records)["suggestions"]}
+        assert cards["s.body"]["segment"] == "body"
+        assert cards["s.body"]["segment_id"] is None
+        assert cards["s.note"]["segment"] == "footnote"
+        assert cards["s.note"]["segment_id"] == "kix.fn1"
+        # Identical indexes, different places: without the two fields above
+        # the cards are indistinguishable.
+        assert cards["s.body"]["start_index"] == cards["s.note"]["start_index"]
+
+    def test_a_second_tabs_card_names_its_tab(self):
+        records = [
+            record("s.one", tab_id="t.0"),
+            record("s.two", tab_id="t.second"),
+        ]
+        cards = {s["suggestion_id"]: s for s in listing(records)["suggestions"]}
+        assert cards["s.one"]["tab_id"] == "t.0"
+        assert cards["s.two"]["tab_id"] == "t.second"
+
+    def test_the_write_tools_arguments_are_all_present(self):
+        """The exact keyword arguments ``suggest_doc_edit`` takes to target a
+        range: nothing about the write is a guess from a summary card."""
+        card = rp.project(
+            record("s.1", segment="header", segment_id="kix.h1", tab_id="t.0"),
+            rp.FIELDS_SUMMARY,
+        )
+        assert {
+            "start_index": card["start_index"],
+            "end_index": card["end_index"],
+            "segment_id": card["segment_id"],
+            "tab_id": card["tab_id"],
+        } == {
+            "start_index": 0,
+            "end_index": 10,
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+        }
+
+    def test_the_disambiguators_are_not_listed_as_omitted(self):
+        for name in ("segment", "segment_id", "tab_id"):
+            assert name not in rp.SUMMARY_OMITTED_FIELDS
+        notice = listing(ladder(1))["notice"]
+        assert "segment" not in notice
 
 
 # ---------------------------------------------------------------------------

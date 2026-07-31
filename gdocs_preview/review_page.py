@@ -55,27 +55,41 @@ LIST_FIELD_MODES = (FIELDS_SUMMARY, FIELDS_FULL)
 #: What ``fields="summary"`` keeps. Chosen against the stress corpus: every
 #: predicate in all four stress tasks (author, section by index range, edit
 #: size, pure-deletion-ness, overlap with another reviewer's card) is
-#: decidable from these seven values.
+#: decidable from these values.
+#:
+#: **``segment``/``segment_id``/``tab_id`` are not optional metadata; they
+#: are half of the address.** A Docs index is unique only within a
+#: ``(tabId, segmentId)`` pair -- :func:`gdocs_preview.analysis.extract_suggestions`
+#: emits one record per segment per tab, and every index it reports is local
+#: to that segment. ``suggest_doc_edit`` / ``create_anchored_doc_comment``
+#: default ``tab_id=None``/``segment_id=None``, which the API reads as "the
+#: body of the default tab". So a summary card that carried only
+#: ``start_index``/``end_index`` would let an agent take a footnote's or a
+#: header's or a second tab's local index and write it into the body,
+#: silently, with nothing in the response to warn it. They cost ~45
+#: characters a card in the common (body, single-tab) case; being addressable
+#: is what the record is FOR.
 SUMMARY_FIELDS = (
     "suggestion_id",
     "type",
     "author",
     "summary_text",
+    "segment",
+    "segment_id",
+    "tab_id",
     "start_index",
     "end_index",
     "status",
 )
 
 #: What ``fields="summary"`` drops, reported verbatim in the response so the
-#: omission is never something the caller has to infer.
+#: omission is never something the caller has to infer. Nothing here is
+#: needed to ADDRESS a suggestion -- only to read its text.
 SUMMARY_OMITTED_FIELDS = (
     "pre_text",
     "post_text",
     "context_before",
     "context_after",
-    "segment",
-    "segment_id",
-    "tab_id",
     "in_table",
     "create_time",
     "author_source",
@@ -84,10 +98,10 @@ SUMMARY_OMITTED_FIELDS = (
 
 #: Default page size per field mode. Sized in BYTES, not cards: the binding
 #: constraint is what a client will deliver in one tool result, and a card
-#: costs ~780 characters in ``full`` and ~172 in ``summary`` (measured across
-#: all four stress tiers, flat per card). Both defaults land a full page at
-#: roughly 31-35 KB, comfortably under the ~57 KB at which the observed
-#: client began spilling tool output to a file the agent could not read.
+#: costs ~780 characters in ``full`` and ~232-252 in ``summary`` (measured
+#: across all four stress tiers, flat per card). Both defaults land a full
+#: page at roughly 31-48 KB, under the ~57 KB at which the observed client
+#: began spilling tool output to a file the agent could not read.
 DEFAULT_PAGE_SIZE = {FIELDS_SUMMARY: 200, FIELDS_FULL: 40}
 
 #: Hard ceiling on an explicitly requested page size. Above this the response

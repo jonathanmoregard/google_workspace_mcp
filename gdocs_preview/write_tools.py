@@ -360,7 +360,19 @@ async def suggest_doc_edit(
     both -> replacement (delete, then insert at start_index, in one
     batch). Indexes are UTF-16 code units in the SUGGESTIONS_INLINE
     coordinate space -- take them verbatim from
-    list_document_suggestions / get_doc_review_view output. The edit lands
+    list_document_suggestions / get_doc_review_view output.
+
+    **An index is only half of an address.** Docs numbers each
+    ``(tabId, segmentId)`` pair from its own start, so index 412 in a
+    footnote and index 412 in the body are different places, and this tool
+    defaults to ``segment_id=None``/``tab_id=None``, which means the body of
+    the default tab. Every record from ``list_document_suggestions`` and
+    every paragraph from ``get_doc_review_view`` carries ``segment``,
+    ``segment_id`` and ``tab_id`` alongside its indexes: pass them back here
+    unchanged. Taking a header's or footnote's index without its
+    ``segment_id`` writes into the body at that number, silently.
+
+    The edit lands
     as a *pending suggestion*: nothing is applied to the document until it
     is accepted; it is visible to list_document_suggestions and in the
     Docs UI.

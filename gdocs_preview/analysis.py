@@ -510,6 +510,17 @@ def render_document(
     }
 
 
+#: Written ahead of each tab's body in a MULTI-TAB ``body_text``. The tab id
+#: is spelled out verbatim so it can be passed straight back as ``tab_id``.
+TAB_MARKER_PREFIX = "===== tab_id: "
+TAB_MARKER_SUFFIX = " =====\n"
+
+
+def tab_marker(tab_id: Optional[str]) -> str:
+    """The boundary line introducing one tab's body text."""
+    return f"{TAB_MARKER_PREFIX}{tab_id}{TAB_MARKER_SUFFIX}"
+
+
 def render_tabs(
     tabs: list[tuple[Optional[str], dict[str, Any]]],
 ) -> dict[str, Any]:
@@ -519,6 +530,20 @@ def render_tabs(
     carry their ``tab_id``, and header/footer/footnote texts stay keyed by
     segment id (Docs segment ids are document-wide, not per-tab). A
     single-element list reproduces the single-tab output exactly.
+
+    **A multi-tab body is separated by :func:`tab_marker`.** This string is
+    ``get_doc_review_view``'s DEFAULT output, and joining the tabs with
+    nothing at all fused the last line of one tab to the first line of the
+    next -- a sentence that exists in neither tab, presented to a reviewer as
+    the document's prose. Nothing in the response said where the seam was, so
+    an agent asked to "review the introduction" could read across a tab
+    boundary without any signal that it had left the tab it started in, and
+    every index it then quoted would be numbered from the wrong start.
+
+    The marker names the tab it introduces, so the text after it is
+    attributable and the id is ready to hand back as ``tab_id``. A single-tab
+    document (and a GA read, which has one implicit tab) gets no marker at
+    all: there is no seam, and the marker would be noise on the common case.
     """
     merged: dict[str, Any] = {
         "document_id": None,
@@ -530,12 +555,15 @@ def render_tabs(
         "footnotes": {},
         "suggestion_ids": [],
     }
+    multi_tab = len(tabs) > 1
     body_parts: list[str] = []
     for tab_id, document in tabs:
         rendered = render_document(document, tab_id=tab_id)
         if merged["document_id"] is None:
             merged["document_id"] = rendered["document_id"]
             merged["title"] = rendered["title"]
+        if multi_tab:
+            body_parts.append(tab_marker(tab_id))
         body_parts.append(rendered["body_text"])
         merged["paragraphs"].extend(rendered["paragraphs"])
         for key in ("headers", "footers", "footnotes"):

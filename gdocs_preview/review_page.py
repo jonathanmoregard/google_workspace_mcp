@@ -49,6 +49,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 from gdocs_preview.address import (  # noqa: F401 - re-exported for callers
     ADDRESS_FIELDS,
+    SCOPE_FIELDS,
     in_range_scope,
     resolve_range_scope,
 )
@@ -394,12 +395,23 @@ def filter_records(
                 {str(r.get("status")) for r in records if r.get("status")}
             )
         if segment_key is not None or wants_range:
+            # One entry per (tab, segment) actually holding a card, in the
+            # exact shape ``range_scope`` reports and the filters accept, so
+            # a corrected call is a copy rather than a reconstruction. It
+            # used to be a list of "segment:segment_id" strings sitting
+            # beside an unrelated list of tab ids, which in a multi-tab
+            # document is a cross-product the caller has to guess at: a
+            # segment id is only half an address, and 'kix.h1' may exist in
+            # one tab and not the other.
+            seen: list[dict[str, Any]] = []
+            for record in records:
+                if not record.get("segment"):
+                    continue
+                scope = {key: record.get(key) for key in SCOPE_FIELDS}
+                if scope not in seen:
+                    seen.append(scope)
             applied["segments_present"] = sorted(
-                {
-                    f"{r.get('segment')}:{r.get('segment_id')}"
-                    for r in records
-                    if r.get("segment")
-                }
+                seen, key=lambda s: (str(s["tab_id"]), s["segment"], str(s["segment_id"]))
             )
         if tab_key is not None or wants_range:
             # A mistyped tab id used to be the one filter that answered
@@ -797,6 +809,12 @@ def build_review_view(
     addressable half (same characters, plus indexes, styles and the
     suggestion ids touching each paragraph), and ``full`` is both -- the
     shape this tool always returned, kept verbatim for callers that parse it.
+
+    An unwindowed multi-tab ``body_text`` additionally carries
+    :func:`gdocs_preview.analysis.tab_marker` ahead of each tab. A WINDOWED
+    one never does: a window is resolved into exactly one ``(tab, segment)``,
+    so there is no seam to mark, and the recomputation below stays a plain
+    join of the surviving paragraphs.
 
     The window is read in exactly one ``(tab, segment)`` -- the body of the
     document's single tab unless ``segment_id`` / ``tab_id`` say otherwise --

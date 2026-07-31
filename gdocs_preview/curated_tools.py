@@ -393,14 +393,21 @@ async def get_doc_review_view(
     respective clean text.
 
     **fields='text' is the default, deliberately.** The paragraph map's
-    ``text`` values concatenate to exactly ``body_text``, so returning both
-    restates a quarter of the response: measured on a 1,626-word article with
+    ``text`` values concatenate to ``body_text`` (in a multi-tab document,
+    plus a ``===== tab_id: ... =====`` line introducing each tab), so
+    returning both restates a quarter of the response: measured on a
+    1,626-word article with
     120 pending suggestions, the response was 54,901 characters of which the
     paragraph map was 26,269 and ``body_text`` 13,462, and a real client
     spilled that response to a file rather than delivering it. So the default
     returns the readable half.
 
-    - ``fields='text'``: ``body_text`` plus header/footer/footnote texts.
+    - ``fields='text'``: ``body_text`` plus header/footer/footnote texts. In
+      a document with more than one tab each tab's body is introduced by a
+      ``===== tab_id: <id> =====`` line, because the tabs are one string and
+      without it the last line of one tab reads as continuous with the first
+      line of the next. Everything after such a line is numbered from that
+      tab's own start, and the id is what you pass back as ``tab_id``.
     - ``fields='paragraphs'``: the addressable half -- one entry per
       paragraph with segment, tab id, start/end index, text, named style,
       list flag, table flag and the suggestion ids touching it. Same

@@ -279,15 +279,43 @@ class TestMultiTab:
         # Indexes stay per-tab: both tabs' bodies start at 1.
         assert result["suggestions"][1]["start_index"] == 9
 
-    def test_render_tabs_concatenates_and_tags(self):
+    def test_render_tabs_marks_each_tab_and_tags_its_paragraphs(self):
         rendered = render_tabs(
             [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)]
         )
         assert rendered["body_text"] == (
-            "Hello{+ brave+} world.\nTab two {+addition+}.\n"
+            "===== tab_id: t.0 =====\n"
+            "Hello{+ brave+} world.\n"
+            "===== tab_id: t.second =====\n"
+            "Tab two {+addition+}.\n"
         )
         assert {p["tab_id"] for p in rendered["paragraphs"]} == {"t.0", "t.second"}
         assert rendered["suggestion_ids"] == ["suggest.ins1", "suggest.tab2"]
+
+    def test_two_tabs_bodies_do_not_fuse_into_a_sentence_neither_contains(self):
+        """MEDIUM 6: this string is get_doc_review_view's DEFAULT output.
+
+        Joined with nothing, a tab whose body does not end in a newline runs
+        straight into the next tab's first line, producing prose that exists
+        in neither tab -- and nothing in the response says where the seam
+        is, so an agent reviewing "the introduction" can read across a tab
+        boundary and quote indexes numbered from the wrong start.
+        """
+        first = fx.build_doc([fx.paragraph(fx.run("ends without a newline"))])
+        second = fx.build_doc([fx.paragraph(fx.run("starts here.\n"))])
+
+        body = render_tabs([("t.0", first), ("t.second", second)])["body_text"]
+
+        assert "ends without a newlinestarts here." not in body
+        assert body.index("t.second") < body.index("starts here.")
+        # And the marker carries the id in the form tab_id= takes.
+        assert "===== tab_id: t.second =====" in body
+
+    def test_a_single_tab_body_is_unmarked(self):
+        """There is no seam, so the marker would be noise on the common
+        case -- and every single-tab response would change shape."""
+        rendered = render_tabs([("t.0", fx.DOC_PLAIN_INSERTION)])
+        assert rendered["body_text"] == "Hello{+ brave+} world.\n"
 
     def test_single_tab_render_matches_render_document(self):
         merged = render_tabs([(None, fx.DOC_HEADER)])

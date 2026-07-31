@@ -570,6 +570,22 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
         )
     )
     assert echo["created_suggestion_ids"] or echo["verification"], echo
+
+    # And the write's own echo is a complete address too -- it is the only
+    # record the agent has of the suggestion it just made, and the next thing
+    # it does with those indexes is hand them to create_anchored_doc_comment,
+    # which defaults to the BODY.
+    verification = echo["verification"]
+    REPORT.note(f"header-segment write echo: {verification!r}")
+    echoed = verification.get("created_suggestions") or verification.get(
+        "suggestions_at_edit_range"
+    )
+    assert echoed, verification
+    for entry in echoed:
+        assert entry["segment"] == "header", entry
+        assert entry["segment_id"] == header_card["segment_id"], entry
+        assert entry["start_index"] is not None, entry
+
     after = tool_json(
         mcp.call_tool(
             "list_document_suggestions",
@@ -586,6 +602,213 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
         "writing back the header card's own indexes landed in the body: "
         f"{body_after!r}"
     )
+
+
+def test_a_multi_tab_document_never_answers_across_tabs(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """The (tab, segment) half of the address, against a REAL two-tab doc.
+
+    Docs numbers each tab from its own start, so the same local index names
+    a different character in each one. Everything below was unit-tested
+    against fixtures; prod is the oracle for whether its tab ids, its
+    per-tab indexes and its `addDocumentTab` request behave the way those
+    fixtures assume. Multi-tab documents ARE creatable through the API
+    (manage_doc_tab action="create" -> addDocumentTab), so this needs no
+    hand-made document.
+
+    Four claims:
+      1. an index range with no tab_id is REFUSED, not answered from an
+         arbitrary tab;
+      2. naming the tab answers it, and only about that tab;
+      3. a write echo carries the tab it wrote to;
+      4. an accept is verified against the tab it happened in -- both tabs
+         hold the same anchor text here, so a whole-document search would
+         match the wrong one and call it a pass.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-tabs", content="Shared anchor alpha here.")
+
+    created = tool_json(
+        mcp.call_tool(
+            "manage_doc_tab",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "create",
+                "title": "Second tab",
+                "index": 1,
+            },
+        )
+    )
+    REPORT.note(f"manage_doc_tab(create) -> {created!r}")
+    assert created["success"], created
+
+    def _two_tabs():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return listing if len(listing.get("tabs") or []) >= 2 else None
+
+    listing = poll_until(_two_tabs, timeout=30, description="a second tab to appear")
+    tab_ids = [t["tab_id"] for t in listing["tabs"]]
+    REPORT.note(f"two-tab document tabs: {listing['tabs']!r}")
+    assert len(tab_ids) == 2 and all(tab_ids), listing["tabs"]
+    first_tab, second_tab = tab_ids
+
+    # Same words in both tabs, so nothing can be told apart by text alone.
+    populated = tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 1,
+                "text": "Shared anchor bravo here.",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    assert "Error" not in populated, populated
+
+    # One suggestion per tab, at the SAME local index range.
+    for tab in (second_tab, first_tab):
+        tool_json(
+            mcp.call_tool(
+                "suggest_doc_edit",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "start_index": 1,
+                    "end_index": 7,
+                    "text": "EDITED",
+                    "tab_id": tab,
+                },
+            )
+        )
+
+    def _one_per_tab():
+        current = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        found = {r["tab_id"] for r in current["suggestions"]}
+        return current if {first_tab, second_tab} <= found else None
+
+    listing = poll_until(
+        _one_per_tab, timeout=30, description="a suggestion in each tab"
+    )
+    REPORT.note(
+        "per-tab summary cards: "
+        + repr([(r["suggestion_id"], r["tab_id"], r["start_index"]) for r in
+                listing["suggestions"]])
+    )
+
+    # 1. An index range with no tab_id is refused rather than guessed.
+    refused = mcp.call_tool_raw(
+        "list_document_suggestions",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "start_index": 0,
+            "end_index": 500,
+        },
+    )
+    assert refused.is_error, tool_text(refused)[:400]
+    assert "needs a tab_id" in tool_text(refused), tool_text(refused)[:400]
+
+    # 2. Naming the tab answers it, about that tab only.
+    scoped = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 0,
+                "end_index": 500,
+                "tab_id": second_tab,
+            },
+        )
+    )
+    assert scoped["matched_count"] >= 1, scoped
+    assert {r["tab_id"] for r in scoped["suggestions"]} == {second_tab}, scoped
+    assert scoped["filters"]["range_scope"]["tab_id"] == second_tab
+
+    # A mistyped tab id says which tabs exist, the way author/status do.
+    typo = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "tab_id": "t.nope"},
+        )
+    )
+    assert typo["matched_count"] == 0
+    assert sorted(typo["filters"]["tabs_present"]) == sorted(tab_ids), typo["filters"]
+
+    # 3. The write echo says which tab it wrote to.
+    second_card = next(
+        r for r in listing["suggestions"] if r["tab_id"] == second_tab
+    )
+    echo_call = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": second_card["start_index"],
+                "text": "X",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    verification = echo_call["verification"]
+    REPORT.note(f"multi-tab suggest_doc_edit verification: {verification!r}")
+    echoes = verification.get("created_suggestions") or verification.get(
+        "suggestions_at_edit_range"
+    )
+    assert echoes, verification
+    for echo in echoes:
+        assert echo["tab_id"] == second_tab, echo
+        assert echo["segment"] == "body", echo
+
+    # 4. An accept is verified in the tab it happened in. Both tabs read
+    # "Shared anchor ..." so a whole-document search finds the wrong one.
+    after = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "full",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    target = after["suggestions"][0]
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": target["suggestion_id"],
+            },
+        )
+    )
+    resolution = accepted["verification"]
+    REPORT.note(f"multi-tab accept verification: {resolution!r}")
+    assert resolution["resolved_suggestion"]["tab_id"] == second_tab, resolution
+    if resolution["resulting_text"] is not None:
+        assert "bravo" in resolution["resulting_text"], (
+            "the accept in tab 2 was verified against text from another tab: "
+            f"{resolution['resulting_text']!r}"
+        )
+        assert "alpha" not in resolution["resulting_text"], resolution
 
 
 def test_review_view_fields_and_window_against_the_real_api(

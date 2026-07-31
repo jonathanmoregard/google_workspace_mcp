@@ -410,9 +410,14 @@ def filter_records(
             for record in records:
                 if not record.get("segment"):
                     continue
-                scope = {key: record.get(key) for key in SCOPE_FIELDS}
-                if scope not in seen:
-                    seen.append(scope)
+                # NOT ``scope``: that name holds the RESOLVED scope this call
+                # was answered in, and ``applied["range_scope"]`` above
+                # survived the rebinding only because it stored the object
+                # before this loop ran. A reordering would have silently
+                # published the last record's segment as the query's scope.
+                record_scope = {key: record.get(key) for key in SCOPE_FIELDS}
+                if record_scope not in seen:
+                    seen.append(record_scope)
             applied["segments_present"] = sorted(
                 seen,
                 key=lambda s: (str(s["tab_id"]), s["segment"], str(s["segment_id"])),

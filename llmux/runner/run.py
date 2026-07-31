@@ -470,8 +470,11 @@ def dry_run(scenarios: Sequence[Scenario], models: Sequence[str]) -> int:
     print(f"dry run: {len(scenarios)} scenario(s) x {len(models)} model(s)")
     claude_path = session_mod.claude_available()
     print(f"  claude CLI: {claude_path or 'NOT FOUND (real runs would fail)'}")
-    if not claude_path:
-        failures += 1
+    # Missing claude is reported, not counted as a dry-run failure: a dry
+    # run's job is to validate scenarios, servers and graders without
+    # spending tokens, and it must be runnable on machines without the CLI
+    # installed (CI is the obvious case). A real run's `--models` path will
+    # still refuse to spawn without it.
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="llmux-dry-") as tmp:

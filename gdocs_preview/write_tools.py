@@ -271,58 +271,41 @@ _NOT_A_FAILED_WRITE = (
 )
 
 
-def _unlocated_note(
-    reason: str,
-    *,
-    suggestion_id: str,
-    record: Optional[dict[str, Any]],
-    read: "_PostWriteRead",
-) -> str:
-    """One sentence saying why no verdict was reached, and what to do."""
-    if reason == "suggestion_not_listed":
-        return (
-            f"this session never listed suggestion {suggestion_id!r}, so there "
-            f"is no expected text to compare the document against. "
-            f"{_NOT_A_FAILED_WRITE} Call list_document_suggestions before "
-            "resolving to get the before/after text of the card."
-        )
-    if reason == "ambiguous_tab":
-        tabs = sorted({t for t in read.tab_ids if t})
-        return (
-            f"suggestion {suggestion_id!r} was listed without a tab_id and this "
-            f"read has {len(tabs)} tabs ({', '.join(tabs)}), so the text at its "
-            "range cannot be located: an index means a different place in each "
-            f"tab. {_NOT_A_FAILED_WRITE} Re-read with "
-            "list_document_suggestions(tab_id=...) to see the resulting text."
-        )
-    if reason == "segment_not_in_read":
-        where = (
-            f"tab={(record or {}).get('tab_id')!r}, "
-            f"segment={(record or {}).get('segment_id')!r}"
-        )
-        return (
-            f"the post-write read does not contain the ({where}) that "
-            f"suggestion {suggestion_id!r} was listed in, so its range could "
-            f"not be located -- read_source is {read.source!r}, and the GA "
-            "documents.get carries no tabs at all, so a read that degraded "
-            f"loses every tab id. {_NOT_A_FAILED_WRITE} Retry the read."
-        )
-    if reason == AMBIGUOUS_ANCHOR:
-        return (
-            f"the base text around suggestion {suggestion_id!r}'s range repeats "
-            "in that segment, so more than one place reads as its range and "
-            "they do not agree on whether the resolution landed. No verdict is "
-            f"reported rather than one picked at random. {_NOT_A_FAILED_WRITE} "
-            "Read the range back with get_doc_review_view(start_index=..., "
-            "end_index=...) to see the one place you resolved."
-        )
-    if reason == "nothing_to_compare":
-        return (
-            f"suggestion {suggestion_id!r} was listed without the before/after "
-            "text a resolution is checked against, so there was nothing to "
-            f"compare the document to. {_NOT_A_FAILED_WRITE} Call "
-            "list_document_suggestions(fields='full') before resolving."
-        )
+def _note_suggestion_not_listed(*, suggestion_id: str, record: Any, read: Any) -> str:
+    return (
+        f"this session never listed suggestion {suggestion_id!r}, so there "
+        f"is no expected text to compare the document against. "
+        f"{_NOT_A_FAILED_WRITE} Call list_document_suggestions before "
+        "resolving to get the before/after text of the card."
+    )
+
+
+def _note_ambiguous_tab(*, suggestion_id: str, record: Any, read: Any) -> str:
+    tabs = sorted({t for t in read.tab_ids if t})
+    return (
+        f"suggestion {suggestion_id!r} was listed without a tab_id and this "
+        f"read has {len(tabs)} tabs ({', '.join(tabs)}), so the text at its "
+        "range cannot be located: an index means a different place in each "
+        f"tab. {_NOT_A_FAILED_WRITE} Re-read with "
+        "list_document_suggestions(tab_id=...) to see the resulting text."
+    )
+
+
+def _note_segment_not_in_read(*, suggestion_id: str, record: Any, read: Any) -> str:
+    where = (
+        f"tab={(record or {}).get('tab_id')!r}, "
+        f"segment={(record or {}).get('segment_id')!r}"
+    )
+    return (
+        f"the post-write read does not contain the ({where}) that "
+        f"suggestion {suggestion_id!r} was listed in, so its range could "
+        f"not be located -- read_source is {read.source!r}, and the GA "
+        "documents.get carries no tabs at all, so a read that degraded "
+        f"loses every tab id. {_NOT_A_FAILED_WRITE} Retry the read."
+    )
+
+
+def _note_anchor_not_found(*, suggestion_id: str, record: Any, read: Any) -> str:
     return (
         f"the base text immediately before suggestion {suggestion_id!r}'s range "
         "is no longer in that segment, so the range could not be located -- "
@@ -331,6 +314,80 @@ def _unlocated_note(
         f"this write. {_NOT_A_FAILED_WRITE} Re-read the document to see its "
         "current state."
     )
+
+
+def _note_ambiguous_anchor(*, suggestion_id: str, record: Any, read: Any) -> str:
+    return (
+        f"the base text around suggestion {suggestion_id!r}'s range repeats "
+        "in that segment, so more than one place reads as its range and "
+        "they do not agree on whether the resolution landed. No verdict is "
+        f"reported rather than one picked at random. {_NOT_A_FAILED_WRITE} "
+        "Read the range back with get_doc_review_view(start_index=..., "
+        "end_index=...) to see the one place you resolved."
+    )
+
+
+def _note_nothing_to_compare(*, suggestion_id: str, record: Any, read: Any) -> str:
+    return (
+        f"suggestion {suggestion_id!r} was listed without the before/after "
+        "text a resolution is checked against, so there was nothing to "
+        f"compare the document to. {_NOT_A_FAILED_WRITE} Call "
+        "list_document_suggestions(fields='full') before resolving."
+    )
+
+
+#: One sentence per reason code, dispatched rather than fallen through to.
+#: :func:`_unlocated_note` used to be an if-chain whose final unguarded
+#: ``return`` was the ``anchor_not_found`` sentence, so a reason nobody had
+#: written a sentence for did not go quiet -- it was answered with "the
+#: likeliest cause is a concurrent edit by another editor", a confident
+#: diagnosis of a situation that had not been diagnosed at all. A mapping
+#: cannot fall through, and the completeness check below turns "a reason with
+#: no sentence" into an ImportError rather than a wrong story about a
+#: customer's document.
+_UNLOCATED_NOTES = {
+    "suggestion_not_listed": _note_suggestion_not_listed,
+    "ambiguous_tab": _note_ambiguous_tab,
+    "segment_not_in_read": _note_segment_not_in_read,
+    ANCHOR_NOT_FOUND: _note_anchor_not_found,
+    AMBIGUOUS_ANCHOR: _note_ambiguous_anchor,
+    "nothing_to_compare": _note_nothing_to_compare,
+}
+
+if set(_UNLOCATED_NOTES) != set(UNLOCATED_REASONS):  # pragma: no cover - import guard
+    raise RuntimeError(
+        "every reason in UNLOCATED_REASONS needs its own sentence in "
+        "_UNLOCATED_NOTES (and vice versa); the difference is "
+        f"{set(_UNLOCATED_NOTES) ^ set(UNLOCATED_REASONS)}"
+    )
+
+
+def _unlocated_note(
+    reason: str,
+    *,
+    suggestion_id: str,
+    record: Optional[dict[str, Any]],
+    read: "_PostWriteRead",
+) -> str:
+    """One sentence saying why no text comparison was made, and what to do."""
+    builder = _UNLOCATED_NOTES.get(reason)
+    if builder is None:
+        # A reason from outside UNLOCATED_REASONS. Logged rather than raised:
+        # this runs after a landed write, and turning a verification gap into
+        # an exception hands the agent a failure for a mutation that
+        # succeeded -- see _post_write_read. The import guard above is where
+        # this is meant to be caught.
+        logger.error(
+            f"[docs_preview] no note is written for unlocated reason "
+            f"{reason!r}; add one to _UNLOCATED_NOTES"
+        )
+        return (
+            f"the text at suggestion {suggestion_id!r}'s range could not be "
+            f"compared, and the reason given ({reason!r}) is one this build "
+            f"has no explanation for. {_NOT_A_FAILED_WRITE} Re-read the "
+            "document to see its current state."
+        )
+    return builder(suggestion_id=suggestion_id, record=record, read=read)
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ Mocked Google service objects only -- no network. Covers:
 """
 
 import json
+import logging
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -3303,6 +3304,41 @@ class TestAnUnlocatedWindowSaysWhy:
             )
             assert "s.1" in note or "post-write read" in note
             assert "`still_pending` is the evidence" in note
+
+    def test_every_reason_has_its_OWN_note(self):
+        """Round 5 MEDIUM: the fallback answered every unmatched reason with
+        the ``anchor_not_found`` sentence.
+
+        ``_unlocated_note`` ended in an unguarded ``return`` of the
+        anchor-miss diagnosis -- "the likeliest cause is a concurrent edit by
+        another editor" -- so a reason added to ``UNLOCATED_REASONS`` without
+        a sentence of its own did not go quiet, it acquired a confident and
+        wrong story about somebody else editing the document. Asserting a
+        note *exists* per reason (the test above) did not catch that, because
+        the fallback is a note.
+        """
+        read = Mock(tab_ids=["t.0", "t.second"], source="preview_threads")
+        notes = {
+            reason: write_tools._unlocated_note(
+                reason, suggestion_id="s.1", record=self.RECORD, read=read
+            )
+            for reason in write_tools.UNLOCATED_REASONS
+        }
+        assert len(set(notes.values())) == len(write_tools.UNLOCATED_REASONS), notes
+
+    def test_a_reason_nobody_wrote_a_sentence_for_gets_no_diagnosis(self, caplog):
+        """An unknown code is a bug in this module, not a concurrent edit."""
+        read = Mock(tab_ids=["t.0"], source="preview_threads")
+        with caplog.at_level(logging.ERROR, logger="gdocs_preview.write_tools"):
+            note = write_tools._unlocated_note(
+                "reason_from_the_future",
+                suggestion_id="s.1",
+                record=self.RECORD,
+                read=read,
+            )
+        assert "reason_from_the_future" in note
+        assert "concurrent edit" not in note
+        assert "reason_from_the_future" in caplog.text
 
 
 class TestAStillPendingSuggestionIsNeverAMatch:

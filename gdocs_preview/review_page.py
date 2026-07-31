@@ -289,6 +289,28 @@ def in_range_scope(record: dict[str, Any], scope: dict[str, Any]) -> bool:
     return True
 
 
+def normalize_filter_value(value: Any, parameter: str) -> Optional[str]:
+    """A filter argument that was passed has to MEAN something.
+
+    ``author="  "`` used to normalise to ``None``, at which point the filter
+    was silently dropped and the response was every suggestion in the
+    document -- a filter that fails OPEN, and the one failure mode a review
+    tool cannot afford, since the caller then resolves cards it never asked
+    to see. Blank is refused; omitted still means "no filter".
+    """
+    if value is None:
+        return None
+    text = str(value)
+    if not text.strip():
+        raise ValueError(
+            f"{parameter}={value!r} is blank. A blank filter is refused rather "
+            "than dropped: dropping it would answer with EVERY suggestion in "
+            f"the document, which is the opposite of filtering. Omit "
+            f"{parameter} to list everything, or pass a value."
+        )
+    return text
+
+
 def filter_records(
     records: Sequence[dict[str, Any]],
     *,
@@ -326,14 +348,14 @@ def filter_records(
             "end_index), matching the Docs convention that endIndex is "
             "exclusive. For a single position, pass end_index=start_index+1."
         )
-    author_key = (
-        author.strip().lower() if isinstance(author, str) and author.strip() else None
-    )
-    status_key = (
-        status.strip().upper() if isinstance(status, str) and status.strip() else None
-    )
-    segment_key = segment_id.strip() if isinstance(segment_id, str) else None
-    tab_key = tab_id.strip() if isinstance(tab_id, str) else None
+    author = normalize_filter_value(author, "author")
+    status = normalize_filter_value(status, "status")
+    segment_id = normalize_filter_value(segment_id, "segment_id")
+    tab_id = normalize_filter_value(tab_id, "tab_id")
+    author_key = author.strip().lower() if author is not None else None
+    status_key = status.strip().upper() if status is not None else None
+    segment_key = segment_id.strip() if segment_id is not None else None
+    tab_key = tab_id.strip() if tab_id is not None else None
     scope = (
         resolve_range_scope(records, segment_id=segment_key, tab_id=tab_key)
         if wants_range
@@ -594,21 +616,36 @@ def paginate(
 # ---------------------------------------------------------------------------
 
 
-def _summary_notice(read_source: str, ga_source: str) -> str:
-    base = (
+def _summary_notice() -> str:
+    return (
         "fields='summary': one line per suggestion, omitting "
         + ", ".join(SUMMARY_OMITTED_FIELDS)
         + ". Ask for fields='full' (with a small page_size) when you need the "
         "before/after text of a card."
     )
-    if read_source == ga_source:
-        base += (
-            " This read degraded to the GA documents.get, which carries no "
-            "suggestion threads, so `summary_text`, `author` and `status` are "
-            "null on every record here -- fields='full' is the only way to see "
-            "what these suggestions change."
-        )
-    return base
+
+
+#: Thread-derived fields: present only on the Developer Preview read.
+THREAD_DERIVED_FIELDS = ("author", "status", "create_time", "summary_text", "replies")
+
+
+def _degraded_notice() -> str:
+    """Said in BOTH field modes, because it is a property of the read.
+
+    It used to be appended to the ``summary`` notice only, on the reasoning
+    that ``summary`` leans on ``summary_text``. But ``author`` and ``status``
+    are null in ``full`` too, and a reviewer who reads a page of nulls in
+    ``full`` concludes the same wrong thing -- that the suggestions have no
+    author -- with more confidence, having asked for everything.
+    """
+    return (
+        "This read degraded to the GA documents.get, which carries no "
+        "suggestion threads: " + ", ".join(f"`{f}`" for f in THREAD_DERIVED_FIELDS)
+        + " are null on EVERY record here, in both field modes. That is a "
+        "property of this read, not of the document -- do not conclude that a "
+        "suggestion has no author or is not open. `pre_text`/`post_text` "
+        "(fields='full') still show what each suggestion changes."
+    )
 
 
 def build_listing(
@@ -635,9 +672,36 @@ def build_listing(
     narrower numbers, and they are always present even when nothing was
     narrowed, so "did I see everything?" is answered by comparing three
     integers rather than by trusting a default.
+
+    On a read that degraded to the GA ``documents.get`` the thread-derived
+    fields are null on every record, so an ``author`` or ``status`` filter is
+    REFUSED rather than answered: ``matched_count: 0`` with
+    ``authors_present: []`` is a true statement about the read and a false
+    one about the document, and "no suggestions by Dana" is what a reviewer
+    takes away from it.
     """
     records = list(analysis.get("suggestions") or [])
     fields = validate_fields(fields, LIST_FIELD_MODES)
+    author = normalize_filter_value(author, "author")
+    status = normalize_filter_value(status, "status")
+    degraded = read_source == ga_source
+    if degraded:
+        blocked = [
+            name
+            for name, value in (("author", author), ("status", status))
+            if value is not None
+        ]
+        if blocked:
+            raise ValueError(
+                f"{' and '.join(blocked)} cannot be filtered on this read: it "
+                "degraded to the GA documents.get, which carries no suggestion "
+                f"threads, so {' and '.join(blocked)} is null on every record "
+                "and the filter can only ever match nothing. An empty page "
+                "here would read as 'there are no such suggestions' when the "
+                "truth is 'this read cannot see them'. Re-run without the "
+                "filter -- every suggestion is still listed -- or restore the "
+                f"Developer Preview read (read_source={read_source!r})."
+            )
     size, size_note = resolve_page_size(page_size, fields)
     kept, applied = filter_records(
         records,
@@ -672,7 +736,10 @@ def build_listing(
     }
     if fields == FIELDS_SUMMARY:
         result["omitted_fields"] = list(SUMMARY_OMITTED_FIELDS)
-        result["notice"] = _summary_notice(read_source, ga_source)
+        result["notice"] = _summary_notice()
+    if degraded:
+        result["degraded_notice"] = _degraded_notice()
+        result["null_fields"] = list(THREAD_DERIVED_FIELDS)
     if page["has_more"]:
         result["notice_page"] = (
             f"This is a PAGE, not the whole set: {len(window)} of "

@@ -154,8 +154,12 @@ async def list_document_suggestions(
     ``summary_text``, ``replies``) come from the Developer Preview read. If
     that is unavailable the tool still returns every suggestion, with those
     fields null, ``author_source: "unavailable"`` (never guessed) and
-    ``read_source: "ga_documents_get"``; the summary notice says so
-    explicitly, because ``summary`` mode leans on ``summary_text``.
+    ``read_source: "ga_documents_get"``. Such a response carries
+    ``degraded_notice`` and ``null_fields`` in BOTH field modes -- the nulls
+    are a property of the read, not of the document -- and an ``author`` or
+    ``status`` filter is REFUSED on it rather than answered with an empty
+    page, because ``matched_count: 0`` there means "this read cannot see
+    authors", not "there are none".
 
     Args:
         user_google_email (str): The user's Google email address. Required.

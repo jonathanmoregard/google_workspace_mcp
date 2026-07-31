@@ -338,6 +338,19 @@ class TestFilters:
     def test_no_filters_means_an_empty_filter_block(self):
         assert listing(ladder(3))["filters"] == {}
 
+    @pytest.mark.parametrize(
+        "parameter", ["author", "status", "segment_id", "tab_id"]
+    )
+    def test_a_blank_filter_is_refused_rather_than_dropped(self, parameter):
+        """Fail-open is the one failure mode a review filter cannot have:
+        a dropped filter answers with every suggestion in the document, and
+        the caller then resolves cards it never asked to see."""
+        with pytest.raises(ValueError, match="is blank"):
+            listing(ladder(3), **{parameter: "   "})
+
+    def test_an_omitted_filter_still_means_everything(self):
+        assert listing(ladder(3), author=None)["matched_count"] == 3
+
 
 class TestRangeScope:
     """An index range names one ``(tab, segment)``, never raw numbers.

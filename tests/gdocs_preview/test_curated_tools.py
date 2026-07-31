@@ -282,20 +282,82 @@ class TestListSuggestions:
         }
 
     @pytest.mark.asyncio
-    async def test_summary_on_a_degraded_read_says_the_labels_are_missing(self):
-        """summary leans on summary_text, which only the preview read
-        supplies. On the GA fallback the notice has to say so, or the agent
-        reads a page of nulls and concludes the edits are empty."""
+    async def test_a_degraded_read_says_the_labels_are_missing_in_both_modes(self):
+        """The nulls are a property of the READ, so both field modes have to
+        say so. A reviewer who reads a page of nulls in ``full`` concludes
+        the suggestions have no author with more confidence, having asked
+        for everything."""
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        for mode in ("summary", "full"):
+            service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+            result = json.loads(
+                await fn(
+                    service,
+                    user_google_email=EMAIL,
+                    document_id="doc-fixture-1",
+                    fields=mode,
+                )
+            )
+            assert result["read_source"] == curated_tools.READ_SOURCE_GA
+            assert "null on EVERY record" in result["degraded_notice"], mode
+            assert "author" in result["null_fields"], mode
+            assert "status" in result["null_fields"], mode
+
+    @pytest.mark.asyncio
+    async def test_an_author_filter_on_a_degraded_read_is_refused(self):
+        """`matched_count: 0, authors_present: []` is a true statement about
+        the read and a false one about the document: the reviewer reads it as
+        'there are no suggestions by Dana'."""
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        with pytest.raises(UserInputError, match="cannot be filtered"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                author="Dana",
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_status_filter_on_a_degraded_read_is_refused(self):
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        with pytest.raises(UserInputError, match="cannot be filtered"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                status="OPEN",
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_read_still_lists_everything_unfiltered(self):
         service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
         fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
             await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
         )
+        assert result["suggestion_count"] == 1
+        assert result["matched_count"] == 1
 
-        assert result["read_source"] == curated_tools.READ_SOURCE_GA
-        assert "fields='full'" in result["notice"]
-        assert "null on every record" in result["notice"]
+    @pytest.mark.asyncio
+    async def test_a_blank_author_is_refused_not_dropped(self):
+        """A dropped filter answers with every suggestion in the document --
+        a filter that fails open."""
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        with pytest.raises(UserInputError, match="is blank"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                author="   ",
+            )
 
     @pytest.mark.asyncio
     async def test_http_error_from_the_preview_read_also_degrades(self):

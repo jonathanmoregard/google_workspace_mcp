@@ -1,0 +1,838 @@
+# HANDOVER — `docs_preview`, a Google Docs review surface
+
+Written for an AI agent picking this repo up cold. It assumes you can read
+code, so it points at files rather than restating them; everything below that
+is load-bearing is stated outright.
+
+Verified against the tree at commit `433218a` on branch `docs-preview`,
+2026-07-31.
+
+---
+
+## 1. What this is
+
+A fork of [`taylorwilsdon/google_workspace_mcp`](https://github.com/taylorwilsdon/google_workspace_mcp)
+(a Python MCP server for Google Workspace) adding one service: **`docs_preview`**
+— 7 tools that let an agent work with Google Docs **comments** and **edit
+suggestions** the way a human reviewer does.
+
+Built for **the client**, who publish web pages out of Google Docs and run
+heavy comment/suggestion review over them.
+
+Requirements it satisfies (from the requester, recorded in
+[`docs/plans/2026-07-13-mvp.md`](docs/plans/2026-07-13-mvp.md)):
+
+| requirement | where |
+|---|---|
+| comments and suggestions each carry **id + author** | `author` on every record and reply; from the preview thread read |
+| replies | `replies[]` on both thread kinds; `reply_to_doc_thread` writes them |
+| quoted / commented text | `quoted_text` (the API's `plainTextQuote`) on comment threads |
+| pre/post text for a suggestion | computed `pre_text` / `post_text` + two ~40-char context windows |
+| read / edit / write / create | `get_doc_review_view`, `suggest_doc_edit`, upstream `gdocs` tools, `create_anchored_doc_comment` |
+| accept / reject | `manage_document_suggestion` |
+
+**Reactions are DESCOPED.** No API surface exposes comment reactions —
+not Docs, not Drive. The only way to reach them is a browser sidecar, which
+was explicitly rejected as a design constraint ("no browser automation").
+See `docs/plans/2026-07-13-mvp.md:37` and
+`docs/plans/2026-07-14-native-integration.md:572`.
+
+The preview write/thread surface is the Google Docs API **Developer Preview**
+launched 2026-07-07. It is not in the public discovery document and is gated
+on enrollment (§2). Everything the GA `documents.get` can answer still works
+without enrollment, in a clearly-flagged degraded mode (§4.6).
+
+---
+
+## 2. Setup
+
+### 2.1 Developer Preview enrollment — do this first, it is the long pole
+
+The preview request types (`insertComment`, `acceptSuggestion`,
+`rejectSuggestion`, `addCommentReply`, `writeControl.writeMode: SUGGEST`, …)
+and the thread-bearing read only exist for **enrolled projects**. Apply at
+<https://developers.google.com/workspace/preview>.
+
+- The repo treats enrollment as a property of the **GCP project** the OAuth
+  client belongs to, not of the Google account — that is what the error
+  message says (`_execute_preview_batch_update` in
+  `gdocs_preview/write_tools.py`: "enrollment for the authenticated project")
+  and what `read_for_review` in `gdocs_preview/preview_read.py` relies
+  on. **Caveat, stated honestly:** whether enrollment propagates per-project
+  or per-account is still listed as an open UNCERTAIN item
+  (`docs/preview-api-reference.md:420`, item 3) — it has never been tested
+  with a second, non-enrolled project. Either way, the client having org-level
+  approval does not automatically cover a *new* GCP project: register the
+  project you actually build the OAuth client in.
+- Without enrollment the server still starts and every read still answers —
+  see §4.6.
+
+### 2.2 GCP project + APIs
+
+1. <https://console.cloud.google.com> → create or pick a project.
+2. Enable **Google Docs API** and **Google Drive API**. (Drive is not
+   optional: the comment factory and the e2e scratch-doc teardown both go
+   through Drive v3.)
+3. OAuth consent screen → External → Testing → add the reviewing account as a
+   test user.
+4. Credentials → Create credentials → OAuth client ID → **Desktop app** →
+   download the JSON → save it at `credentials/oauth_client.json` in this
+   repo. `credentials/` is gitignored; keep it that way.
+
+Scopes requested are `BASE_SCOPES + DOCS_PREVIEW_SCOPES`
+(`auth/scopes.py`, `e2e/gating.py:31`): Docs readonly + write, Drive full +
+readonly + file. Full Drive scope is deliberate — it is what keeps comment
+operations visible to collaborators, matching upstream `core/comments.py`.
+
+### 2.3 Getting a token — two bootstrap paths
+
+Both write the token into the **server's own** credential store, so the
+server and the test suite share one token. Resolution order
+(`e2e/gating.py:48`, mirroring `auth.google_auth.get_default_credentials_dir`):
+
+```
+WORKSPACE_MCP_CREDENTIALS_DIR  >  GOOGLE_MCP_CREDENTIALS_DIR  >  ~/.google_workspace_mcp/credentials
+```
+
+**Path A — the normal one** ([`e2e/bootstrap_auth.py`](e2e/bootstrap_auth.py)):
+
+```bash
+uv run python e2e/bootstrap_auth.py [--client PATH] [--credentials-dir DIR] [--port N]
+```
+
+Runs the installed-app flow: prints a consent URL, spins up a short-lived
+localhost listener, waits for the callback.
+
+**Path B — when Path A cannot work**
+([`e2e/bootstrap_manual.py`](e2e/bootstrap_manual.py)):
+
+```bash
+uv run python e2e/bootstrap_manual.py start
+# approve in ANY browser; copy the localhost URL it lands on
+# (the page will show a connection error — that is expected and correct)
+uv run python e2e/bootstrap_manual.py finish '<pasted localhost URL>'
+```
+
+Read that file's docstring before choosing. It exists for three concrete
+failure modes of Path A, all observed:
+
+1. the library's callback wait can be **outrun by a real consent flow** (the
+   unverified-app interstitial alone can take longer than the listener
+   lives), and the auth code is then unusable because its PKCE verifier died
+   with the listener;
+2. a **stale `localhost:<port>` tab** from an earlier attempt re-hits the new
+   listener on reload and kills the flow with `MismatchingStateError` before
+   the good callback lands;
+3. **the browser is on a different machine** than the one running the code.
+
+Path B persists the PKCE verifier and CSRF state to
+`credentials/.oauth_pending.json` (gitignored) between the two halves and
+uses the client's registered `http://localhost` redirect with nothing
+listening, so the code stays exchangeable regardless of timing or host.
+
+### 2.4 Running the server
+
+```bash
+uv run python main.py --transport stdio --single-user --tools docs docs_preview
+```
+
+`--tools` filters services; `docs_preview` maps to the `gdocs_preview`
+package (`main.py` `SERVICE_MODULES`). With no `--tool-tier` flag all 7 tools
+register; `--tool-tier core` drops `check_docs_review_capabilities`
+(`core/tool_tiers.yaml`).
+
+First call after setup: `check_docs_review_capabilities(probe=true,
+document_id=<any doc you can edit>)`. That is the only way to confirm
+enrollment, and it cannot mutate the document (§3.3).
+
+---
+
+## 3. The tools
+
+### 3.1 The 7 `docs_preview` tools
+
+Registered in `gdocs_preview/curated_tools.py` (read/diagnostic) and
+`gdocs_preview/write_tools.py` (writes). Canonical list:
+`curated_tools.REVIEW_TOOL_NAMES`.
+
+| tool | returns |
+|---|---|
+| `list_document_suggestions` | one record per pending suggestion + a full accounting block (`suggestion_count` / `matched_count` / `returned_count`, `filters`, `page`, `read_source`, `tabs`) |
+| `get_doc_review_view` | the document as a reviewer sees it: text with CriticMarkup markers (`{+ins+}` / `{-del-}`), optionally a paragraph map, plus the comment threads |
+| `check_docs_review_capabilities` | scopes, tool inventory, and the cached-or-probed Developer Preview verdict |
+| `suggest_doc_edit` | `created_suggestion_ids` + a post-write `verification` block echoing the created card's pre/post text, context and resulting range |
+| `manage_document_suggestion` | accept/reject result + `verification` with `still_pending`, `matches_expectation`, `also_removed_suggestion_ids` |
+| `reply_to_doc_thread` | the stored `Post` (id, author, content, create_time) + `comment_update_state`; self-verifying with no extra read |
+| `create_anchored_doc_comment` | the stored `CommentThread` (comment_id, post_id, author, `anchor_id`, `quoted_text`, status) + `comment_update_state`; self-verifying with no extra read |
+
+### 3.2 Non-obvious parameters
+
+**`list_document_suggestions`**
+
+| param | default | notes |
+|---|---|---|
+| `fields` | `"summary"` | `summary` or `full`. See §3.4 for why. |
+| `page_size` | 134 (summary) / 43 (full) | The bound is **bytes, not cards**. `DEFAULT_PAGE_CHARS = 35_000` ÷ `CHARS_PER_RECORD` (260 summary / 800 full). Ceiling is `MAX_PAGE_CHARS = 50_000` → 192 / 62. A request above the ceiling is reduced **and says so** in `page.page_size_requested` + `page.page_size_note`. Constants: `gdocs_preview/review_page.py:128-151`. |
+| `page_token` | – | Encodes the **last emitted suggestion id**, not an offset, because resolving a card renumbers everything after it. If the anchor id is gone (the normal working pattern), it falls back to the recorded ordinal **and the response says so**, since that can skip or repeat a card. Must be replayed with the same fields/filters; a token from a different query is refused. |
+| `author` | – | Display name, case-insensitive, **exact — not substring**. On no match the response lists the authors present. |
+| `status` | – | Thread status, e.g. `OPEN`. Case-insensitive exact. |
+| `start_index` / `end_index` | – | Half-open `[start, end)`. Either bound alone is fine. Read in **one** `(tab, segment)` — see §4.1. Cards outside it are counted in `filters.excluded_other_segments`; the space used is echoed as `filters.range_scope`. |
+| `segment_id` / `tab_id` | `None` = body of default tab | Both a filter and the coordinate space the index range is read in. |
+
+**`get_doc_review_view`**
+
+| param | default | notes |
+|---|---|---|
+| `view_mode` | `SUGGESTIONS_INLINE` | also `PREVIEW_SUGGESTIONS_ACCEPTED`, `PREVIEW_WITHOUT_SUGGESTIONS` |
+| `fields` | `"text"` | `text` \| `paragraphs` \| `full`. The paragraph map's `text` values concatenate to `body_text`, so `full` restates a quarter of the response. |
+| `start_index`/`end_index` | – | Narrows to overlapping paragraphs. `body_text` and the header/footer/footnote texts are **recomputed from exactly the paragraphs returned**, so no part of the response describes a different window than another. |
+| `segment_id`/`tab_id` | – | Name the window's coordinate space *only*. Passed without a window they filter nothing, and the response says so in `scope_note` rather than looking scoped. |
+| `include_comments` | `true` | `false` returns `comments: []` plus `comments_omitted: <n>` |
+
+**`suggest_doc_edit`** — mode is inferred: `text` only → insertion;
+`end_index` only → deletion; both → replacement (delete+insert in one batch).
+`start_index` floor is **1 in the body** (index 0 is the section break) and
+**0 in a header/footer/footnote** (each segment is numbered from its own
+start; verified live 2026-07-31).
+
+**`verify`** (on `suggest_doc_edit` and `manage_document_suggestion`,
+default `true`) buys exactly **one** extra `documents.get` after the write and
+turns the response into evidence rather than a receipt. `verify=false` returns
+`verification.source: "skipped"`, `still_pending: null`, and a note saying the
+response ids alone do not say the write landed. Set it false only for a batch
+you will verify at the end — collateral removals (§4.5) then go unreported.
+
+`reply_to_doc_thread` and `create_anchored_doc_comment` have no `verify`
+because the batchUpdate response already carries the stored object
+(§4.4), so their echo is free.
+
+### 3.3 The capabilities probe
+
+`check_docs_review_capabilities` is side-effect free by default. With
+`probe=true` (requires `document_id`) it POSTs the cheapest preview call that
+**cannot mutate content**: a batchUpdate with a single `acceptSuggestion` for
+a deliberately unresolvable id (`curated_tools._PROBE_SUGGESTION_ID`).
+Classification lives in `gdocs_preview/preview_status.py`:
+
+| outcome | verdict |
+|---|---|
+| 400 naming an unknown field / "cannot find field" / "invalid json payload" | `unavailable` — not enrolled; the request type was not even parsed |
+| any other 400 | `available` — type recognised, failed only on the bogus id |
+| 404 naming a missing suggestion/comment/reply | `available` (this is what prod actually returns, verified 2026-07-30) |
+| any other 404, or 403 | `unknown` — proves nothing about enrollment |
+| 200 | `available` |
+
+The verdict is cached process-wide; later probe-free calls report it.
+
+### 3.4 Why `fields="summary"` is the default
+
+Measured, not guessed (`gdocs_preview/review_page.py:14-27`,
+`docs/plans/2026-07-30-large-review-sets.md`). The listing is linear in card
+count and a document has no cap on it. At 120 pending suggestions the full
+listing was **93,443 characters**, and a real client answered a
+105,187-character tool result with
+
+> `Error: result (105,187 characters) exceeds maximum allowed tokens. Output has been saved to /home/.../*.json`
+
+and spilled it to a file the agent could not open. The agent never saw a
+single suggestion id, spent its remaining turns trying to reach the spilled
+file, and ended by asking an absent user to paste it in. **A default response
+that cannot be delivered is not the conservative choice.**
+
+`summary` costs ~232–252 chars/card and keeps everything a decision needs:
+`suggestion_id`, `type`, `author` (display name as a plain string),
+`summary_text` (Google's own label), the full address
+(`segment`/`segment_id`/`tab_id`/`start_index`/`end_index`) and `status`.
+What it drops is listed in the response's `omitted_fields`. `full` restores
+`pre_text`, `post_text`, both context windows, `create_time`, the full author
+object, `author_source`, the table flag and `replies`.
+
+**Nothing is ever silently truncated.** Compare `suggestion_count` /
+`matched_count` / `returned_count` and you know whether you have seen
+everything; a non-final page carries `page.next_page_token` and a
+`notice_page` saying so in words.
+
+### 3.5 Comment lifecycle: `update` and `delete` (shared factory)
+
+`core/comments.py` is upstream's per-app comment tool factory. The fork adds
+two actions to `_manage_comment_dispatch` and their impls
+(`_update_comment_impl`, `_delete_comment_impl`, both Drive v3):
+
+- `update` — requires `comment_id` + `comment_content`
+- `delete` — requires `comment_id`; permanently removes the comment and its
+  replies
+
+`MANAGE_COMMENT_ANNOTATIONS.destructiveHint` was flipped to `True` as a
+consequence. Because the factory is instantiated three times
+(`gdocs/docs_tools.py:2796`, `gsheets/sheets_tools.py:2435`,
+`gslides/slides_tools.py:477`), this lands as `manage_document_comment`,
+`manage_spreadsheet_comment` **and** `manage_presentation_comment` at once.
+This is the obviously upstreamable piece (§8).
+
+---
+
+## 4. Load-bearing API facts
+
+Every claim here is checked against the code that implements it. Fuller
+transcription in [`docs/preview-api-reference.md`](docs/preview-api-reference.md).
+
+### 4.1 An index is only half of an address
+
+Docs numbers **every `(tabId, segmentId)` pair from its own start**. `start_index`
+412 in a footnote and 412 in the body are different characters in different
+coordinate spaces. Every write tool defaults to `tab_id=None`/`segment_id=None`,
+which the API reads as *the body of the default tab*.
+
+So an agent that reads a bare index out of a response and hands it back
+writes into the body at that number — **successfully, silently, in a customer
+document**. Index 0 fails loudly on the floor check; every other index does
+not.
+
+Two structural consequences, both enforced in code:
+
+- **`gdocs_preview/address.py` is the only module that projects an index into
+  an agent-facing payload**, and it cannot project one without its
+  `segment`/`segment_id`/`tab_id`. `address_of()` returns all five
+  `ADDRESS_FIELDS` or none. This bug class was found three separate times
+  (summary cards, the post-write echo + resolution ledger, the coordinate-space
+  filters) before the emitter was centralised.
+- **Two indexes may only be compared when numbered in the same space.**
+  `resolve_range_scope()` decides which space a caller meant — resolving an
+  omitted `tab_id` when the *document* has exactly one, **refusing to guess**
+  when it has several — and takes the document's tab inventory as a required
+  argument. It previously counted the tabs occupied by the caller's *records*,
+  so a three-tab document whose cards all sat in one tab presented as
+  single-tab and silently resolved to it.
+
+**`segment_id` and `tab_id` are a pair, not two independent options.** A
+segment id is resolved *within* the tab the request names. A segment id sent
+without its tab is a 400 against a multi-tab document — `"Segment with ID
+kix.… was not found"`, measured against the live API 2026-07-31 — with
+nothing in the response saying which tab would have worked. Send both or
+neither (`gdocs_preview/write_tools.py:2170`).
+
+### 4.2 Docs omits `startIndex: 0`
+
+The API serialises proto3, which omits default values, so index 0 is never
+written out. Verified live 2026-07-31: a header segment's only paragraph came
+back as `{"endIndex": 13, "paragraph": …}` with **no `startIndex` at all**.
+
+Index 0 is only reachable in a header, footer or footnote (a body's first
+paragraph starts at 1), so reading the absence as "no index" made every
+suggestion at the start of such a segment unaddressable: `start_index: null`,
+excluded from every index-range filter, nothing to hand back to
+`suggest_doc_edit`. `gdocs_preview/analysis.py` applies the default **only
+where `endIndex` is present**, i.e. only to elements the payload did index.
+
+This is the *one* place the module derives an index. Everywhere else, indexes
+are passed through verbatim — they are UTF-16 code units, Python strings are
+code points, and `analysis.py` never computes a document index from a Python
+string length. Context windows are sliced for display only and never fed back
+to the API.
+
+### 4.3 Threads (and therefore authors) need two parameters, one of which the client rejects
+
+Comment and suggestion **thread** objects — and with them every `author`,
+`status`, `create_time`, `summaryText` and `replies` — are absent from a plain
+`documents.get`. They appear only for:
+
+```
+GET https://docs.googleapis.com/v1/documents/{id}
+      ?suggestionsViewMode=SUGGESTIONS_INLINE
+      &commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED
+      &includeTabsContent=true
+```
+
+- `includeTabsContent=true` is **mandatory** alongside `commentsViewMode`.
+  Without it: `400 "Comments view mode may only be specified if tabs content
+  is also requested."`
+- `commentsViewMode` is **not in the public discovery document**, so the
+  `googleapiclient` Resource refuses it *before any request is sent*:
+  `TypeError: Got an unexpected keyword argument commentsViewMode`.
+  `documents().get` accepts only `documentId`, `suggestionsViewMode`,
+  `includeTabsContent` and system parameters.
+
+[`gdocs_preview/preview_read.py`](gdocs_preview/preview_read.py) handles this
+by trying the client first and, on exactly that `TypeError`, falling back to a
+`google.auth.transport.requests.AuthorizedSession` built from the credentials
+the injected Resource already holds (`service._http.credentials`). Patching
+discovery for one query parameter was judged too large a blast radius. When
+Google publishes the parameter the client path simply starts working and the
+fallback goes quiet.
+
+Asking for tabs content **removes the top-level `body`** — content moves to
+`tabs[i].documentTab`. `preview_read.tab_documents()` flattens each tab
+(depth-first through `childTabs`) back into a GA-shaped `Document` so
+`analysis.py` has exactly one input shape. `tabs[0].documentTab.body` is
+byte-identical to the GA read's `body` for a single-tab document: **indexes
+are unchanged** across the two reads.
+
+Threads arrive at the **top level** as `suggestions[]` and `comments[]`, with
+no tab attribution of their own — the repo attributes a suggestion to the tab
+whose body carries its id. Empty repeated fields are omitted proto3-style, so
+a document with suggestions but no comments has no `comments` key at all.
+
+### 4.4 The response's ids are not proof the write took effect
+
+The batchUpdate `Response` union does gain `insertComment.commentThread` and
+`addCommentReply.post`, carrying the full object **including `author`**
+(verified 2026-07-30) — that is why the two thread-write tools need no
+follow-up read to report authorship. Requests producing no response member
+(e.g. `insertText`) occupy their index with `{}`, so `replies` stays 1:1 with
+the request list.
+
+But **those ids are a receipt for the request, not evidence of effect.** A
+resolution that resolved nothing can come back HTTP 200 sitting beside a
+populated `rejected_suggestion_ids` and `commentUpdateState: ALL_SAVED`
+(`tests/gdocs_preview/test_write_tools.py::TestAnUnverifiedResolutionSaysSo`).
+Against prod, the repeat-reject path was observed answering **200 with an
+*empty* id list** rather than erroring
+(`e2e/test_preview_surface.py::test_a_reject_that_takes_no_effect_is_never_reported_as_a_match`);
+both shapes are handled, neither is treated as proof.
+
+So the tool derives its verdict from **structure first**:
+
+> An accepted or rejected suggestion is gone from the post-write pending set.
+> An id still in it is a resolution that did not take effect, whatever the
+> text reads.
+
+`_ResolutionVerdict` (`gdocs_preview/write_tools.py:630`) is the only producer
+of the `(still_pending, matches_expectation)` pair, and `__post_init__`
+re-checks the field against the same rule the factory used, so a verdict not
+entailed by its own evidence **raises**. `matches_expectation` is therefore
+never true while `still_pending` is true. This matters most on a **reject**,
+where base text is identical whether or not the reject landed (the
+suggestion's insertion is stripped either way, its deletion kept either way),
+so the text alone cannot distinguish the two worlds — and equally on a
+style-only accept, whose `pre_text` and `post_text` are one string.
+
+For thread writes there is no pending set, so `verification.saved` is the
+API's own `commentUpdateState` **and nothing else**: `true` on `ALL_SAVED`,
+`false` on a reported failure state, `null` when the API sent no state at all.
+**Null is not false** — on a null, re-read rather than retry, since a needless
+retry leaves a duplicate reply or comment in the document. An HTTP 200 that
+reports `ALL_FAILED_UNKNOWN_REASON` is raised as an error, never returned as
+success (`_execute_preview_batch_update(..., enforce_comment_update=True)`).
+
+### 4.5 Same-author merges, and collateral removal
+
+- **Adjacent same-author suggestions merge.** Confirmed against prod for two
+  overlapping same-author edits made in **separate batches**. A merged write
+  returns **no `createdSuggestionIds`** — the API reports nothing new was
+  created. `suggest_doc_edit` then echoes the suggestion(s) now covering the
+  edited range under `verification.suggestions_at_edit_range` (with the
+  `range_scope` they were read in) plus a note explaining the merge, rather
+  than reporting an empty result or inventing an id.
+- A SUGGEST replacement (`deleteContentRange` + `insertText`) yields **one**
+  suggestion id: request 0 reports it under `createdSuggestionIds`, request 1
+  reports the *same* id under `updatedSummarySuggestionIds`.
+- **Resolving a suggestion deletes others.** Any suggestion whose last marked
+  character disappears with the resolution is garbage-collected, along with
+  its comment thread. The next call naming such an id fails with a bare
+  `"Suggestion with ID … does not exist."`, indistinguishable from a typo.
+  `gdocs_preview/suggestion_ledger.py` is the memory that fixes this: every
+  read feeds it the live records, every resolution diffs the before/after
+  reads, and `verification.also_removed_suggestion_ids` names the casualties
+  so the error never has to happen. `explain_missing()` answers on an explicit
+  honesty ladder — *resolved directly* (proven) → *collateral* (observed, not
+  proven; a concurrent editor could have done it) → *may have been removed* →
+  *never seen*.
+- Also-created-since: a card that merely **appeared between the last listing
+  and this write** — which is what a second reviewer looks like — is reported
+  under `appeared_since_last_read`, never under `created_suggestions`, which
+  claims authorship. Check the author before resolving or replying to one.
+
+### 4.6 A degraded read reports UNKNOWN, never a guess
+
+If the preview read fails for any reason (not enrolled, network, or a payload
+with an empty `tabs` array — every Google Doc has at least one tab, so that is
+a broken payload, not an empty document), `read_for_review` falls back to the
+GA `documents.get` and returns `ReviewRead(source="ga_documents_get",
+degraded_reason=…, complete=False)`.
+
+`complete` is not a diagnostic. **It is the premise every absence claim
+downstream rests on.** The GA read returns *one unnamed body and no tab ids at
+all*. An id missing from a complete read is missing from the document; the
+same id missing from the GA fallback may be sitting in a tab that read
+structurally could not see. It defaults to `False` so a hand-assembled read
+cannot attest an absence it never checked.
+
+Concretely, on a degraded read:
+
+- thread-derived fields (`author`, `status`, `create_time`, `summary_text`,
+  `replies`) are `null`, with `author_source: "unavailable"` — **never
+  guessed** — and both field modes carry `degraded_notice` + `null_fields`,
+  because the nulls are a property of the read, not of the document;
+- an `author` or `status` filter is **refused**, not answered with an empty
+  page: `matched_count: 0` there means "this read cannot see authors", not
+  "there are none";
+- `still_pending` is `null` with `still_pending_unavailable` ∈
+  {`segment_not_in_read`, `read_incomplete`}, `matches_expectation` is `null`,
+  and `also_removed_suggestion_ids` is withheld in favour of
+  `also_removed_suggestion_ids_unavailable`. Nothing in the response reports
+  on the write; re-read with `list_document_suggestions` rather than repeating
+  the resolution.
+- **Counts are partial.** `suggestion_count` on a degraded read is the count
+  of what that read could see, and `read_source` says which read it was.
+
+### 4.7 Miscellaneous, cheap to get wrong
+
+- `SuggestionThread.headPost` has **no `content`** (unlike a comment head
+  post); the human-readable label is `summaryText` on the thread.
+- `summaryText` grammar uses **typographic** quotes (U+201C/U+201D):
+  `Add: "Say"`, `Delete: "brave"`, `Replace: "brave" with "bold"`. An earlier
+  ASCII guess lost to prod.
+- `PostAuthor.anonymous` is **omitted entirely when false**, so a missing
+  `anonymous` means unknown, not `False`. `normalize_author` preserves that.
+- A bogus suggestion id is **HTTP 404**, not 400.
+- `Post.content` caps at 2048 UTF-8 code units.
+- Docs comment ids interoperate with Drive v3: a thread created with
+  `insertComment` is visible to Drive `comments.list` and manageable through
+  it. But the Docs surface is strictly richer — Drive exposes no anchor id, no
+  per-post ids and no People resource names. Use `get_doc_review_view` for
+  review, `list_document_comments` (Drive) for cross-surface management.
+- Eight request types are unsupported in SUGGEST mode (`addDocumentTab`,
+  `createNamedRange`, `deleteFooter`, `deleteHeader`, `deleteNamedRange`,
+  `deleteTab`, `updateDocumentTabProperties`, `updateTableColumnProperties`).
+
+---
+
+## 5. Architecture
+
+### 5.1 `gdocs_preview/` module map
+
+| file | responsibility |
+|---|---|
+| [`address.py`](gdocs_preview/address.py) | The only projector of an index into an agent-facing payload; owns `ADDRESS_FIELDS`, range-scope resolution and the membership test (§4.1). |
+| [`analysis.py`](gdocs_preview/analysis.py) | Pure, side-effect-free analysis of Document JSON: suggestion extraction, pre/post text, context windows, rendering, resolution checking. No service object, no I/O. |
+| [`preview_read.py`](gdocs_preview/preview_read.py) | The **one** read every tool performs. Issues the thread-bearing preview GET (with the AuthorizedSession fallback), normalises tabs → GA-shaped Documents and threads → snake_case records, degrades to GA and reports it. |
+| [`review_page.py`](gdocs_preview/review_page.py) | Field selection, filtering, pagination and the accounting block, for both read tools. Pure: records in, projected page out. |
+| [`write_tools.py`](gdocs_preview/write_tools.py) | The 4 write tools + the whole post-write verification layer (`_ResolutionVerdict`, `_PostWriteRead`, the unavailable-reason vocabulary and its notes). |
+| [`curated_tools.py`](gdocs_preview/curated_tools.py) | The 2 read tools + the capabilities probe. Thin API-call wrappers over `preview_read` and `analysis`. |
+| [`suggestion_ledger.py`](gdocs_preview/suggestion_ledger.py) | Process-wide memory of what our own writes did, keyed by `(user_email, document_id)`, bounded to `MAX_DOCUMENTS` (oldest-touched evicted). Turns "does not exist" into a cause (§4.5). |
+| [`preview_status.py`](gdocs_preview/preview_status.py) | Process-wide preview-availability verdict + the error classifier (§3.3). |
+
+Importing `gdocs_preview` registers all 7 tools via decorator side effects.
+
+### 5.2 Integration points into upstream
+
+The design target is a **self-contained module plus a handful of registration
+lines**, so the fork stays merge-friendly. The canonical three
+(`docs/plans/2026-07-14-native-integration.md:189`):
+
+1. `main.py` — `SERVICE_MODULES["docs_preview"] = "gdocs_preview"` (plus an
+   emoji in the startup banner).
+2. `auth/scopes.py` — `DOCS_PREVIEW_SCOPES`, registered in `TOOL_SCOPES_MAP`
+   and `TOOL_READONLY_SCOPES_MAP`.
+3. `core/tool_tiers.yaml` — a `docs_preview:` section (6 core, 1 extended).
+
+In the current tree there is a **fourth**: `auth/permissions.py` gained a
+`docs_preview` entry in `SERVICE_PERMISSION_LEVELS` (`readonly` / `full`),
+which the design note predates. Everything else the fork touches upstream is
+either the comment factory (§3.5), a `gdocs/docs_tools.py` index-0 correctness
+fix, `pyproject.toml` (hypothesis + three markers), `.gitignore`, or docs and
+tests.
+
+### 5.3 The two invariants the design is built on
+
+**One address emitter.** *An index may not appear in an agent-facing payload
+without its `segment`, `segment_id` and `tab_id`.* Enforced structurally
+rather than by vigilance: `address.py` is the only module that can emit one,
+and it cannot emit the numbers alone. Dropping the pairing requires deleting a
+name from `ADDRESS_FIELDS`, where the docstring stating the rule is looking at
+it.
+
+**Derived verdicts.** *A verdict is computed from its evidence, never
+assembled beside it.* `_ResolutionVerdict.derive()` is the only producer of
+`(still_pending, text_check, matches_expectation)`, and the constructor
+re-derives and raises on a mismatch — the contradictory pair is
+unrepresentable. `still_pending` is `Optional[bool]` so **UNKNOWN is a
+first-class input** that must be propagated, not collapsed to `False`. Four
+consecutive review rounds found this verification claiming success on a write
+it had not verified, each time through a different branch; deriving rather
+than comparing is what retires the branch class.
+
+---
+
+## 6. Testing
+
+### 6.1 Unit suite (no credentials, no network)
+
+```bash
+uv run pytest tests/          # or: .venv/bin/python -m pytest tests/
+```
+
+**2229 tests collected** (2026-07-31). Config is entirely in
+`pyproject.toml [tool.pytest.ini_options]` — there is no `pytest.ini` and no
+root `conftest.py`. Notable sub-suites: `tests/gdocs_preview` 380,
+`tests/llmux` 168, `tests/llmux_runner` 120, `tests/mockdocs` 83,
+`tests/mockdocs_concurrency` 64, `tests/e2e_harness` 38 (the e2e
+gating/report/session logic, unit-tested with no credentials).
+
+CI (`.github/workflows/pytest.yml`) runs bare `uv run pytest` from the repo
+root, which also collects `e2e/` — safely, since those skip without
+credentials.
+
+### 6.2 Real-API e2e
+
+[`e2e/README.md`](e2e/README.md) is the authority. The suite spawns the real
+server as a subprocess and speaks MCP to it; nothing is mocked.
+
+```bash
+uv run pytest e2e -m e2e_ga        # 15 tests — needs only an OAuth token
+uv run pytest e2e -m e2e_preview   # 22 tests — additionally needs enrollment
+uv run pytest e2e -rs              # everything eligible, with skip reasons
+```
+
+- **`e2e_ga` (15)** — gated on **credentials, not env vars**. The `ga_auth`
+  session fixture resolves the credential dir, inspects the token offline,
+  and hard-skips with actionable instructions on any non-`ok` status
+  (`no_credentials_dir`, `no_token`, `unreadable`, `no_refresh_token`,
+  `missing_scopes`, `refresh_failed`). It **never** starts an interactive
+  flow.
+- **`e2e_preview` (22)** — everything above plus a live
+  `check_docs_review_capabilities` probe against a scratch doc, once per
+  session; skips with the probe's classification evidence embedded in the
+  message if the verdict is not `available`.
+- `e2e/conftest.py` raises a `UsageError` if any test under `e2e/` lacks one
+  of the two markers, so the directory is marker-covered by construction.
+- Hygiene: scratch docs are created **through the MCP surface**, trashed in
+  fixture teardown via a direct Drive client (works even if the server died),
+  and re-audited against Drive by `test_zz_teardown_audit.py`. No
+  sleeps-as-synchronisation — `e2e/util.py:poll_until`.
+- Artifacts: `e2e/last_run.md` (override `E2E_RUN_REPORT_PATH`) and
+  `e2e/_artifacts/server-*.log`. **Both gitignored**; the run report contains
+  real account identity and document ids.
+
+### 6.3 `mockdocs/` — the in-memory Google Docs model
+
+A spec-faithful reimplementation of Docs suggesting mode, specified in
+[`docs/plans/2026-07-30-suggestion-mock-spec.md`](docs/plans/2026-07-30-suggestion-mock-spec.md)
+(§14 onward is the implementation's own addendum).
+
+| file | responsibility |
+|---|---|
+| `graphemes.py` | The two unit systems: approximate UAX-#29 grapheme splitting and `utf16_len()`. The only place either is computed. |
+| `model.py` | The pure model: per-`(tabId, segmentId)` `Char` arrays with conjunctive `ins` / disjunctive `del` mark sets, a document-wide suggestion+comment registry, insert/delete/replace, same-author merge, accept/reject, the three projections, §8 labels, and invariants I1–I5 via `check_invariants()`. Counts graphemes only. |
+| `adapter.py` | Model ↔ Docs API payloads: grapheme↔UTF-16 conversion, `document_payload` vs `tabs_document_payload`, `writeControl.writeMode` SUGGEST/EDIT, proto3 omission of `startIndex: 0`, and the non-enrolled 400 simulation. |
+| `fake_services.py` | Duck-typed googleapis service objects — `FakeDocsService` / `FakeDriveService` matching the exact call shapes the tools use, behind a `FakeBackend` with `me` / `not_enrolled` / `fail_comment_updates` flags. |
+| `state.py` | Lossless JSON snapshot of a backend, atomically rewritten on every call, so an out-of-process grader can read end state. |
+| `serve.py` | **Mock-backed MCP server entry point.** |
+| `concurrency.py` | The scripted second editor (§6.5). |
+
+The **API boundary is UTF-16 while the model counts graphemes** — deliberately,
+so fixtures with astral-plane emoji and combining sequences exercise
+`analysis.py`'s index discipline for real.
+
+Run the mock-backed server (no token, no network, zero diffs to upstream
+files — it rebinds `auth.service_decorator._authenticate_service` and nothing
+else):
+
+```bash
+python mockdocs/serve.py --transport stdio --single-user --tools docs docs_preview
+```
+
+Env knobs: `MOCKDOCS_SEED`, `MOCKDOCS_ME`, `MOCKDOCS_NOT_ENROLLED`,
+`MOCKDOCS_FAIL_COMMENTS`, `MOCKDOCS_STATE_DUMP`, `MOCKDOCS_INTERFERENCE`.
+
+### 6.4 `llmux/` — the LLM-UX benchmark
+
+Measures **tool-surface ergonomics, not model IQ**. One run = a fresh
+mock-backed server seeded from a scenario + a headless `claude -p` process
+whose only capability is that server, then the backend's end state read out
+and handed to the scenario's `grade()`. Reports lead with a **mistake
+taxonomy** rather than a pass rate, on purpose. Verdicts are three-valued:
+`PASS` / `FAIL` / `INCONCLUSIVE` (rate-limited, wall-clock-killed, or a
+contaminated tool surface); INCONCLUSIVE runs are excluded from every rate.
+
+Ground truth is **computed, never authored**: each scenario is built twice —
+through the model and replayed as real MCP calls — and generation fails if
+they disagree.
+
+Corpora: `llmux/scenarios/generated/` (17 scenarios, easy→adversarial),
+`llmux/scenarios/stress/` (4: 30/60/90/120 suggestions on real 1,500–1,800
+word articles), `llmux/interference/` (5, §6.5), `llmux/runner/_fixtures/`
+(3 cheap harness smokes). All from the repo root:
+
+```bash
+# free — always do this first
+uv run python -m llmux.runner.run --corpus llmux/scenarios/generated --dry-run --all
+uv run python -m llmux.scenarios.validate          # corpus gate, free
+uv run python -m llmux.runner.analyze llmux/runner/reports/<stamp>/runs   # rebuild a report, free
+
+# one scenario
+uv run python -m llmux.runner.run --scenario easy-kind-split --models sonnet --limit 1 --concurrency 1 --yes
+
+# a batch
+uv run python -m llmux.runner.run --corpus llmux/scenarios/generated --all --models sonnet,opus
+```
+
+> ### COST WARNING — this spends real Anthropic API money
+>
+> The runner spawns the **Claude Code CLI** (`claude -p`) against the real
+> API. `--models sonnet` resolved to `claude-sonnet-4-6`; `opus` to
+> `claude-opus-5`, roughly 4× the per-run cost.
+>
+> Measured batches: generated full matrix (32 runs) **$6.04 / 23 min**; the
+> stress corpus (8 runs) **$17.08 / 46 min**; a *single* `stress-120` run
+> **$3.18 / 94 turns / 9 min**; interference (5 runs) **$1.33**.
+>
+> Guards: `--limit` defaults to **3** (cheapest first) precisely so a careless
+> invocation costs ~$1 rather than $17; `--max-budget-usd` defaults to $1.00
+> **per run**; a 600 s wall clock; `--concurrency` hard-capped at 3. There is
+> **no `--max-turns`** — turns are bounded only by budget and wall clock.
+>
+> **On a TTY the cost estimate is confirmed interactively; a
+> non-interactive run proceeds automatically without asking.** Anything
+> scripting this needs its own gate.
+>
+> A mandatory pre-flight tool probe (one `haiku` turn) aborts the batch if any
+> non-MCP built-in is advertised to the agent — a stale deny list makes every
+> run INCONCLUSIVE. One batch burned **$12.82** that way before the probe
+> existed. `--skip-toolprobe` disables it.
+
+Reports go to `llmux/runner/reports/<stamp>{.md,.json}` plus
+`reports/<stamp>/runs/<scenario>__<model>/` (argv, mcp-config, transcript,
+state, run.json). **Gitignored** — they contain full transcripts and document
+state.
+
+The one paid test in the pytest suite is opt-in:
+`LLMUX_SMOKE=1 uv run pytest tests/llmux_runner/test_smoke_e2e.py`.
+
+### 6.5 The concurrency harness
+
+A **scripted second editor**, not real concurrency. Engine:
+`mockdocs/concurrency.py` — no threads, timers or sleeps; the clock is the
+agent's own call sequence (`{"tool": "list_document_suggestions", "nth": 2}`,
+phase `before`/`after`). `InterferenceMiddleware` holds one lock across
+`on_call_tool` so parallel `tool_use` blocks still serialise into one total
+order. Other-editor edits go through the same model ops as the seed replay,
+and invariants are re-checked after every firing and **recorded on the backend
+rather than raised**, so a harness bug stays distinguishable from an agent
+mistake at grading time.
+
+Runner wiring is `llmux/runner/interference.py` (additive, so scenarios
+without interferences behave exactly as before); the 5 cases are
+`ix-vanished-id`, `ix-stale-indexes`, `ix-thread-gone`, `ix-merge-absorb`,
+`ix-overlap-both-marks`. Grading runs a harness gate first (`HARNESS:`-prefixed
+failures), then replays the correct end state, then scores adaptation —
+**blind retry is not credited even when the end state comes out right.**
+
+```bash
+uv run pytest tests/mockdocs_concurrency                                  # 64 tests, free
+uv run python -m llmux.runner.run --corpus llmux/interference --all --dry-run   # free
+uv run python -m llmux.runner.run --corpus llmux/interference --all       # SPENDS TOKENS
+```
+
+---
+
+## 7. Known gaps and open questions
+
+**Untested paths**
+
+- **Nested tabs.** `preview_read.tab_documents()` walks `childTabs`
+  depth-first and there is unit coverage
+  (`tests/gdocs_preview/test_preview_read.py:289`), but no e2e test has ever
+  run against a real document with nested tabs.
+- **Unanchored `insertComment`.** The API's behaviour with `range` omitted is
+  undocumented, and `create_anchored_doc_comment` *requires* a range, so it
+  stays untested. For unanchored document-level comments use the Drive path
+  (`manage_document_comment` action `create`).
+- **Non-enrolled error shapes.** `preview_status._UNKNOWN_FIELD_MARKERS`
+  (`"unknown name"`, `"cannot find field"`, `"invalid json payload"`) is a
+  **heuristic that has never been observed against a real non-enrolled
+  project** — only against `mockdocs`' simulation of one. The credentials in
+  use are enrolled, so this is now unreproducible without a second GCP
+  project. If the classifier ever mislabels, this is the first place to look.
+- **Whether the preview thread operations really are SUGGEST-incompatible.**
+  The 8 thread ops are excluded from SUGGEST batches on a codegen-overlay
+  design decision, never verified live
+  (`docs/preview-api-reference.md`, open item 5; `mockdocs/adapter.py:91`).
+- **Whether SUGGEST-mode batches resolve indexes against the pre-batch
+  document** the way EDIT-mode ones do — transcribed, not verified
+  (`write_tools.py:1298`).
+
+**Still UNCERTAIN in `docs/preview-api-reference.md` §"Open UNCERTAIN items"**
+
+1. `InsertCommentRequest` with `range` omitted (above).
+2. The real discovery type names for the `CommentThread.status` /
+   `SuggestionThread.status` enums — currently inlined by hand.
+3. Whether preview enrollment propagates per-project or per-account (§2.1).
+4. Whether a multi-tab document's `suggestions`/`comments` arrays carry any
+   tab attribution. Observed arrays have none; the repo attributes a
+   suggestion to the tab whose body carries its id.
+5. SUGGEST-incompatibility of the thread ops (above).
+
+**The mock's guesses that tests depend on**
+
+`mockdocs` has no `TODO`/`GUESS` markers; the convention is `UNCERTAIN`
+pointing at the numbered items above.
+
+- `MERGE_TOLERANCE = 0`, same-author only. Whether the *live* API merges
+  adjacent same-author suggestions from **separate batch requests** was the
+  mock's stated "most likely divergence" — and it has since been
+  **CONFIRMED** against prod for two overlapping same-author edits in separate
+  batches. §14 of the mock spec has not been updated to say so; treat that
+  paragraph as stale. The mock still logs every merge (`model.merge_log`) so
+  divergence stays diffable. The real *tolerance value* (§13.2) is still a
+  guess and may differ between insert-then-insert and insert-then-delete.
+- **Threads on merge**: the mock migrates threads onto the survivor — §10's
+  *recommended* column, deliberately **not** the observed-Docs column. Open
+  question §13.3 is unresolved, so this is a known intentional divergence.
+- **Whether the live API renames or reports the pre-merge id** after a merge
+  is unverified (`adapter.py:579`).
+- **`insertComment`'s response-member name** was originally untranscribed;
+  the mock emits `{"insertComment": {"commentThread": …}}` because
+  `write_tools.py` reads that. Prod has since confirmed the shape.
+- `runColour` returns the most-recently-applied mark's author because
+  cross-author colour precedence (§13.1) is unresolved; colour has no MCP
+  surface, so only invariant I3 exercises it.
+- **Not implemented at all**: §5.4 (backspace-burst destructive deletion) and
+  §9 (undo). Both are editor-interaction concerns with no MCP tool surface, so
+  no tool under test can reach them. §13.4 is therefore untouched by this mock.
+- Not modelled by design (out of scope, `analysis.py`): row/column-level table
+  structure suggestions, and paragraph-level style suggestions. Text
+  suggestions inside table cells, and text-run style suggestions, *are*
+  reported.
+
+---
+
+## 8. Relationship to upstream
+
+- **105 commits ahead** of `upstream/main` (`taylorwilsdon/google_workspace_mcp`)
+  as of `433218a`; 287 files changed, almost entirely additive.
+- **Keep the fork merge-friendly.** The whole point of §5.2's shape is that
+  `docs_preview` is a self-contained package plus four registration entries.
+  New work belongs in `gdocs_preview/`, `mockdocs/`, `llmux/`, `e2e/`,
+  `docs/`, `tests/` — not in upstream modules. Before touching an upstream
+  file, check whether the change can live in the fork's own package instead.
+- **The obviously upstreamable piece** is the comment-lifecycle extension to
+  `core/comments.py` (§3.5): `update` and `delete` actions on the shared
+  factory, which benefit Docs, Sheets and Slides equally, plus the
+  `destructiveHint=True` correction and +131 lines of tests in
+  `tests/core/test_comments.py`. It has no dependency on the preview surface
+  or on enrollment.
+- The `docs_preview` service itself is **not** a good upstream PR as-is:
+  registering enrollment-gated tools for every upstream user would break them.
+  If upstreamed it should stay opt-in behind `--tools docs_preview`, which is
+  already how it works.
+- `gdocs/docs_tools.py` carries one small upstream-relevant correctness fix
+  (the index-0 remap must not fire when `segment_id`/`tab_id` is set) and the
+  matching skill-reference documentation for `tab_id`/`segment_id`.
+
+---
+
+## 9. Where to look first
+
+| question | file |
+|---|---|
+| what does a tool do / what are its params | `gdocs_preview/curated_tools.py`, `gdocs_preview/write_tools.py` — the docstrings are the contract the MCP client sees |
+| what does the preview API actually do | [`docs/preview-api-reference.md`](docs/preview-api-reference.md) |
+| why is the surface shaped like this | `docs/plans/2026-07-14-native-integration.md`, `docs/plans/2026-07-30-large-review-sets.md` |
+| how does suggesting mode work | `docs/plans/2026-07-30-suggestion-mock-spec.md` |
+| how do I get credentials | [`e2e/README.md`](e2e/README.md), `pending_for_human.md` |
+| is the preview surface reachable right now | `check_docs_review_capabilities(probe=true, document_id=…)` |
+
+**Never commit**: `credentials/`, `e2e/last_run.md`, `e2e/_artifacts/`,
+`llmux/runner/reports/`. All four are gitignored and contain account
+identity, document ids, or full transcripts. This is a public repository.

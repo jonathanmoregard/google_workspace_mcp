@@ -112,6 +112,34 @@ class ContextProfile:
         }
 
 
+async def _list_full_uncapped(tool: Any, common: dict[str, Any]) -> str:
+    """Every field of every card in ONE response: the pre-narrowing shape.
+
+    Asking for that in a single call is refused now that the page ceiling is
+    derived from bytes (``review_page.MAX_PAGE_SIZE``) -- a 500-card ``full``
+    page is ~390 KB, roughly 7x the size at which the observed client stopped
+    delivering tool output. So the baseline is REASSEMBLED from full-mode
+    pages: every record concatenated, the envelope written once, the page
+    block dropped. That is the response the tool returned before it had
+    narrowing parameters, to within the handful of characters the counting
+    fields cost.
+    """
+    pages: list[dict[str, Any]] = []
+    token: Optional[str] = None
+    while True:
+        extra = {"page_token": token} if token else {}
+        payload = json.loads(await tool(**common, fields="full", **extra))
+        pages.append(payload)
+        token = (payload.get("page") or {}).get("next_page_token")
+        if not token:
+            break
+    merged = dict(pages[0])
+    merged["suggestions"] = [r for page in pages for r in page.get("suggestions") or []]
+    merged["returned_count"] = len(merged["suggestions"])
+    merged.pop("page", None)
+    return json.dumps(merged, indent=2, ensure_ascii=False)
+
+
 async def _read_outputs(backend: Any, document_id: str) -> dict[str, str]:
     """Both read tools, at their defaults AND at ``fields='full'``.
 
@@ -127,8 +155,8 @@ async def _read_outputs(backend: Any, document_id: str) -> dict[str, str]:
     }
     return {
         "list": await tools["list_document_suggestions"](**common),
-        "list_full": await tools["list_document_suggestions"](
-            **common, fields="full", page_size=1000
+        "list_full": await _list_full_uncapped(
+            tools["list_document_suggestions"], common
         ),
         "view": await tools["get_doc_review_view"](**common),
         "view_full": await tools["get_doc_review_view"](**common, fields="full"),

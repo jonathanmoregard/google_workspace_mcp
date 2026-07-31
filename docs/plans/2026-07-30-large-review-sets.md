@@ -208,10 +208,16 @@ defaults against every-field-one-response:
 
 | cards | `list` full | `list` default | cut | `review_view` full | `review_view` default | cut | one read of each (est. tokens) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 30 | 23,732 | 7,556 | 68.2% | 33,727 | 13,136 | 61.1% | 16,423 -> 6,210 |
-| 60 | 47,736 | 14,642 | 69.3% | 44,588 | 19,036 | 57.3% | 26,121 -> 9,830 |
-| 90 | 70,354 | 21,276 | 69.8% | 45,349 | 20,956 | 53.8% | 32,683 -> 12,274 |
-| 120 | 93,636 | 27,891 | 70.2% | 54,980 | 23,954 | 56.4% | 41,811 -> 14,932 |
+| 30 | 23,625 | 7,556 | 68.0% | 33,727 | 13,136 | 61.1% | 16,393 -> 6,210 |
+| 60 | 47,809 | 14,642 | 69.4% | 44,588 | 19,036 | 57.3% | 26,141 -> 9,831 |
+| 90 | 70,427 | 21,276 | 69.8% | 45,349 | 20,956 | 53.8% | 32,703 -> 12,274 |
+| 120 | 93,711 | 27,891 | 70.2% | 54,980 | 23,954 | 56.4% | 41,831 -> 14,930 |
+
+(The `list` full column is now REASSEMBLED from full-mode pages rather than
+requested in one call: the page ceiling is derived from bytes, so "every
+field of every card in one response" is exactly the thing the tool refuses.
+The reassembly drops the page block, which is why the numbers move by ~100
+characters against the previous revision.)
 
 An earlier revision of this table read 74.2–76.6% for the `list` cut. That
 number was bought by dropping `segment`, `segment_id` and `tab_id` from the
@@ -236,12 +242,20 @@ is one parameter away. `summary` also keeps `status`, which the
 recommendation would have dropped -- it costs 16 characters a card and it is
 the difference between "pending" and "already dealt with".
 
-**2. Page size defaults are per field mode (200 / 40), sized in bytes.** The
-binding constraint is what a client will deliver in one tool result, not a
-card count; a card costs ~780 characters in `full` and ~172 in `summary`, so
-one page size for both would be wrong for one of them. Both defaults land a
-full page at 31-35 KB, under the ~57 KB at which the observed client began
-spilling output to a file.
+**2. Page bounds are per field mode and derived from bytes.** The binding
+constraint is what a client will deliver in one tool result, not a card
+count; a card costs ~780 characters in `full` and ~240 in `summary`, so one
+page size for both is wrong for one of them. Corrected 2026-07-31: the
+DEFAULTS were per-mode from the start, but the ceiling was a single
+field-mode-blind `MAX_PAGE_SIZE = 500`, which let `fields="full",
+page_size=500` ask for ~390 KB — about 7x the ~57 KB at which the observed
+client stopped delivering. Both bounds are now `budget // chars_per_record`:
+about 35 KB for a default (134 summary / 43 full) and about 50 KB for the
+ceiling (192 summary / 62 full), with `SPILL_THRESHOLD_CHARS` as the single
+authority. A request above the ceiling is reduced *and reported*
+(`page.page_size_requested`, `page.page_size_note`) — a silent `min()` reads
+exactly like a document that ran out of suggestions, and the difference
+decides whether the agent paginates.
 
 **3. `get_doc_review_view` got field selection and an index window, not
 pagination.** Measured first, as asked. Its growth is *not* comparable:

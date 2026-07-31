@@ -25,7 +25,10 @@ is the argument for every default chosen below.
 document total, unchanged meaning), ``matched_count`` (after filters),
 ``returned_count`` (this page) and, when there is more, a ``next_page_token``.
 A page is always self-describing: an agent that reads one can tell it read
-one.
+one. That includes the bounds themselves -- a ``page_size`` reduced to the
+field mode's ceiling comes back as ``page.page_size_requested`` plus a
+``page.page_size_note``, because a silent ``min()`` is indistinguishable from
+a document that simply had fewer suggestions.
 
 **Page tokens encode a position, not an offset.** Resolving a suggestion
 renumbers everything after it, so an offset-based cursor silently skips cards
@@ -96,18 +99,50 @@ SUMMARY_OMITTED_FIELDS = (
     "replies",
 )
 
-#: Default page size per field mode. Sized in BYTES, not cards: the binding
-#: constraint is what a client will deliver in one tool result, and a card
-#: costs ~780 characters in ``full`` and ~232-252 in ``summary`` (measured
-#: across all four stress tiers, flat per card). Both defaults land a full
-#: page at roughly 31-48 KB, under the ~57 KB at which the observed client
-#: began spilling tool output to a file the agent could not read.
-DEFAULT_PAGE_SIZE = {FIELDS_SUMMARY: 200, FIELDS_FULL: 40}
+# ---------------------------------------------------------------------------
+# Page bounds
+# ---------------------------------------------------------------------------
+#
+# Every number below is DERIVED, because the binding constraint is bytes and
+# not cards: what a client will deliver in one tool result. A page size that
+# is field-mode-blind gets one of the two modes wrong by an order of
+# magnitude -- ``fields="full", page_size=500`` is ~390 KB, roughly 7x the
+# size at which the observed client stopped delivering and started spilling.
 
-#: Hard ceiling on an explicitly requested page size. Above this the response
-#: stops being deliverable in ``full`` mode, which is the failure this whole
-#: module exists to prevent.
-MAX_PAGE_SIZE = 500
+#: The largest response the observed client actually delivered in one tool
+#: result. Batch ``20260730-224247`` refused 105,187 characters with "result
+#: exceeds maximum allowed tokens" and wrote them to a file the agent had no
+#: tool to open; ~57 KB is where the behaviour changed.
+SPILL_THRESHOLD_CHARS = 57_000
+
+#: Ceiling budget: the threshold with headroom for the response envelope and
+#: for records fatter than the corpus average.
+MAX_PAGE_CHARS = 50_000
+
+#: Default budget: smaller again, because a default has to be safe for a
+#: document nobody measured.
+DEFAULT_PAGE_CHARS = 35_000
+
+#: Cost of one record in each field mode -- flat per card across all four
+#: stress tiers (``llmux/scenarios/stressgen/measure.py``): ~232-252
+#: characters in ``summary``, ~780-792 in ``full``. Rounded UP, so every
+#: bound derived from them errs small.
+CHARS_PER_RECORD = {FIELDS_SUMMARY: 260, FIELDS_FULL: 800}
+
+#: Default page size per field mode: ``DEFAULT_PAGE_CHARS`` worth of records.
+DEFAULT_PAGE_SIZE = {
+    mode: max(1, DEFAULT_PAGE_CHARS // CHARS_PER_RECORD[mode])
+    for mode in LIST_FIELD_MODES
+}
+
+#: Ceiling on an explicitly requested page size, PER FIELD MODE:
+#: ``MAX_PAGE_CHARS`` worth of records. One number for both modes is
+#: necessarily wrong for one of them. The byte budget is the authority; these
+#: are its expression in cards.
+MAX_PAGE_SIZE = {
+    mode: max(1, MAX_PAGE_CHARS // CHARS_PER_RECORD[mode])
+    for mode in LIST_FIELD_MODES
+}
 
 
 class PageTokenError(ValueError):
@@ -458,9 +493,17 @@ def decode_page_token(
     return ordinal, str(anchor) if anchor else None
 
 
-def resolve_page_size(page_size: Any, fields: str) -> int:
+def resolve_page_size(page_size: Any, fields: str) -> tuple[int, Optional[str]]:
+    """``(page_size, note)``: the size to use, and why it is not the one asked
+    for.
+
+    The note is not decoration. A silent ``min()`` looks to the caller exactly
+    like a document that ran out of suggestions, so an agent that asked for
+    500 and got 62 has no way to tell "that is all of them" from "you were
+    cut down" -- and the difference decides whether it paginates.
+    """
     if page_size is None:
-        return DEFAULT_PAGE_SIZE[fields]
+        return DEFAULT_PAGE_SIZE[fields], None
     try:
         value = int(page_size)
     except (TypeError, ValueError) as error:
@@ -471,7 +514,19 @@ def resolve_page_size(page_size: Any, fields: str) -> int:
             "'unlimited' setting: an unbounded response is the failure mode "
             "this parameter exists to prevent."
         )
-    return min(value, MAX_PAGE_SIZE)
+    ceiling = MAX_PAGE_SIZE[fields]
+    if value <= ceiling:
+        return value, None
+    per_record = CHARS_PER_RECORD[fields]
+    return ceiling, (
+        f"page_size={value} was reduced to {ceiling}, the ceiling for "
+        f"fields={fields!r}: a record costs ~{per_record} characters there, so "
+        f"{value} of them is ~{value * per_record // 1000} KB in one response "
+        f"-- past the ~{SPILL_THRESHOLD_CHARS // 1000} KB at which the "
+        "observed client stopped delivering tool output and wrote it to a file "
+        "the agent could not open. This page is NOT the whole set if "
+        "`has_more` is true: pass `next_page_token` back for the rest."
+    )
 
 
 def paginate(
@@ -583,7 +638,7 @@ def build_listing(
     """
     records = list(analysis.get("suggestions") or [])
     fields = validate_fields(fields, LIST_FIELD_MODES)
-    size = resolve_page_size(page_size, fields)
+    size, size_note = resolve_page_size(page_size, fields)
     kept, applied = filter_records(
         records,
         author=author,
@@ -601,6 +656,9 @@ def build_listing(
         page_size=size,
         page_token=page_token,
     )
+    if size_note:
+        page["page_size_requested"] = int(page_size)
+        page["page_size_note"] = size_note
     result: dict[str, Any] = {
         "document_id": analysis.get("document_id") or document_id,
         "title": analysis.get("title"),

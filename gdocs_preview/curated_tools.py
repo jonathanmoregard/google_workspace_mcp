@@ -161,9 +161,15 @@ async def list_document_suggestions(
         user_google_email (str): The user's Google email address. Required.
         document_id (str): The ID of the document to analyse.
         fields (str): "summary" (default) or "full". See above.
-        page_size (int): Records per page. Defaults to 200 for "summary" and
-            40 for "full" -- both about 31-35 KB, the largest a client
-            reliably delivers in one tool result. Capped at 500.
+        page_size (int): Records per page. The bound is BYTES, not cards: a
+            record costs ~240 characters in "summary" and ~780 in "full", so
+            one number for both modes would be wrong for one of them.
+            Defaults to about 35 KB of records (134 summary / 43 full) and is
+            capped at about 50 KB (192 summary / 62 full) -- past roughly
+            57 KB the observed client stops delivering tool output and writes
+            it to a file the agent cannot open. A request above the ceiling
+            is reduced AND says so, in page.page_size_requested and
+            page.page_size_note; it is never silently trimmed.
         page_token (str): Resume after a previous page. Pass back the
             ``page.next_page_token`` from the response, with the SAME
             fields/filters; a token from a different query is refused rather

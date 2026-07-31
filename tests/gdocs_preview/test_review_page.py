@@ -473,10 +473,32 @@ class TestPagination:
         assert second["returned_count"] == 2
         assert {s["author"] for s in second["suggestions"]} == {"sam"}
 
-    def test_page_size_is_capped(self):
-        assert listing(ladder(3), page_size=10_000)["page"]["page_size"] == (
-            rp.MAX_PAGE_SIZE
-        )
+    def test_the_page_ceiling_is_per_field_mode(self):
+        """One ceiling for both modes is wrong for one of them: 500 `full`
+        records is ~390 KB, ~7x the size at which the observed client stopped
+        delivering tool output."""
+        assert rp.MAX_PAGE_SIZE["full"] < rp.MAX_PAGE_SIZE["summary"]
+        for mode in rp.LIST_FIELD_MODES:
+            ceiling = rp.MAX_PAGE_SIZE[mode]
+            assert ceiling * rp.CHARS_PER_RECORD[mode] <= rp.SPILL_THRESHOLD_CHARS
+            assert rp.DEFAULT_PAGE_SIZE[mode] <= ceiling
+            page = listing(ladder(3), fields=mode, page_size=10_000)["page"]
+            assert page["page_size"] == ceiling
+
+    def test_a_clamped_page_size_says_so(self):
+        """A silent min() reads exactly like a document that ran out of
+        suggestions, and the difference decides whether the agent paginates."""
+        page = listing(ladder(3), fields="full", page_size=500)["page"]
+        assert page["page_size"] == rp.MAX_PAGE_SIZE["full"]
+        assert page["page_size_requested"] == 500
+        assert "was reduced to" in page["page_size_note"]
+        assert "next_page_token" in page["page_size_note"]
+
+    def test_a_page_size_within_the_ceiling_carries_no_note(self):
+        page = listing(ladder(3), fields="full", page_size=2)["page"]
+        assert page["page_size"] == 2
+        assert "page_size_note" not in page
+        assert "page_size_requested" not in page
 
     def test_page_size_zero_is_refused(self):
         with pytest.raises(ValueError, match="at least 1"):

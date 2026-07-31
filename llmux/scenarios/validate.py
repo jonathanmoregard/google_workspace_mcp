@@ -17,6 +17,13 @@ corpus goes quietly wrong:
   document is not grading anything. Every scenario is graded a second time
   against its own seed with no steps applied, and that verdict must be a
   failure with a score below 1.
+- **the near-miss run must fail.** A scenario that ships a
+  ``naive_solution.json`` -- its own solution with every ``segment_id``
+  dropped, which is what an agent produces when it takes a header card's
+  ``start_index`` and hands it back bare -- is graded a third time against
+  that, and it must NOT pass. A trap nobody can fall into is decoration:
+  this is what makes "the correct solution requires addressing a non-body
+  segment" a checked claim rather than a docstring.
 - **the brief must not leak.** No suggestion id, no comment id; the document
   id must be present. A brief that names ids removes the discovery step that
   is most of what we are trying to measure.
@@ -149,6 +156,29 @@ def validate_scenario(scenario_dir: Path) -> Result:
         result.fail("the untouched document passes: the grader checks nothing")
     if float(untouched.get("score", 0.0)) >= 1.0:
         result.fail("the untouched document scores 1.0")
+
+    # -- and neither must the bare-index near-miss --------------------------
+    naive_path = scenario_dir / "naive_solution.json"
+    if naive_path.exists():
+        naive_backend = backend_from_seed(seed)
+        try:
+            run_solution(naive_backend, document_id, _read_json(naive_path))
+        except Exception as exc:
+            # The real bug is SILENT -- the wrong write succeeds. A naive
+            # run that errors is a different, much friendlier failure, and
+            # a scenario claiming to reproduce this one must not rely on it.
+            return result.fail(
+                f"the bare-index solution errored instead of landing in the "
+                f"wrong place: {exc}"
+            )
+        naive_verdict = grade(naive_backend)
+        if naive_verdict.get("pass"):
+            result.fail(
+                "the bare-index solution PASSES: dropping every segment_id "
+                "changes nothing, so this scenario does not require an address"
+            )
+        if float(naive_verdict.get("score", 0.0)) >= 1.0:
+            result.fail("the bare-index solution scores 1.0")
 
     return result
 

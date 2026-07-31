@@ -67,7 +67,8 @@
     "args": {
       "content": "Anchored by the reviewer.",
       "start_index": 140,
-      "end_index": 153
+      "end_index": 153,
+      "tab_id": "t.0"
     }
   },
   {
@@ -75,7 +76,8 @@
     "args": {
       "content": "Anchored by the reviewer.",
       "start_index": 155,
-      "end_index": 162
+      "end_index": 162,
+      "tab_id": "t.0"
     }
   }
 ]

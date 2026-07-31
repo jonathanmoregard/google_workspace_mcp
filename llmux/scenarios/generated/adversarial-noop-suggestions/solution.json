@@ -4,7 +4,8 @@
     "args": {
       "content": "No-op: this suggestion changes nothing.",
       "start_index": 14,
-      "end_index": 20
+      "end_index": 20,
+      "tab_id": "t.0"
     }
   },
   {
@@ -19,7 +20,8 @@
     "args": {
       "content": "No-op: this suggestion changes nothing.",
       "start_index": 34,
-      "end_index": 41
+      "end_index": 41,
+      "tab_id": "t.0"
     }
   },
   {

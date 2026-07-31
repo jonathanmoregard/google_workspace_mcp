@@ -69,6 +69,23 @@ class GenerationError(RuntimeError):
     """A scenario failed to build or its two builds disagreed."""
 
 
+def strip_segment_ids(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same calls with every ``segment_id`` dropped.
+
+    This is the mistake, written down: an agent reads a card in a header,
+    takes its ``start_index``, and hands it back without the ``segment_id``
+    it came with. ``suggest_doc_edit`` and ``create_anchored_doc_comment``
+    both default to ``segment_id=None``, which the API reads as the body of
+    the default tab, so the write lands at that number in the BODY -- and
+    unless the number happens to be 0 it lands successfully.
+    """
+    stripped = []
+    for call in calls:
+        args = {k: v for k, v in (call.get("args") or {}).items() if k != "segment_id"}
+        stripped.append({**call, "args": args})
+    return stripped
+
+
 # ---------------------------------------------------------------------------
 # state snapshots (for the model-vs-API cross-check)
 # ---------------------------------------------------------------------------
@@ -207,7 +224,7 @@ def build(scenario: Scenario) -> dict[str, Any]:
         "env": {"MOCKDOCS_SEED": "seed.json"},
     }
 
-    return {
+    files: dict[str, Any] = {
         "seed.json": scenario.seed,
         "expected.json": expected,
         "meta.json": meta,
@@ -215,6 +232,33 @@ def build(scenario: Scenario) -> dict[str, Any]:
         "brief.md": scenario.brief,
         "grade.py": GRADE_TEMPLATE.format(scenario_id=scenario.id),
     }
+
+    # A scenario that addresses a non-body segment carries the bare-index
+    # version of its own solution, and the corpus gate requires it to FAIL.
+    # Without it "this scenario needs a segment_id" is an assertion in a
+    # docstring; with it, it is checked on every build. See
+    # :func:`strip_segment_ids`.
+    naive = strip_segment_ids(calls)
+    if naive != calls:
+        naive_backend, _ = seeded_backend(scenario.seed)
+        try:
+            run_solution(naive_backend, scenario.document_id, naive)
+        except Exception as exc:
+            raise GenerationError(
+                f"{scenario.id}: the bare-index solution ERRORS ({exc}). That is "
+                "a weaker trap than the real bug, which is silent: pick indexes "
+                "that are also valid in the body so the wrong write succeeds."
+            ) from exc
+        naive_verdict = grade_against(naive_backend, expected)
+        if naive_verdict["pass"] or naive_verdict["score"] >= 1.0:
+            raise GenerationError(
+                f"{scenario.id}: dropping every segment_id still grades "
+                f"{naive_verdict} -- the scenario does not actually require "
+                "addressing a segment, so it tests nothing this corpus lacks."
+            )
+        files["naive_solution.json"] = naive
+
+    return files
 
 
 def check_brief(scenario: Scenario, seeded_ids: list[str]) -> list[str]:

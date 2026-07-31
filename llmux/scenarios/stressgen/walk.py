@@ -31,9 +31,9 @@ from __future__ import annotations
 import random
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
-from mockdocs.model import MockDoc
+from mockdocs.model import MockDoc, Segment
 
 from llmux.scenarios.primitives import Move, SeedBuilder
 from llmux.scenarios.stressgen.edits import Candidate, all_sentences, candidates
@@ -77,13 +77,23 @@ class SpanTracker:
 class TrackedSpan:
     """A locator addressing the base text, resolved through the tracker.
 
-    Duck-types :class:`llmux.scenarios.primitives.Locator`: ``Move`` only
-    ever calls ``resolve``.
+    Duck-types :class:`llmux.scenarios.primitives.Locator`: ``Move`` calls
+    ``resolve`` and ``segment``, and reads ``segment_id``/``tab_id`` to write
+    the address into the seed op.
     """
 
     tracker: SpanTracker
     base_start: int
     base_end: int
+
+    #: The stress corpus is a long body document with no headers, footers or
+    #: extra tabs -- these locators name the default tab's body, which is
+    #: the space they have always resolved in.
+    segment_id: ClassVar[Optional[str]] = None
+    tab_id: ClassVar[Optional[str]] = None
+
+    def segment(self, doc: MockDoc) -> Segment:
+        return doc.segment(None)
 
     def resolve(self, doc: MockDoc) -> tuple[int, int]:
         return (self.tracker.cur(self.base_start), self.tracker.cur(self.base_end))
@@ -101,6 +111,13 @@ class LiveIndex:
     """
 
     index: int
+
+    #: Body of the default tab; see :class:`TrackedSpan`.
+    segment_id: ClassVar[Optional[str]] = None
+    tab_id: ClassVar[Optional[str]] = None
+
+    def segment(self, doc: MockDoc) -> Segment:
+        return doc.segment(None)
 
     def resolve(self, doc: MockDoc) -> tuple[int, int]:
         return (self.index, self.index)

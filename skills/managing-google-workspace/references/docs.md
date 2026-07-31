@@ -73,6 +73,17 @@ Creates a new Google Doc with optional initial content.
 
 ## Text Editing
 
+> **An index is only half of an address.** Docs numbers every
+> `(tab, segment)` pair from its own start, so `start_index` 412 in a
+> footnote and 412 in the body are different characters in different
+> coordinate spaces. Every index-taking tool below defaults to
+> `tab_id=None` / `segment_id=None`, which the API reads as **the body of
+> the default tab**. Take an index from `inspect_doc_structure` together
+> with the `tab_id` you inspected with and the `segment_id` it was reported
+> under, and pass all of them back. An index used without them lands at that
+> number in the body of the default tab — silently, because it is usually a
+> valid position there. Index 0 is the only one that fails loudly.
+
 ### modify_doc_text
 Insert or replace text and/or apply character formatting in a single operation. If `end_index` is not provided with text, text is inserted at `start_index`; provide both to replace a range. Formatting options can be applied with or without changing the text.
 
@@ -80,8 +91,10 @@ Insert or replace text and/or apply character formatting in a single operation. 
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
 | document_id | string | yes | | |
-| start_index | integer | yes | | Docs API start position from `inspect_doc_structure`; `0` is also accepted as an alias for the first writable body position |
+| start_index | integer | yes | | Docs API start position from `inspect_doc_structure`, **in the tab/segment you inspected**; `0` is also accepted as an alias for the first writable body position |
 | end_index | integer | no | | End position; omit to insert at start_index |
+| tab_id | string | no | | The tab `start_index` was read from. Omitting it targets the default tab, which in a multi-tab document is a different place |
+| segment_id | string | no | | Header/footer/footnote segment `start_index` was read from; omit for the body |
 | text | string | no | | Text to insert or replace with |
 | bold | boolean | no | | |
 | italic | boolean | no | | |
@@ -116,8 +129,10 @@ Apply paragraph-level formatting: heading styles (H1-H6), lists (bulleted/number
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
 | document_id | string | yes | | |
-| start_index | integer | yes | | Docs API start position from `inspect_doc_structure`; `0` is also accepted as an alias for the first writable body position |
+| start_index | integer | yes | | Docs API start position from `inspect_doc_structure`, **in the tab/segment you inspected**; `0` is also accepted as an alias for the first writable body position |
 | end_index | integer | yes | | Exclusive end; should cover the entire paragraph |
+| tab_id | string | no | | The tab `start_index` was read from; omitting it targets the default tab |
+| segment_id | string | no | | Header/footer/footnote segment `start_index` was read from; omit for the body |
 | heading_level | integer | no | | 0 = NORMAL_TEXT, 1-6 = H1-H6 |
 | alignment | string | no | | `START`, `CENTER`, `END`, `JUSTIFIED` |
 | line_spacing | number | no | | Multiplier: 1.0 = single, 1.5, 2.0 = double |
@@ -326,7 +341,7 @@ Use `list_type='NONE'` in `create_bullet_list` to remove existing list formattin
 
 ## Tips
 
-**Index-based editing**: Google Docs uses a flat character index. Index 0 is reserved for the leading section break, so `inspect_doc_structure` reports body content starting at index 1. Use those raw Docs API indices for edits and formatting. For convenience, `modify_doc_text` and `update_paragraph_style` also accept `start_index=0` when you mean "the first writable body position." After any edit that adds or removes content, indices shift -- re-inspect before the next operation, or work from the end of the document backward.
+**Index-based editing**: Google Docs uses a flat character index **per `(tab, segment)`**, not one per document. Each tab's body is numbered from its own index 1 (index 0 is that tab's leading section break), and each header, footer and footnote is numbered from its own index 0. `inspect_doc_structure` reports indices within the tab you asked it about, so the same number means a different character in a different tab or segment. Use those raw Docs API indices for edits and formatting, and pass them back **with the `tab_id` you inspected and the `segment_id` they were reported under** -- an index handed over on its own is applied to the body of the default tab, successfully and in the wrong place. For convenience, `modify_doc_text` and `update_paragraph_style` also accept `start_index=0` when you mean "the first writable body position." After any edit that adds or removes content, indices shift -- re-inspect before the next operation, or work from the end of the document backward.
 
 **Batch operations and index ordering**: When using `batch_update_doc` with multiple operations that change document length (inserts, deletes), process them from highest index to lowest. This prevents earlier operations from invalidating the indices of later ones. Alternatively, use `find_replace` operations which do not depend on indices.
 

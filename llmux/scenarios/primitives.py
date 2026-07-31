@@ -32,7 +32,7 @@ from typing import Any, Callable, Optional
 
 from mockdocs.fake_services import FakeBackend
 from mockdocs.graphemes import split_graphemes
-from mockdocs.model import MockDoc
+from mockdocs.model import MockDoc, Segment, SegmentKey
 
 
 class ScenarioError(RuntimeError):
@@ -44,34 +44,61 @@ class ScenarioError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def grapheme_spans(doc: MockDoc, needle: str) -> list[tuple[int, int]]:
-    """Every ``[start, end)`` grapheme span of ``needle`` in the display text.
+def grapheme_spans(
+    doc: MockDoc, needle: str, *, segment: Optional[SegmentKey] = None
+) -> list[tuple[int, int]]:
+    """Every ``[start, end)`` grapheme span of ``needle`` in ONE segment.
 
     Grapheme space, not code-point space: with an astral emoji in the
     document the two differ, and the model indexes in graphemes.
+
+    ``segment`` is a ``(tab_id, segment_id)`` key; ``None`` means the default
+    tab's body, which is the whole document for a single-tab body-only one.
+    Searching across segments would be meaningless: Docs numbers each from
+    its own start, so an offset found in a header does not name a position
+    anywhere else.
     """
     clusters = split_graphemes(needle)
     if not clusters:
         raise ScenarioError("locator text must be non-empty")
-    hay = [c.cp for c in doc.chars]
+    hay = [c.cp for c in doc.segment(segment).chars]
     n = len(clusters)
     return [(i, i + n) for i in range(len(hay) - n + 1) if hay[i : i + n] == clusters]
 
 
 @dataclass(frozen=True)
 class Locator:
-    """Content-addressed position or range in the display projection."""
+    """Content-addressed position or range within one ``(tab, segment)``.
+
+    ``segment_id``/``tab_id`` name the coordinate space; omitting both means
+    the default tab's body, which is what every pre-segments scenario meant
+    and still means. They are part of the locator rather than of the step
+    because the address travels with the position: a step that knew the
+    index but not the space would emit exactly the bare index this corpus
+    exists to stop teaching.
+    """
 
     text: str
     where: str = "span"  # span | start | end
     occurrence: int = 0
+    segment_id: Optional[str] = None
+    tab_id: Optional[str] = None
+
+    def segment(self, doc: MockDoc) -> Segment:
+        """The segment this locator resolves in."""
+        try:
+            return doc.resolve_segment(tab_id=self.tab_id, segment_id=self.segment_id)
+        except Exception as error:
+            raise ScenarioError(f"{self.describe()}: {error}") from error
 
     def resolve(self, doc: MockDoc) -> tuple[int, int]:
-        spans = grapheme_spans(doc, self.text)
+        segment = self.segment(doc)
+        spans = grapheme_spans(doc, self.text, segment=segment.key)
         if len(spans) <= self.occurrence:
             raise ScenarioError(
                 f"locator {self.text!r} occurrence {self.occurrence} not found "
-                f"({len(spans)} occurrence(s) in {doc.display_text()!r})"
+                f"({len(spans)} occurrence(s) in {segment.describe()}: "
+                f"{MockDoc.text_of(segment.chars)!r})"
             )
         start, end = spans[self.occurrence]
         if self.where == "start":
@@ -81,22 +108,43 @@ class Locator:
         return (start, end)
 
     def describe(self) -> str:
-        return f"{self.where}({self.text!r}#{self.occurrence})"
+        where = ""
+        if self.segment_id or self.tab_id:
+            where = f"@{self.tab_id or 'default'}/{self.segment_id or 'body'}"
+        return f"{self.where}({self.text!r}#{self.occurrence}){where}"
 
 
-def span(text: str, occurrence: int = 0) -> Locator:
+def span(
+    text: str,
+    occurrence: int = 0,
+    *,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
+) -> Locator:
     """The range covering ``text`` itself."""
-    return Locator(text, "span", occurrence)
+    return Locator(text, "span", occurrence, segment_id, tab_id)
 
 
-def before(text: str, occurrence: int = 0) -> Locator:
+def before(
+    text: str,
+    occurrence: int = 0,
+    *,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
+) -> Locator:
     """The collapsed cursor immediately before ``text``."""
-    return Locator(text, "start", occurrence)
+    return Locator(text, "start", occurrence, segment_id, tab_id)
 
 
-def after(text: str, occurrence: int = 0) -> Locator:
+def after(
+    text: str,
+    occurrence: int = 0,
+    *,
+    segment_id: Optional[str] = None,
+    tab_id: Optional[str] = None,
+) -> Locator:
     """The collapsed cursor immediately after ``text``."""
-    return Locator(text, "end", occurrence)
+    return Locator(text, "end", occurrence, segment_id, tab_id)
 
 
 # ---------------------------------------------------------------------------
@@ -114,18 +162,35 @@ class Move:
     text: str = ""
 
     def apply(self, doc: MockDoc) -> tuple[dict[str, Any], Optional[str]]:
+        segment = self.target.segment(doc)
         start, end = self.target.resolve(doc)
+        # The seed op names its segment for the same reason a tool call has
+        # to: replayed without it, an index computed in a header would be
+        # applied to the body -- silently, at a completely different place.
+        where: dict[str, Any] = {}
+        if self.target.segment_id is not None:
+            where["segment_id"] = self.target.segment_id
+        if self.target.tab_id is not None:
+            where["tab_id"] = self.target.tab_id
+        key = segment.key
         if self.kind == "insert":
             op = {
                 "op": "insert",
                 "index": start,
                 "text": self.text,
                 "author": self.author,
+                **where,
             }
-            return op, doc.insert(start, self.text, self.author)
+            return op, doc.insert(start, self.text, self.author, key)
         if self.kind == "delete":
-            op = {"op": "delete", "start": start, "end": end, "author": self.author}
-            return op, doc.delete(start, end, self.author)
+            op = {
+                "op": "delete",
+                "start": start,
+                "end": end,
+                "author": self.author,
+                **where,
+            }
+            return op, doc.delete(start, end, self.author, key)
         if self.kind == "replace":
             op = {
                 "op": "replace",
@@ -133,8 +198,9 @@ class Move:
                 "end": end,
                 "text": self.text,
                 "author": self.author,
+                **where,
             }
-            return op, doc.replace(start, end, self.text, self.author)
+            return op, doc.replace(start, end, self.text, self.author, key)
         raise ScenarioError(f"unknown move kind {self.kind!r}")
 
 
@@ -177,12 +243,26 @@ class SeedBuilder:
     ops: list[dict[str, Any]] = field(default_factory=list)
     comments: list[dict[str, Any]] = field(default_factory=list)
     named: dict[str, str] = field(default_factory=dict)
+    #: Declared non-body segments, keyed by the seed spec's container name
+    #: ("headers"/"footers"/"footnotes") -> {segment_id: base text}.
+    segments: dict[str, dict[str, str]] = field(default_factory=dict)
     _merge_watermark: int = 0
 
     def __post_init__(self) -> None:
         self.doc = MockDoc(
             text=self.base_text, document_id=self.document_id, title=self.title
         )
+
+    def segment(self, kind: str, segment_id: str, text: str) -> str:
+        """Declare a header/footer/footnote on the default tab.
+
+        Must be called before any move that targets it. Returns the segment
+        id so a scenario can hand it straight to ``span(..., segment_id=...)``
+        rather than repeating the string.
+        """
+        self.doc.add_segment(kind, text=text, segment_id=segment_id)
+        self.segments.setdefault(f"{kind}s", {})[segment_id] = text
+        return segment_id
 
     def move(self, name: str, move: Move) -> str:
         """Apply a move, record its seed op, remember its surviving id."""
@@ -208,8 +288,9 @@ class SeedBuilder:
         """Seed a pre-existing comment thread (Drive comment surface)."""
         quote_text = ""
         if quote is not None:
+            segment = quote.segment(self.doc)
             start, end = quote.resolve(self.doc)
-            quote_text = MockDoc.text_of(self.doc.chars[start:end])
+            quote_text = MockDoc.text_of(segment.chars[start:end])
         self.comments.append(
             {"content": content, "quote": quote_text, "author": author}
         )
@@ -222,6 +303,7 @@ class SeedBuilder:
                     "document_id": self.document_id,
                     "title": self.title,
                     "text": self.base_text,
+                    **{k: dict(v) for k, v in self.segments.items()},
                     "suggestions": list(self.ops),
                     "comments": list(self.comments),
                 }
@@ -286,12 +368,19 @@ def deletes_part_of(word: str) -> Predicate:
     """
 
     def pred(doc: MockDoc, sid: str) -> bool:
-        struck = {i for i, c in enumerate(doc.chars) if sid in c.dels}
-        if not struck:
-            return False
-        return any(
-            struck & set(range(start, end)) for start, end in grapheme_spans(doc, word)
-        )
+        # Per segment: an offset in a header is not an offset in the body,
+        # so struck positions and word spans may only be intersected within
+        # the one coordinate space they were both counted in.
+        for segment in doc.ordered_segments():
+            struck = {i for i, c in enumerate(segment.chars) if sid in c.dels}
+            if not struck:
+                continue
+            if any(
+                struck & set(range(start, end))
+                for start, end in grapheme_spans(doc, word, segment=segment.key)
+            ):
+                return True
+        return False
 
     return pred
 
@@ -309,7 +398,9 @@ def spans_paragraph_break() -> Predicate:
     """Marks a ``'\\n'``: the suggestion crosses a block boundary."""
 
     def pred(doc: MockDoc, sid: str) -> bool:
-        return any(c.cp == "\n" for c in doc.chars if sid in c.marks)
+        return any(
+            c.cp == "\n" for _, _, c in doc.iter_chars() if sid in c.marks
+        )
 
     return pred
 
@@ -356,9 +447,14 @@ class Rule:
 
 
 def ordered_suggestion_ids(doc: MockDoc) -> list[str]:
-    """Live suggestion ids in document order (card order, §8)."""
-    spans = doc.ranges()
-    return sorted(doc.registry, key=lambda s: (spans.get(s, (0, 0))[0], s))
+    """Live suggestion ids in document order (card order, §8).
+
+    Delegated to :meth:`MockDoc.cards` rather than sorting on
+    :meth:`MockDoc.ranges` directly: an index only orders ids WITHIN one
+    segment, so sorting the flat map interleaved a header's card with the
+    body's by comparing numbers counted from two different starts.
+    """
+    return [card["suggestion_id"] for card in doc.cards()]
 
 
 def decide(doc: MockDoc, rules: list[Rule]) -> dict[str, str]:

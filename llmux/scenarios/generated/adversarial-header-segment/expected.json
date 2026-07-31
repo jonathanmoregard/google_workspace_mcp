@@ -1,0 +1,39 @@
+{
+  "document_id": "mockdoc-a4-header-segment",
+  "final_text": "The quarterly plan ships in March.\nRisks are still unchanged.\nConfidential finaldraft — do not circulate\n",
+  "surviving_suggestion_ids": [
+    "sug.reviewer.2"
+  ],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.bob.1": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "The quarterly plan ships in March.\nRisks are still unchanged.\nConfidential draft — do not circulate\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "The quarterly plan ships in March.\nRisks are still unchanged.\nConfidential final — do not circulate\n"
+    },
+    {
+      "check": "text_present",
+      "text": "Confidential final"
+    },
+    {
+      "check": "text_present",
+      "text": "The quarterly plan ships in March."
+    },
+    {
+      "check": "comment_count",
+      "equals": 0
+    }
+  ]
+}

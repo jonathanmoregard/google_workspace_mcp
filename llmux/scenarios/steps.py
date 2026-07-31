@@ -25,11 +25,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from mockdocs.adapter import utf16_offsets
+from mockdocs.adapter import segment_offsets
 from mockdocs.fake_services import FakeBackend
-from mockdocs.model import MockDoc
+from mockdocs.model import MockDoc, Segment
 
 from llmux.scenarios.primitives import Locator, ScenarioError
+
+
+def address_args(segment: Segment) -> dict[str, Any]:
+    """The ``(tab, segment)`` half of the address every write tool takes.
+
+    **An index is only half of an address**, and a golden solution that
+    emitted the numbers alone taught exactly the pattern that has now been
+    found three times in the production code: an agent reads a bare
+    ``start_index`` and hands it to a tool defaulting to the BODY of the
+    DEFAULT tab. The corpus is what a model imitates, so its own calls carry
+    the space they were computed in.
+
+    ``tab_id`` is always named -- explicitly saying "the tab this index came
+    from" is the habit worth teaching, and it is what makes the same call
+    correct in a document that later grows a second tab. ``segment_id`` is
+    named only when the target is not a body, mirroring the tools' own
+    convention that an omitted segment id means the body.
+    """
+    args: dict[str, Any] = {"tab_id": segment.tab_id}
+    if segment.segment_id is not None:
+        args["segment_id"] = segment.segment_id
+    return args
 
 
 @dataclass
@@ -43,9 +65,16 @@ class OracleContext:
     def doc(self) -> MockDoc:
         return self.backend.get_document(self.document_id)
 
-    def utf16(self, grapheme_index: int) -> int:
-        """Grapheme index -> the UTF-16 code-unit index the API speaks."""
-        return utf16_offsets(self.doc.chars)[grapheme_index]
+    def utf16(self, grapheme_index: int, segment: Optional[Segment] = None) -> int:
+        """Grapheme index -> the UTF-16 code-unit index the API speaks.
+
+        Counted from ``segment``'s own base -- 1 for a body, 0 for a header,
+        footer or footnote -- because that is where the API counts from.
+        """
+        return self.offsets(segment)[grapheme_index]
+
+    def offsets(self, segment: Optional[Segment] = None) -> list[int]:
+        return segment_offsets(segment or self.doc.segment(None))
 
 
 Emission = tuple[dict[str, Any], list[dict[str, Any]]]
@@ -202,11 +231,12 @@ class AnchorComment(Step):
     content_contains: Optional[str] = None
 
     def emit(self, ctx: OracleContext) -> Emission:
+        segment = self.target.segment(ctx.doc)
         start, end = self.target.resolve(ctx.doc)
         if start == end:
             raise ScenarioError("anchored comments need a non-empty range")
-        quote = MockDoc.text_of(ctx.doc.chars[start:end])
-        offsets = utf16_offsets(ctx.doc.chars)
+        quote = MockDoc.text_of(segment.chars[start:end])
+        offsets = ctx.offsets(segment)
         ctx.backend.create_comment_thread(
             ctx.document_id, content=self.content, quote=quote
         )
@@ -223,6 +253,7 @@ class AnchorComment(Step):
                     "content": self.content,
                     "start_index": offsets[start],
                     "end_index": offsets[end],
+                    **address_args(segment),
                 },
             },
             [expectation],
@@ -242,20 +273,23 @@ class SuggestEdit(Step):
     delete: bool = False
 
     def emit(self, ctx: OracleContext) -> Emission:
+        segment = self.target.segment(ctx.doc)
         start, end = self.target.resolve(ctx.doc)
-        offsets = utf16_offsets(ctx.doc.chars)
+        offsets = ctx.offsets(segment)
         author = ctx.backend.me
+        key = segment.key
         args: dict[str, Any] = {"start_index": offsets[start]}
         if self.delete and self.text is not None:
             args["end_index"] = offsets[end]
             args["text"] = self.text
-            ctx.doc.replace(start, end, self.text, author)
+            ctx.doc.replace(start, end, self.text, author, key)
         elif self.delete:
             args["end_index"] = offsets[end]
-            ctx.doc.delete(start, end, author)
+            ctx.doc.delete(start, end, author, key)
         elif self.text is not None:
             args["text"] = self.text
-            ctx.doc.insert(start, self.text, author)
+            ctx.doc.insert(start, self.text, author, key)
         else:
             raise ScenarioError("SuggestEdit needs text, delete=True, or both")
+        args.update(address_args(segment))
         return ({"tool": "suggest_doc_edit", "args": args}, [])

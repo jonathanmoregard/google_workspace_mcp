@@ -1190,6 +1190,92 @@ your own -- the target text is reachable using only accept and reject.
     )
 
 
+def adversarial_header_segment() -> Scenario:
+    """An index taken out of a header lands in the BODY, silently.
+
+    Trap (the bug class this branch has now found three times, made
+    reachable): Docs numbers every ``(tabId, segmentId)`` pair from its own
+    start, and ``suggest_doc_edit`` defaults to ``segment_id=None`` -- the
+    body of the default tab. A card in the page header reports
+    ``start_index: 13``; handing that number back without the ``segment_id``
+    it came with writes at index 13 of the BODY.
+
+    It does not fail. The body here is long enough that [13, 18) is a
+    perfectly valid range in it, so the API accepts the write, the
+    verification echo comes back clean, and the document quietly acquires a
+    suggestion that guts a word in the first body sentence while the header
+    -- the thing the task was about -- is untouched. Index 0 is the only
+    index that fails loud, on the body's section-break floor check; every
+    other index does not.
+
+    The corpus could not express this before ``mockdocs`` had segments, which
+    is exactly why three rounds of the same bug reached production code with
+    every mock-backed test green. The naive bare-index form of this
+    scenario's own solution is generated alongside it as
+    ``naive_solution.json`` and the corpus gate REQUIRES it to fail.
+    """
+    doc_id = "mockdoc-a4-header-segment"
+    b = SeedBuilder(
+        base_text=(
+            "The quarterly plan ships in March.\nRisks are unchanged.\n"
+        ),
+        document_id=doc_id,
+        title="Quarterly plan",
+    )
+    header = b.segment("header", "kix.h1", "Confidential draft — do not circulate\n")
+    # One card in the header, one in the body: the agent has to notice that
+    # its cards are not all in the same coordinate space.
+    b.move("bob_header", remove("bob", span("do not circulate", segment_id=header)))
+    b.move("alice_body", add("alice", before("unchanged"), "still "))
+
+    _, doc = seeded_backend(b.seed_spec())
+    steps = _resolution_steps(
+        doc, [Rule(by_author("alice"), "accept"), Rule(always(), "reject")]
+    )
+    # The trap. `span(..., segment_id=header)` is the whole difference
+    # between this and a write into the body's first sentence.
+    steps.append(
+        SuggestEdit(span("draft", segment_id=header), text="final", delete=True)
+    )
+    return Scenario(
+        id="adversarial-header-segment",
+        tier="adversarial",
+        difficulty=5,
+        tags=["segment", "header", "address", "trap", "multi-author"],
+        authors=["alice", "bob"],
+        seed=b.seed_spec(),
+        document_id=doc_id,
+        brief=_brief(
+            "Fix the header, leave the body alone",
+            doc_id,
+            """
+This document has a page **header** as well as a body, and there are
+pending suggestions in both.
+
+## What to do
+
+1. Accept every pending suggestion by `alice`.
+2. Reject every other pending suggestion.
+3. Then suggest replacing the word `draft` **in the page header** with
+   `final` -- exactly that word, nothing around it.
+
+The body's first sentence must come out of this untouched, character for
+character.
+""",
+        ),
+        steps=steps,
+        n_suggestions=len(doc.registry),
+        extra_checks=[
+            # The header really was edited...
+            {"check": "text_present", "text": "Confidential final"},
+            # ...and the body's first sentence really was not. This is the
+            # check the bare-index write fails: it lands at body index 13.
+            {"check": "text_present", "text": "The quarterly plan ships in March."},
+            {"check": "comment_count", "equals": 0},
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
@@ -1211,6 +1297,7 @@ CATALOG: list[Callable[[], Scenario]] = [
     adversarial_stale_index,
     adversarial_noop,
     adversarial_both_marks,
+    adversarial_header_segment,
 ]
 
 

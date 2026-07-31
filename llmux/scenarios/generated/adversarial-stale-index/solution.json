@@ -31,7 +31,8 @@
     "tool": "suggest_doc_edit",
     "args": {
       "start_index": 64,
-      "text": " (approved)"
+      "text": " (approved)",
+      "tab_id": "t.0"
     }
   }
 ]

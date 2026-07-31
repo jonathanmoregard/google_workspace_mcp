@@ -356,3 +356,22 @@ previously never saw a suggestion id.
 One caveat: the opus 120 run terminated on `error_max_budget_usd` ($6.58
 against a $6.00 cap) -- after resolving every card correctly, so nothing is
 hidden by it, but the tier is at the edge of that budget on opus.
+
+### Re-confirmed after the 2026-07-31 corrections (batch `20260731-103719`)
+
+The summary record grew by `segment`/`segment_id`/`tab_id` and the page
+ceilings changed, so the 120-card tier was re-run on sonnet to check that
+neither cost the result. It did not: **PASS at score 1.00**, 94 turns,
+$3.18, 9.0 min wall, zero errors on either read tool, no contamination, no
+INCONCLUSIVE. The preflight tool probe ran first and reported the surface
+clean.
+
+Two things worth recording. The agent chose a *different* strategy from the
+previous 120 run -- `fields='full'` walked in three pages (the new derived
+ceiling of 43 records per full page), then one `fields='summary',
+status='OPEN'` sweep at the end -- which is why the run cost $3.18 against
+the earlier $2.11 at 92 turns. That is a strategy difference, not a
+regression: the same tier, the same score, and both strategies are ones the
+surface is meant to support. And the three tool errors it did hit were all
+`stale_state` (resolving an id another accept had already garbage-collected),
+the same class as before and unrelated to any of these changes.

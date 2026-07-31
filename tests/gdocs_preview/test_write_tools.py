@@ -22,7 +22,13 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from core.utils import UserInputError
-from gdocs_preview import preview_status, suggestion_ledger, write_tools
+from gdocs_preview import (
+    address,
+    preview_status,
+    review_page,
+    suggestion_ledger,
+    write_tools,
+)
 from tests.gdocs_preview import fixtures as fx
 
 EMAIL = "reviewer@example.com"
@@ -1795,6 +1801,18 @@ DOC_BODY_AND_HEADER = fx.build_doc(
     },
 )
 
+#: Two tabs, each with a suggestion on the SAME local numbers.
+TWO_TAB_READ = fx.build_tabs_payload(
+    [
+        ("t.0", fx.build_doc([fx.paragraph(fx.run("One "),
+                                           fx.run("alpha", ins=["suggest.t0"]),
+                                           fx.run(".\n"))])),
+        ("t.second", fx.build_doc([fx.paragraph(fx.run("Two "),
+                                                fx.run("bravo", ins=["suggest.t1"]),
+                                                fx.run(".\n"))])),
+    ]
+)
+
 ADDRESS_KEYS = {"segment", "segment_id", "tab_id", "start_index", "end_index"}
 
 
@@ -1854,6 +1872,12 @@ class TestEveryEchoedIndexCarriesItsAddress:
         assert echo["suggestion_id"] == "suggest.hdr1"
         assert echo["segment_id"] == "kix.h1"
         assert echo["tab_id"] == "t.0"
+        # The space the range was read in is stated, not left to be inferred.
+        assert result["verification"]["range_scope"] == {
+            "segment": "header",
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+        }
 
     @pytest.mark.asyncio
     async def test_resolved_suggestion_echo_is_a_complete_address(self):
@@ -1904,3 +1928,127 @@ class TestEveryEchoedIndexCarriesItsAddress:
         assert ADDRESS_KEYS <= set(kept)
         assert kept["tab_id"] == "t.0"
         assert kept["segment"] == "body"
+
+
+class TestOverlapSemanticsAreShared:
+    """HIGH 1: the listing REFUSES to read an index range in a multi-tab
+    document without a tab_id; the write echo used to guess, and echoed
+    overlapping suggestions from EVERY tab under the claim "your edit merged
+    into it". Both now go through :mod:`gdocs_preview.address`, and this test
+    is what stops them drifting apart again."""
+
+    RECORDS = [
+        {"suggestion_id": "b.t0", "segment": "body", "segment_id": None,
+         "tab_id": "t.0", "start_index": 5, "end_index": 9},
+        {"suggestion_id": "h.t0", "segment": "header", "segment_id": "kix.h1",
+         "tab_id": "t.0", "start_index": 5, "end_index": 9},
+        {"suggestion_id": "b.t1", "segment": "body", "segment_id": None,
+         "tab_id": "t.second", "start_index": 5, "end_index": 9},
+    ]
+
+    @staticmethod
+    def _read_side(records, *, segment_id, tab_id):
+        """The listing's range filter: ``("refused", why)`` or ``("ok", ids)``."""
+        try:
+            kept, _ = review_page.filter_records(
+                records, start_index=0, end_index=10_000,
+                segment_id=segment_id, tab_id=tab_id,
+            )
+        except ValueError as error:
+            return ("refused", str(error))
+        return ("ok", [r["suggestion_id"] for r in kept])
+
+    @staticmethod
+    def _write_side(records, *, segment_id, tab_id):
+        """The write echo's ``suggestions_at_edit_range``, same shape."""
+        try:
+            scope = address.resolve_range_scope(
+                records, segment_id=segment_id, tab_id=tab_id
+            )
+        except ValueError as error:
+            return ("refused", str(error))
+        return (
+            "ok",
+            [
+                r["suggestion_id"]
+                for r in records
+                if write_tools._overlaps(r, (0, 9_999), scope)
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "segment_id,tab_id",
+        [
+            (None, None),  # multi-tab, unnamed: BOTH must refuse
+            (None, "t.0"),
+            (None, "t.second"),
+            ("kix.h1", "t.0"),
+            ("kix.h1", None),
+            ("kix.nope", "t.0"),
+        ],
+    )
+    def test_both_paths_answer_a_range_identically(self, segment_id, tab_id):
+        """Same verdict AND same reason -- including refusing together."""
+        assert self._read_side(
+            self.RECORDS, segment_id=segment_id, tab_id=tab_id
+        ) == self._write_side(self.RECORDS, segment_id=segment_id, tab_id=tab_id)
+
+    def test_both_paths_refuse_a_multi_tab_range_without_a_tab_id(self):
+        for side in (self._read_side, self._write_side):
+            verdict, reason = side(self.RECORDS, segment_id=None, tab_id=None)
+            assert verdict == "refused"
+            assert "needs a tab_id" in reason
+
+    def test_a_single_tab_document_resolves_implicitly_on_both_paths(self):
+        single = [r for r in self.RECORDS if r["tab_id"] == "t.0"]
+        assert self._read_side(single, segment_id=None, tab_id=None) == (
+            "ok",
+            ["b.t0"],
+        )
+        assert self._write_side(single, segment_id=None, tab_id=None) == (
+            "ok",
+            ["b.t0"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_write_echo_declines_rather_than_naming_another_tab(self):
+        """Naming a suggestion from a tab the edit never touched, and
+        asserting the edit merged into it, hands the agent a wrong id it may
+        go on to reply to or accept."""
+        service = _batch_service({}, document=TWO_TAB_READ)
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="XY",
+            )
+        )
+
+        verification = result["verification"]
+        assert "suggestions_at_edit_range" not in verification
+        assert "needs a tab_id" in verification["suggestions_at_edit_range_unavailable"]
+        assert "more than one tab" in verification["notes"][0]
+
+    @pytest.mark.asyncio
+    async def test_naming_the_tab_answers_it(self):
+        service = _batch_service({}, document=TWO_TAB_READ)
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="XY",
+                tab_id="t.second",
+            )
+        )
+
+        (echo,) = result["verification"]["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == "suggest.t1"
+        assert echo["tab_id"] == "t.second"

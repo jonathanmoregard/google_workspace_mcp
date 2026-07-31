@@ -47,7 +47,11 @@ import binascii
 import json
 from typing import Any, Iterable, Optional, Sequence
 
-from gdocs_preview.address import ADDRESS_FIELDS
+from gdocs_preview.address import (  # noqa: F401 - re-exported for callers
+    ADDRESS_FIELDS,
+    in_range_scope,
+    resolve_range_scope,
+)
 
 # ---------------------------------------------------------------------------
 # Field modes
@@ -235,60 +239,13 @@ def _overlaps(record: dict[str, Any], low: Optional[int], high: Optional[int]) -
 # tab whose LOCAL index happens to fall in the window, so ``matched_count``
 # is wrong and the extra cards look like they are in the section under
 # review. Every index range therefore names exactly one space.
-
-
-def resolve_range_scope(
-    records: Sequence[dict[str, Any]],
-    *,
-    segment_id: Optional[str],
-    tab_id: Optional[str],
-) -> dict[str, Any]:
-    """The one ``(tab, segment)`` an index range is interpreted in.
-
-    ``segment_id=None`` means the body: a non-body segment always carries an
-    id (:func:`gdocs_preview.analysis._collect_segments`), so ``None`` is not
-    ambiguous. ``tab_id=None`` is resolved from the records -- a single-tab
-    or GA read has exactly one, and the caller should not have to name it --
-    but a genuinely multi-tab document is REFUSED rather than guessed at,
-    because each tab is numbered from its own start and picking one silently
-    would answer a different question than the one asked.
-    """
-    if tab_id is None:
-        present = sorted({r.get("tab_id") for r in records if r.get("tab_id")})
-        if len(present) > 1:
-            raise ValueError(
-                "An index range needs a tab_id in this document: it has "
-                f"{len(present)} tabs ({', '.join(present)}) and Docs numbers "
-                "each tab from its own start, so [start_index, end_index) "
-                "names a different place in each one. Pass tab_id together "
-                "with the range (the tab id is on every suggestion record), "
-                "or filter without a range."
-            )
-        tab_id = present[0] if present else None
-    segment = (
-        "body"
-        if segment_id is None
-        else next(
-            (
-                r.get("segment")
-                for r in records
-                if (r.get("segment_id") or None) == segment_id
-            ),
-            None,
-        )
-    )
-    return {"segment": segment, "segment_id": segment_id, "tab_id": tab_id}
-
-
-def in_range_scope(record: dict[str, Any], scope: dict[str, Any]) -> bool:
-    """Is ``record`` numbered in the space ``scope`` names?"""
-    if (record.get("segment_id") or None) != (scope.get("segment_id") or None):
-        return False
-    if scope.get("tab_id") is not None and (
-        (record.get("tab_id") or None) != scope["tab_id"]
-    ):
-        return False
-    return True
+#
+# ``resolve_range_scope`` and ``in_range_scope`` live in
+# :mod:`gdocs_preview.address` and are imported at the top of this module: the
+# WRITE path (``write_tools._overlaps``, deciding which suggestions are "at"
+# an edit) has to answer the same question, and two implementations of it
+# drifted apart once already -- the read path refused a multi-tab guess while
+# the write path made one.
 
 
 def normalize_filter_value(value: Any, parameter: str) -> Optional[str]:

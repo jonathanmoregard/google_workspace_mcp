@@ -54,7 +54,7 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, suggestion_ledger
-from gdocs_preview.address import with_address
+from gdocs_preview.address import in_range_scope, resolve_range_scope, with_address
 from gdocs_preview.analysis import (
     CONTEXT_WINDOW,
     extract_suggestions_from_tabs,
@@ -178,30 +178,29 @@ def _locate(body_text: str, anchor: Optional[str], expected: str) -> Optional[st
     return _clip(body_text[position:end])
 
 
-def _overlaps(
-    record: dict[str, Any],
-    edit_range: tuple[int, int],
-    segment_id: Optional[str] = None,
-    tab_id: Optional[str] = None,
-) -> bool:
+def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) -> bool:
     """Does a suggestion's index range touch the range an edit targeted?
 
     Bounds are inclusive on both sides so an insertion (a zero-width edit)
     at the seam of a suggestion still counts -- that is precisely the case
     where the API merges instead of creating a new suggestion.
 
-    The comparison is confined to the ``(tabId, segmentId)`` the edit named,
-    because Docs numbers each from its own start: a footnote suggestion whose
-    LOCAL range happens to cover the same numbers as a body edit is not at
-    the edit, and echoing it as ``suggestions_at_edit_range`` would tell the
-    caller its merge landed somewhere it did not.
+    ``scope`` is a resolved ``(tab, segment)`` from
+    :func:`gdocs_preview.address.resolve_range_scope`, and membership is
+    :func:`gdocs_preview.address.in_range_scope` -- the SAME pair the listing's
+    range filter uses. It used to be a hand-rolled comparison here that
+    checked ``segment_id`` always but ``tab_id`` only when the caller had
+    named one, so on a multi-tab document the default ``tab_id=None`` echoed
+    overlapping suggestions from EVERY tab and asserted "your edit merged
+    into it" about a suggestion in a tab the edit never touched -- a wrong id
+    the agent may then reply to or accept. The read path refuses that guess;
+    making the write path share the resolver is what stops the two answering
+    the same question differently again.
     """
     start, end = record.get("start_index"), record.get("end_index")
     if start is None or end is None:
         return False
-    if (record.get("segment_id") or None) != (segment_id or None):
-        return False
-    if tab_id is not None and (record.get("tab_id") or None) != tab_id:
+    if not in_range_scope(record, scope):
         return False
     edit_start, edit_end = edit_range
     return start <= edit_end and end >= edit_start
@@ -441,8 +440,8 @@ async def suggest_doc_edit(
             end_index, summary_text, status], pending_suggestion_count, and
             -- only when they apply -- suggestions_at_edit_range (when the
             API reported no new id, which happens when the edit merged into
-            an existing same-author suggestion), also_removed_suggestion_ids,
-            and notes}.
+            an existing same-author suggestion) with the range_scope it was
+            read in, also_removed_suggestion_ids, and notes}.
 
             Every echoed suggestion carries segment/segment_id/tab_id
             alongside its indexes, because a Docs index is only unique
@@ -615,19 +614,40 @@ async def _verify_suggest(
         "pending_suggestion_count": len(read.records),
     }
     if not echoed_ids:
-        overlapping = [
-            _echo_suggestion(record)
-            for record in read.records.values()
-            if _overlaps(record, edit_range, segment_id, tab_id)
-        ]
-        if overlapping:
-            verification["suggestions_at_edit_range"] = overlapping
+        try:
+            scope = resolve_range_scope(
+                list(read.records.values()), segment_id=segment_id, tab_id=tab_id
+            )
+        except ValueError as error:
+            # Multi-tab document, no tab_id given: the listing REFUSES this
+            # and so must the echo. Naming a suggestion from some other tab
+            # as "the one your edit merged into" is a wrong id the agent may
+            # go on to reply to or accept. The write itself already landed,
+            # so this is reported, never raised.
+            verification["suggestions_at_edit_range_unavailable"] = str(error)
             verification["notes"] = [
-                "the API reported no new suggestion id for this edit; the "
-                "suggestion(s) now covering the edited range are echoed "
-                "instead -- editing inside an existing same-author "
-                "suggestion merges into it rather than creating a new one."
+                "this edit named no tab_id and the document has more than "
+                "one tab, so the suggestion(s) at the edited range cannot be "
+                "identified: an index means a different place in each tab. "
+                "Re-run with the tab_id the record carries, or read the "
+                "range back with list_document_suggestions(tab_id=...)."
             ]
+            scope = None
+        if scope is not None:
+            overlapping = [
+                _echo_suggestion(record)
+                for record in read.records.values()
+                if _overlaps(record, edit_range, scope)
+            ]
+            if overlapping:
+                verification["suggestions_at_edit_range"] = overlapping
+                verification["range_scope"] = scope
+                verification["notes"] = [
+                    "the API reported no new suggestion id for this edit; the "
+                    "suggestion(s) now covering the edited range are echoed "
+                    "instead -- editing inside an existing same-author "
+                    "suggestion merges into it rather than creating a new one."
+                ]
     vanished = sorted(known_before - read.live_ids) if known_before is not None else []
     if vanished:
         resolutions = suggestion_ledger.record_resolution(

@@ -599,6 +599,16 @@ def check_resolution(
         if landed and unresolved and expected_text != removed_text:
             # The two predictions both fit here (the text repeats in exactly
             # the wrong way). Refuse rather than pick one.
+            #
+            # ``expected_text != removed_text`` excludes the case where the
+            # two predictions are the SAME string and therefore cannot
+            # disagree: a style-only suggestion changes no text, so its
+            # ``pre_text`` and ``post_text`` are one value and this function
+            # returns True for it unconditionally. That is correct about the
+            # text and content-free about the resolution -- a style accept
+            # that never landed reads exactly like one that did -- which is
+            # why the caller derives its verdict from the post-write pending
+            # set as well; see ``write_tools._ResolutionVerdict``.
             return ResolutionCheck(None, window, AMBIGUOUS_ANCHOR)
         verdicts.add(landed)
     if not verdicts:

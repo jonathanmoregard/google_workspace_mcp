@@ -1,8 +1,11 @@
 # Large review sets: what the stress corpus found, and the surface change it argues for
 
-Written 2026-07-30 alongside `llmux/scenarios/stressgen/`. This is a
-**recommendation, not an implementation**: nothing in `gdocs_preview/` is
-changed by it, and it should be read by whoever owns that module next.
+Written 2026-07-30 alongside `llmux/scenarios/stressgen/`. It was a
+**recommendation**; it was implemented on 2026-07-31 in
+`gdocs_preview/review_page.py`. The measurement and the argument below are
+unchanged; what was actually built, and where it departs from the
+recommendation and why, is recorded in [What was
+built](#what-was-built-2026-07-31) at the end.
 
 ## The measurement
 
@@ -165,3 +168,103 @@ what the recommendation rests on, and those are properties of
 `gdocs_preview/analysis.py`'s record shape rather than of the mock. Re-run
 the measurement against a real enrolled document before quoting absolute
 numbers externally.
+
+---
+
+## What was built (2026-07-31)
+
+The narrowing lives in `gdocs_preview/review_page.py` -- pure functions over
+analysis records, so the arithmetic is testable without a service object
+(`tests/gdocs_preview/test_review_page.py`). The tools stayed thin.
+
+```python
+async def list_document_suggestions(
+    service, user_google_email, document_id,
+    fields: str = "summary",            # "summary" | "full"
+    page_size: Optional[int] = None,    # default 200 summary / 40 full
+    page_token: Optional[str] = None,
+    author: Optional[str] = None,
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
+    status: Optional[str] = None,
+) -> str
+
+async def get_doc_review_view(
+    service, user_google_email, document_id,
+    view_mode: str = "SUGGESTIONS_INLINE",
+    fields: str = "text",               # "text" | "paragraphs" | "full"
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
+    include_comments: bool = True,
+) -> str
+```
+
+Measured with `uv run python -m llmux.scenarios.stressgen.measure --markdown`,
+defaults against every-field-one-response:
+
+| cards | `list` full | `list` default | cut | `review_view` full | `review_view` default | cut | one read of each (est. tokens) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 30 | 23,732 | 6,117 | 74.2% | 33,727 | 13,136 | 61.1% | 16,423 -> 5,810 |
+| 60 | 47,736 | 11,703 | 75.5% | 44,588 | 19,036 | 57.3% | 26,121 -> 9,014 |
+| 90 | 70,354 | 16,837 | 76.1% | 45,349 | 20,956 | 53.8% | 32,683 -> 11,041 |
+| 120 | 93,636 | 21,952 | 76.6% | 54,980 | 23,954 | 56.4% | 41,811 -> 13,280 |
+
+### Four deviations from the recommendation, and why
+
+**1. `fields="summary"` is the DEFAULT, not `"full"`.** The recommendation
+asked for "no behaviour change for existing callers". The artifacts of batch
+`20260730-224247` argued the other way: at 120 cards the client answered the
+tool with `Error: result (105,187 characters) exceeds maximum allowed tokens`
+and wrote the payload to a file the agent had no tool to open. The agent
+never saw a suggestion id. A default whose response cannot be delivered is
+not the conservative option, so the default is the one that fits and `full`
+is one parameter away. `summary` also keeps `status`, which the
+recommendation would have dropped -- it costs 16 characters a card and it is
+the difference between "pending" and "already dealt with".
+
+**2. Page size defaults are per field mode (200 / 40), sized in bytes.** The
+binding constraint is what a client will deliver in one tool result, not a
+card count; a card costs ~780 characters in `full` and ~172 in `summary`, so
+one page size for both would be wrong for one of them. Both defaults land a
+full page at 31-35 KB, under the ~57 KB at which the observed client began
+spilling output to a file.
+
+**3. `get_doc_review_view` got field selection and an index window, not
+pagination.** Measured first, as asked. Its growth is *not* comparable:
+~100-200 characters per card against `list`'s flat 780, because it is
+dominated by the document, which the review set does not lengthen. What it
+does have is redundancy -- at 120 cards the paragraph map was 26,269
+characters and `body_text` 13,462, and `body_text` is exactly the
+concatenation of the body paragraphs' `text`. So the fix is to stop saying
+it twice (default `fields="text"`), plus the window the failing run's agent
+explicitly wanted when it worked out that "Limitations of this evidence" was
+indices 6841-8518 and had no way to ask for it.
+
+**4. Index ranges are half-open `[start_index, end_index)`.** The
+recommendation said "range overlap" without picking an end. Half-open,
+because that is the convention the caller's numbers arrive in: Docs
+`endIndex` is exclusive, so a paragraph map reports the next paragraph's
+start as this one's end, and an inclusive filter pulls in the paragraph on
+the far side of every seam. `end_index <= start_index` is refused with the
+convention spelled out rather than silently returning nothing.
+
+### The parts that were taken as written
+
+- **Page tokens encode a position, not an offset** -- the recommendation
+  called this out and it matters more than it looks. The token anchors on the
+  last emitted `suggestion_id`; the next page resumes after that id wherever
+  it now sits, so resolving cards from page 1 does not skip the cards behind
+  them. When the anchor is itself gone -- the normal working pattern -- the
+  recorded ordinal is the fallback and the response says, in the page block,
+  that the fallback can skip or repeat a card.
+- **No `resolve_many` batch write.** Nothing in the measurement moved.
+- **Never truncate silently.** Every response carries `suggestion_count` (the
+  document total, meaning unchanged), `matched_count`, `returned_count`,
+  `omitted_fields`, the applied `filters`, and -- when there is more -- a
+  `next_page_token` and a sentence saying this is a page.
+
+Both tools' new parameters are pinned against the real enrolled API in
+`e2e/test_preview_surface.py`
+(`test_fields_filters_and_pagination_against_the_real_api`,
+`test_review_view_fields_and_window_against_the_real_api`), so the caveat
+above is now discharged for the semantics; the ratios remain mock-derived.

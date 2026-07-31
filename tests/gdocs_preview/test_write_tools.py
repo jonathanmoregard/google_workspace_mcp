@@ -2650,6 +2650,30 @@ TWO_TAB_READ = fx.build_tabs_payload(
     ]
 )
 
+#: The same two tabs after ``suggest.t1`` was accepted: the card is gone from
+#: the pending set, so the only open question is what the text now reads --
+#: which is the question an ambiguous tab leaves unanswerable. (Reusing
+#: TWO_TAB_READ here made the resolved id STILL PENDING in the post-write
+#: read, which is a decided "the write did not land" and not an unlocated
+#: window at all.)
+TWO_TAB_READ_RESOLVED = fx.build_tabs_payload(
+    [
+        (
+            "t.0",
+            fx.build_doc(
+                [
+                    fx.paragraph(
+                        fx.run("One "),
+                        fx.run("alpha", ins=["suggest.t0"]),
+                        fx.run(".\n"),
+                    )
+                ]
+            ),
+        ),
+        ("t.second", fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))])),
+    ]
+)
+
 ADDRESS_KEYS = {"segment", "segment_id", "tab_id", "start_index", "end_index"}
 
 
@@ -3083,7 +3107,13 @@ class TestResolutionIsLocatedInItsOwnSegment:
     @pytest.mark.asyncio
     async def test_an_unlocatable_tab_reports_nothing_rather_than_guessing(self):
         """A record with no tab id, in a document with several: there is no
-        honest window to return."""
+        honest window to return.
+
+        The accept LANDED (``suggest.t1`` is gone from the pending set), so
+        the verdict is genuinely open and the missing window is the only
+        thing wrong -- a read in which it was still pending would be a
+        decided false, not an unlocated window.
+        """
         _observe(
             {
                 "suggestion_id": "suggest.t1",
@@ -3101,7 +3131,7 @@ class TestResolutionIsLocatedInItsOwnSegment:
         )
         service = _batch_service(
             {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.t1"]}]},
-            document=TWO_TAB_READ,
+            document=TWO_TAB_READ_RESOLVED,
         )
         fn = _unwrap(write_tools.manage_document_suggestion)
 
@@ -3116,6 +3146,7 @@ class TestResolutionIsLocatedInItsOwnSegment:
         )
 
         verification = result["verification"]
+        assert verification["still_pending"] is False
         assert verification["resulting_text"] is None
         assert verification["matches_expectation"] is None
 
@@ -3173,14 +3204,20 @@ class TestAnUnlocatedWindowSaysWhy:
         assert verification["resulting_text_unavailable"] == "suggestion_not_listed"
         (note,) = verification["notes"]
         assert "never listed" in note
-        assert "NOT because the write failed" in note
+        assert "`still_pending` is the evidence" in note
         # The end state is still answered.
         assert verification["still_pending"] is False
 
     @pytest.mark.asyncio
     async def test_an_ambiguous_tab_says_which_tabs(self):
+        """The card carried no tab_id and the accept LANDED (it is gone from
+        the pending set), so the only open question is the text -- which a
+        two-tab read cannot answer without the tab."""
         _observe({**self.RECORD, "tab_id": None})
-        verification = await self._accept(_batch_service({}, document=TWO_TAB_READ))
+        verification = await self._accept(
+            _batch_service({}, document=TWO_TAB_READ_RESOLVED)
+        )
+        assert verification["still_pending"] is False
         assert verification["matches_expectation"] is None
         assert verification["resulting_text_unavailable"] == "ambiguous_tab"
         (note,) = verification["notes"]
@@ -3265,4 +3302,189 @@ class TestAnUnlocatedWindowSaysWhy:
                 read=read,
             )
             assert "s.1" in note or "post-write read" in note
-            assert "NOT because the write failed" in note
+            assert "`still_pending` is the evidence" in note
+
+
+class TestAStillPendingSuggestionIsNeverAMatch:
+    """Round 5 HIGH: a resolution that did not land reported success.
+
+    ``still_pending`` (is the id in the post-write pending set?) and
+    ``matches_expectation`` (does the range read what the card promised?)
+    used to be written into the response independently, and for a REJECT
+    they answer two different questions with only one of them informative:
+    base text is IDENTICAL whether or not a reject took effect -- the
+    suggestion's insertion is stripped from base text either way
+    (``analysis._collect_segments``), its deletion kept either way -- so
+    ``check_resolution`` answers ``True`` in both worlds. The API's own
+    documented HTTP-200-no-op therefore emitted ``{"still_pending": true,
+    "matches_expectation": true}``: a positive verdict standing beside the
+    structural evidence that contradicts it, with no note.
+
+    The accept half had the same hole for a style-only suggestion, whose
+    ``pre_text`` and ``post_text`` are the same string (see the guard in
+    ``analysis.check_resolution``), so this is not a reject-only patch: the
+    verdict is now DERIVED from pending-set membership plus the text check
+    (``write_tools._ResolutionVerdict``), and the two cannot disagree.
+    """
+
+    @staticmethod
+    async def _resolve(action: str, record: dict, document: dict) -> dict:
+        """Resolve ``record`` against a post-write read that did NOT change.
+
+        The batchUpdate answers with no ``suggestionResponses`` at all, which
+        is the shape of the API's 200-no-op.
+        """
+        _observe(record)
+        service = _batch_service({}, document=document)
+        result = json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action=action,
+                suggestion_id=record["suggestion_id"],
+            )
+        )
+        return result["verification"]
+
+    #: "Hello world.\n" with " brave" suggested-INSERTED and still pending.
+    INSERTION_UNCHANGED = fx.build_tabs_payload(
+        [("t.0", fx.DOC_PLAIN_INSERTION)], suggestions=[thread_for("suggest.ins1")]
+    )
+    INSERTION_RECORD = {
+        "suggestion_id": "suggest.ins1",
+        "type": "insertion",
+        "pre_text": "",
+        "post_text": " brave",
+        "context_before": "Hello",
+        "context_after": " world.\n",
+        "segment": "body",
+        "segment_id": None,
+        "tab_id": "t.0",
+        "start_index": 6,
+        "end_index": 12,
+    }
+
+    #: "Hello cruel world.\n" with " cruel" suggested-DELETED, still pending.
+    DELETION_UNCHANGED = fx.build_tabs_payload(
+        [("t.0", fx.DOC_PLAIN_DELETION)], suggestions=[thread_for("suggest.del1")]
+    )
+    DELETION_RECORD = {
+        "suggestion_id": "suggest.del1",
+        "type": "deletion",
+        "pre_text": " cruel",
+        "post_text": "",
+        "context_before": "Hello",
+        "context_after": " world.\n",
+        "segment": "body",
+        "segment_id": None,
+        "tab_id": "t.0",
+        "start_index": 6,
+        "end_index": 12,
+    }
+
+    #: "Plain styled text.\n" with "styled" restyled, still pending.
+    STYLE_UNCHANGED = fx.build_tabs_payload(
+        [("t.0", fx.DOC_STYLE)], suggestions=[thread_for("suggest.sty1")]
+    )
+    STYLE_RECORD = {
+        "suggestion_id": "suggest.sty1",
+        "type": "style",
+        "pre_text": "styled",
+        "post_text": "styled",
+        "context_before": "Plain ",
+        "context_after": " text.\n",
+        "segment": "body",
+        "segment_id": None,
+        "tab_id": "t.0",
+        "start_index": 7,
+        "end_index": 13,
+    }
+
+    @pytest.mark.asyncio
+    async def test_a_reject_of_an_insertion_that_did_not_land(self):
+        """Rejecting an insertion promises the base text stays as it is --
+        which it also does when nothing happened at all."""
+        verification = await self._resolve(
+            "reject", self.INSERTION_RECORD, self.INSERTION_UNCHANGED
+        )
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+
+    @pytest.mark.asyncio
+    async def test_a_reject_of_a_deletion_that_did_not_land(self):
+        """The mirror: rejecting a deletion promises the struck text stays,
+        and a deletion is kept in base text whether or not it was rejected."""
+        verification = await self._resolve(
+            "reject", self.DELETION_RECORD, self.DELETION_UNCHANGED
+        )
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+
+    @pytest.mark.asyncio
+    async def test_an_accept_of_a_style_only_suggestion_that_did_not_land(self):
+        """The accept half of the same hole: a style-only suggestion's
+        before and after text are one string, so the text check is
+        content-free and answered True on a write that never happened."""
+        verification = await self._resolve(
+            "accept", self.STYLE_RECORD, self.STYLE_UNCHANGED
+        )
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+
+    @pytest.mark.asyncio
+    async def test_an_accept_that_did_not_land(self):
+        """The case that already worked, kept as the control: for an accept
+        of a text-changing suggestion the base text DOES separate the two
+        worlds, and the verdict must not regress to null."""
+        verification = await self._resolve(
+            "accept", self.INSERTION_RECORD, self.INSERTION_UNCHANGED
+        )
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+
+    @pytest.mark.asyncio
+    async def test_the_note_says_the_pending_set_is_what_decided_it(self):
+        verification = await self._resolve(
+            "reject", self.INSERTION_RECORD, self.INSERTION_UNCHANGED
+        )
+        (note,) = verification["notes"]
+        assert "suggest.ins1" in note
+        assert "pending set" in note
+        assert "list_document_suggestions" in note
+
+    @pytest.mark.asyncio
+    async def test_a_reject_that_did_land_is_still_true(self):
+        """The fix must not make every reject unverifiable: with the card
+        gone from the pending set the text check decides, as before."""
+        verification = await self._resolve(
+            "reject",
+            self.INSERTION_RECORD,
+            fx.build_tabs_payload(
+                [("t.0", fx.build_doc([fx.paragraph(fx.run("Hello world.\n"))]))]
+            ),
+        )
+        assert verification["still_pending"] is False, verification
+        assert verification["matches_expectation"] is True, verification
+        assert "notes" not in verification, verification
+
+    def test_the_two_fields_cannot_be_assembled_into_a_contradiction(self):
+        """The design-level half: not "we remembered to check" but "the pair
+        has one producer and it cannot emit that pair"."""
+        for text_check in (True, False, None):
+            verdict = write_tools._ResolutionVerdict.derive(
+                still_pending=True, text_check=text_check
+            )
+            assert verdict.matches_expectation is False
+            verdict = write_tools._ResolutionVerdict.derive(
+                still_pending=False, text_check=text_check
+            )
+            assert verdict.matches_expectation is text_check
+        with pytest.raises(ValueError, match="still_pending"):
+            write_tools._ResolutionVerdict(
+                still_pending=True, text_check=True, matches_expectation=True
+            )
+        with pytest.raises(ValueError, match="still_pending"):
+            write_tools._ResolutionVerdict(
+                still_pending=True, text_check=None, matches_expectation=None
+            )

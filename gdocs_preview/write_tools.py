@@ -45,6 +45,7 @@ the write that removed it.
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from googleapiclient.errors import HttpError
@@ -264,8 +265,9 @@ UNLOCATED_REASONS = (
 )
 
 _NOT_A_FAILED_WRITE = (
-    "matches_expectation is null because no check ran, NOT because the write "
-    "failed -- `still_pending` is the evidence about the write itself."
+    "No TEXT comparison could be made, which is a statement about the READ, "
+    "not about the write: `still_pending` is the evidence about whether the "
+    "resolution itself took effect."
 )
 
 
@@ -329,6 +331,97 @@ def _unlocated_note(
         f"this write. {_NOT_A_FAILED_WRITE} Re-read the document to see its "
         "current state."
     )
+
+
+@dataclass(frozen=True)
+class _ResolutionVerdict:
+    """``still_pending`` and ``matches_expectation``, derived TOGETHER.
+
+    The two used to be assembled independently -- a structural fact and a
+    text comparison, each written into the response block on its own line --
+    so they could contradict each other, and on a reject they always did.
+    Base text is IDENTICAL whether or not a reject took effect: the
+    suggestion's insertion is stripped from base text either way
+    (:func:`gdocs_preview.analysis._collect_segments`) and its deletion kept
+    either way, so :func:`~gdocs_preview.analysis.check_resolution` reads the
+    expected text in both worlds and the API's documented HTTP-200-no-op
+    emitted ``{"still_pending": true, "matches_expectation": true}`` -- a
+    positive verdict standing beside the evidence that contradicts it. The
+    accept half had the same hole for a style-only suggestion, whose
+    ``pre_text`` and ``post_text`` are one string.
+
+    Membership of the post-write pending set is decisive for BOTH actions: an
+    accepted or rejected suggestion is gone from it, so an id that is still
+    there is a resolution that did not take effect, whatever the text reads.
+    :meth:`derive` is therefore the only producer of the pair -- the text
+    check can answer the question the pending set leaves open and can never
+    overrule it -- and :meth:`__post_init__` makes the contradictory pair
+    unrepresentable. FOUR consecutive review rounds found this verification
+    reporting success on a write it had not verified, each time through a
+    different branch; deriving the verdict from the evidence rather than
+    comparing the two afterwards is what retires the branch.
+    """
+
+    #: Is the resolved id STILL in the post-write pending set?
+    still_pending: bool
+    #: What :func:`~gdocs_preview.analysis.check_resolution` said about the
+    #: text at the range, or ``None`` when no comparison could be made.
+    text_check: Optional[bool]
+    #: The agent-facing verdict, which is never positive while the suggestion
+    #: is pending.
+    matches_expectation: Optional[bool]
+
+    def __post_init__(self) -> None:
+        if self.still_pending and self.matches_expectation is not False:
+            raise ValueError(
+                "matches_expectation cannot be "
+                f"{self.matches_expectation!r} while still_pending is true: "
+                "the id is in the post-write pending set, so the resolution "
+                "did not take effect. Build this with _ResolutionVerdict."
+                "derive(), which cannot produce that pair."
+            )
+
+    @classmethod
+    def derive(
+        cls, *, still_pending: bool, text_check: Optional[bool]
+    ) -> "_ResolutionVerdict":
+        """The verdict the two pieces of evidence add up to.
+
+        A pending id is a decided ``False``; only once it is gone does the
+        text decide, and a text check that could not run stays ``None`` there
+        (with :data:`UNLOCATED_REASONS` naming why).
+        """
+        return cls(
+            still_pending=still_pending,
+            text_check=text_check,
+            matches_expectation=False if still_pending else text_check,
+        )
+
+
+def _still_pending_note(
+    action: str, suggestion_id: str, text_check: Optional[bool]
+) -> str:
+    """One sentence for a resolution the pending set says did not happen."""
+    note = (
+        f"suggestion {suggestion_id!r} is STILL in the document's pending set "
+        f"after this {action}, so the resolution did not take effect and "
+        "matches_expectation is false on that evidence. The preview API can "
+        "answer a resolution with HTTP 200 and no effect -- an id that no "
+        "longer resolves is one way -- so the response ids alone do not say "
+        "the write landed. Re-read with list_document_suggestions before "
+        "treating the card as resolved."
+    )
+    if text_check is True:
+        note += (
+            " The text at its range does read what the card promised, which "
+            "is not evidence here: for some suggestions the base text is the "
+            "same in both worlds -- a rejected insertion is absent from it "
+            "either way, a rejected deletion present either way, and a "
+            "style-only suggestion's before and after are one string -- so "
+            "only the pending set separates a resolution that landed from "
+            "one that did not."
+        )
+    return note
 
 
 def _is_ours(record: dict[str, Any]) -> bool:
@@ -970,6 +1063,15 @@ async def manage_document_suggestion(
             statement about the place the write happened. It is compared at
             full width; only the echoed copy is trimmed.
 
+            still_pending is the structural evidence about the write: an
+            accepted or rejected suggestion is gone from the pending set, so
+            an id still in it is a resolution that did NOT take effect.
+            matches_expectation is derived from that first and the text
+            second, and is therefore never true while still_pending is true,
+            whatever the text reads -- rejecting anything leaves the base
+            text exactly as it was, so on a reject the text alone cannot tell
+            a write that landed from one that did not.
+
             matches_expectation is null ONLY when no check could be run, and
             resulting_text_unavailable then names which of the four reasons
             it was: suggestion_not_listed (this session never listed the id,
@@ -1077,10 +1179,19 @@ async def _verify_resolution(
     ``context_after`` behind it. Every value on both sides of that comparison
     is produced by the same projection layer that produced the card, so there
     is one representation and no substring search -- see
-    :class:`~gdocs_preview.analysis.BaseText`. THREE consecutive review
-    rounds found this check reporting success on a destructive write it had
-    not verified, each time through a different way of comparing two
-    differently-projected strings; the type is what retires the class.
+    :class:`~gdocs_preview.analysis.BaseText`.
+
+    **The two are not independent answers to be printed side by side.**
+    ``matches_expectation`` is DERIVED from both, in
+    :meth:`_ResolutionVerdict.derive`, because for a whole class of
+    suggestions the text cannot tell the two worlds apart and the pending
+    set always can: rejecting anything, and resolving a style-only
+    suggestion, leaves the base text exactly as it was. Four consecutive
+    review rounds found this verification reporting success on a write it had
+    not verified -- the read-path addresses, the echo clip, the marked-vs-base
+    representation, and then the reject half -- and each fix retired one
+    branch of the same shape. Deriving the verdict from the evidence, rather
+    than assembling the two and hoping they agree, is what retires the shape.
 
     ``expected_text`` is ``None`` when the caller resolved an id it never
     listed -- there is no promise to check the document against.
@@ -1090,9 +1201,9 @@ async def _verify_resolution(
 
     A ``matches_expectation`` of ``None`` always carries
     ``resulting_text_unavailable`` naming which of
-    :data:`UNLOCATED_REASONS` prevented the check, plus a note saying so in
-    words. Silence made several different situations -- one of them entirely
-    benign -- arrive at the agent as the same ``null``.
+    :data:`UNLOCATED_REASONS` prevented the text comparison, plus a note
+    saying so in words. Silence made several different situations -- one of
+    them entirely benign -- arrive at the agent as the same ``null``.
     """
     if not verify:
         # Still remember the resolution: a later "does not exist" for this id
@@ -1147,7 +1258,14 @@ async def _verify_resolution(
                 matches = check.matches
                 resulting_text = check.window
                 unlocated = check.reason
-    if matches is None and unlocated is None:  # pragma: no cover - belt and braces
+    # The two pieces of evidence, added up in ONE place. `matches` from here
+    # on is the derived verdict, not the text check: see _ResolutionVerdict.
+    verdict = _ResolutionVerdict.derive(
+        still_pending=suggestion_id in read.records, text_check=matches
+    )
+    if (
+        verdict.matches_expectation is None and unlocated is None
+    ):  # pragma: no cover - belt and braces
         # The docstring promises a null verdict always names its reason, and
         # a promise a caller reads is worth more than one the code merely
         # happens to keep: a future branch that forgets is caught here.
@@ -1156,7 +1274,7 @@ async def _verify_resolution(
     verification: dict[str, Any] = {
         "source": "post_write_read",
         "read_source": read.source,
-        "still_pending": suggestion_id in read.records,
+        "still_pending": verdict.still_pending,
         "resolved_suggestion": (
             _echo_suggestion(resolved_record) if resolved_record else None
         ),
@@ -1165,10 +1283,17 @@ async def _verify_resolution(
         # verdict -- it only shortens the receipt.
         "expected_text": _clip(expected_text),
         "resulting_text": _clip(resulting_text),
-        "matches_expectation": matches,
+        "matches_expectation": verdict.matches_expectation,
         "pending_suggestion_count": len(read.records),
         "pending_suggestion_ids": sorted(read.records),
     }
+    if verdict.still_pending:
+        # First note, because it is the one that changed the verdict. The
+        # unlocated note below explains a missing resulting_text; this one
+        # explains a false matches_expectation, and they can both apply.
+        verification.setdefault("notes", []).append(
+            _still_pending_note(action, suggestion_id, verdict.text_check)
+        )
     if unlocated is not None:
         # Its sibling _verify_suggest names its one ambiguity
         # (``suggestions_at_edit_range_unavailable``); a null verdict here

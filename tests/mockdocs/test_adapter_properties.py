@@ -1,18 +1,31 @@
 """Property tests for the API adapter, including cross-validation against the
 repo's real ``gdocs_preview.analysis``.
 
-The adapter's job is unit conversion: the model counts grapheme clusters, the
-Docs API counts UTF-16 code units. Three families of property here:
+The adapter's job is unit conversion and coordinate-space resolution: the
+model counts grapheme clusters, the Docs API counts UTF-16 code units, and it
+counts them **per ``(tab, segment)``**. Three families of property here:
 
 1. **Index discipline** -- every ``startIndex``/``endIndex`` the adapter emits
-   slices the text it emits, under UTF-16, exactly.
+   slices the text it emits, under UTF-16, exactly, *within the segment that
+   emitted it*.
 2. **View-mode fidelity** -- each ``suggestionsViewMode`` returns its SPEC §3
-   projection.
+   projection, per segment.
 3. **Cross-validation** -- ``analysis.extract_suggestions`` run on the
-   adapter's output must compute the same per-suggestion pre/post text the
-   model computes from the char array. This checks the mock and
-   ``analysis.py`` against one algebra: a disagreement means one of them is
-   wrong, and neither gets to be the oracle.
+   adapter's output must compute the same per-suggestion pre/post text, span
+   AND address the model computes from the char arrays. This checks the mock
+   and ``analysis.py`` against one algebra: a disagreement means one of them
+   is wrong, and neither gets to be the oracle.
+
+Every property here is quantified over multi-tab, multi-segment documents
+(:func:`tests.mockdocs.strategies.tabbed_docs`, which also generates the
+degenerate single-tab body-only case). An index is only half of an address,
+and a property stated over one flat coordinate space cannot see the half it
+is missing.
+
+The tab and segment *facts* those properties rest on -- every tab's body
+starts at 1, a non-body segment starts at 0 and omits its ``startIndex``, a
+batchUpdate goes exactly where its ``tabId``/``segmentId`` say -- are pinned
+separately in ``tests/mockdocs/test_tabs_and_segments.py``.
 """
 
 from __future__ import annotations
@@ -25,19 +38,23 @@ from googleapiclient.errors import HttpError
 from hypothesis import HealthCheck, given, settings
 
 from gdocs_preview import preview_status
-from gdocs_preview.analysis import extract_suggestions, render_document, utf16_len
+from gdocs_preview.analysis import (
+    extract_suggestions_from_tabs,
+    render_document,
+    utf16_len,
+)
 from gdocs_preview.preview_read import suggestion_threads_by_id, tab_documents
 from mockdocs.adapter import (
     PREVIEW_REQUEST_TYPES,
     SUGGEST_UNSUPPORTED_OFFICIAL,
     document_payload,
+    segment_offsets,
     tabs_document_payload,
     to_grapheme_index,
-    utf16_offsets,
 )
 from mockdocs.fake_services import FakeBackend
 from mockdocs.model import MockDoc
-from tests.mockdocs.strategies import suggestion_docs
+from tests.mockdocs.strategies import suggestion_docs, tabbed_docs
 
 SETTINGS = settings(
     max_examples=150,
@@ -46,17 +63,41 @@ SETTINGS = settings(
 )
 
 
-def _elements(payload: dict) -> list[dict]:
+def _elements(content: list[dict]) -> list[dict]:
     return [
         element
-        for structural in payload["body"]["content"]
+        for structural in content
         if "paragraph" in structural
         for element in structural["paragraph"]["elements"]
     ]
 
 
+def _content_text(content: list[dict]) -> str:
+    return "".join(e["textRun"]["content"] for e in _elements(content))
+
+
 def _payload_text(payload: dict) -> str:
-    return "".join(e["textRun"]["content"] for e in _elements(payload))
+    return _content_text(payload["body"]["content"])
+
+
+def _payload_segments(payload: dict) -> list[tuple[str, str, int, list[dict]]]:
+    """``(tab_id, segment_id, index_base, content)`` over a tabs-mode payload.
+
+    Flattened through the production ``preview_read.tab_documents``, so the
+    test walks the payload the way the tools do rather than the way the mock
+    built it.
+    """
+    out: list[tuple[str, str, int, list[dict]]] = []
+    for tab in tab_documents(payload):
+        document = tab.document
+        out.append(
+            (tab.tab_id, None, 1, (document.get("body") or {}).get("content", []))
+        )
+        for field in ("headers", "footers", "footnotes"):
+            for seg_id in sorted(document.get(field) or {}):
+                segment = document[field][seg_id] or {}
+                out.append((tab.tab_id, seg_id, 0, segment.get("content", [])))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -65,67 +106,87 @@ def _payload_text(payload: dict) -> str:
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_emitted_indexes_slice_emitted_text_under_utf16(doc):
     """The defining property of the API boundary: indexes are UTF-16 code
-    units into the document text, so slicing UTF-16 by them reproduces each
-    run's own content. A code-point-based implementation fails this on the
-    first emoji."""
+    units into **their own segment's** text, so slicing UTF-16 by them
+    reproduces each run's own content. A code-point-based implementation fails
+    this on the first emoji; an implementation that numbered every segment
+    from one shared origin fails it on the first header.
+
+    ``startIndex`` is read with a default of 0, not required: proto3 omits it
+    there, and demanding it would make this test pass only on bodies.
+    """
     for mode in (
         "SUGGESTIONS_INLINE",
         "PREVIEW_WITHOUT_SUGGESTIONS",
         "PREVIEW_SUGGESTIONS_ACCEPTED",
     ):
-        payload = document_payload(doc, mode)
-        text = _payload_text(payload)
-        units = text.encode("utf-16-le")
-        for element in _elements(payload):
-            start, end = element["startIndex"], element["endIndex"]
-            content = element["textRun"]["content"]
-            # Body text begins at index 1; two bytes per UTF-16 code unit.
-            sliced = units[(start - 1) * 2 : (end - 1) * 2].decode("utf-16-le")
-            assert sliced == content
-            assert end - start == utf16_len(content)
+        payload = tabs_document_payload(doc, mode)
+        for _tab_id, _seg_id, base, content in _payload_segments(payload):
+            units = _content_text(content).encode("utf-16-le")
+            for element in _elements(content):
+                start = element.get("startIndex", 0)
+                end = element["endIndex"]
+                text = element["textRun"]["content"]
+                # Two bytes per UTF-16 code unit; the segment's own base.
+                sliced = units[(start - base) * 2 : (end - base) * 2].decode(
+                    "utf-16-le"
+                )
+                assert sliced == text
+                assert end - start == utf16_len(text)
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_indexes_are_contiguous_and_paragraphs_align(doc):
-    payload = document_payload(doc, "SUGGESTIONS_INLINE")
-    cursor = 1
-    for structural in payload["body"]["content"]:
-        if "paragraph" not in structural:
-            continue
-        assert structural["startIndex"] == cursor
-        for element in structural["paragraph"]["elements"]:
-            assert element["startIndex"] == cursor
-            cursor = element["endIndex"]
-        assert structural["endIndex"] == cursor
+    """Within one segment the indexes run without gaps from that segment's own
+    base -- 1 for a body (past the leading section break), 0 for the rest."""
+    payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE")
+    for _tab_id, _seg_id, base, content in _payload_segments(payload):
+        cursor = base
+        for structural in content:
+            if "paragraph" not in structural:
+                continue
+            assert structural.get("startIndex", 0) == cursor
+            for element in structural["paragraph"]["elements"]:
+                assert element.get("startIndex", 0) == cursor
+                cursor = element["endIndex"]
+            assert structural["endIndex"] == cursor
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_utf16_grapheme_index_round_trip(doc):
-    offsets = utf16_offsets(doc.chars)
-    for grapheme_index, utf16_index in enumerate(offsets):
-        assert to_grapheme_index(doc.chars, utf16_index) == grapheme_index
+    """Round-trips per segment, at that segment's base. The same UTF-16 number
+    round-trips to a different grapheme index in each segment, which is the
+    whole hazard."""
+    for segment in doc.ordered_segments():
+        offsets = segment_offsets(segment)
+        assert offsets[0] == segment.index_base
+        for grapheme_index, utf16_index in enumerate(offsets):
+            assert (
+                to_grapheme_index(segment.chars, utf16_index, segment.index_base)
+                == grapheme_index
+            )
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_indexes_inside_a_character_are_rejected(doc):
     """A tool that computed indexes with Python ``len()`` on an emoji-bearing
     document lands between the surrogates; the API rejects that and so must
     the mock."""
     from mockdocs.model import MockDocsError
 
-    offsets = set(utf16_offsets(doc.chars))
-    for candidate in range(1, max(offsets) + 1):
-        if candidate in offsets:
-            continue
-        with pytest.raises(MockDocsError):
-            to_grapheme_index(doc.chars, candidate)
-        break
+    for segment in doc.ordered_segments():
+        offsets = set(segment_offsets(segment))
+        for candidate in range(segment.index_base, max(offsets) + 1):
+            if candidate in offsets:
+                continue
+            with pytest.raises(MockDocsError):
+                to_grapheme_index(segment.chars, candidate, segment.index_base)
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -134,33 +195,35 @@ def test_indexes_inside_a_character_are_rejected(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_view_modes_return_their_projections(doc):
-    assert (
-        _payload_text(document_payload(doc, "SUGGESTIONS_INLINE")) == doc.display_text()
-    )
-    assert (
-        _payload_text(document_payload(doc, "PREVIEW_WITHOUT_SUGGESTIONS"))
-        == doc.original_text()
-    )
-    assert (
-        _payload_text(document_payload(doc, "PREVIEW_SUGGESTIONS_ACCEPTED"))
-        == doc.final_text()
-    )
+    """Each view mode projects every segment, not only the body."""
+    for mode, projection in (
+        ("SUGGESTIONS_INLINE", "display"),
+        ("PREVIEW_WITHOUT_SUGGESTIONS", "original"),
+        ("PREVIEW_SUGGESTIONS_ACCEPTED", "final"),
+    ):
+        payload = tabs_document_payload(doc, mode)
+        for tab_id, seg_id, _base, content in _payload_segments(payload):
+            assert _content_text(content) == doc.segment_text(
+                (tab_id, seg_id), projection
+            )
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_clean_views_carry_no_suggestion_marks(doc):
     for mode in ("PREVIEW_WITHOUT_SUGGESTIONS", "PREVIEW_SUGGESTIONS_ACCEPTED"):
-        payload = document_payload(doc, mode)
-        for element in _elements(payload):
-            assert "suggestedInsertionIds" not in element["textRun"]
-            assert "suggestedDeletionIds" not in element["textRun"]
-        rendered = render_document(payload)
-        assert "{+" not in rendered["body_text"]
-        assert "{-" not in rendered["body_text"]
-        assert rendered["suggestion_ids"] == []
+        payload = tabs_document_payload(doc, mode)
+        for _tab_id, _seg_id, _base, content in _payload_segments(payload):
+            for element in _elements(content):
+                assert "suggestedInsertionIds" not in element["textRun"]
+                assert "suggestedDeletionIds" not in element["textRun"]
+        for tab in tab_documents(payload):
+            rendered = render_document(tab.document, tab_id=tab.tab_id)
+            assert "{+" not in rendered["body_text"]
+            assert "{-" not in rendered["body_text"]
+            assert rendered["suggestion_ids"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +238,13 @@ def _model_pre_post(doc: MockDoc, sid: str) -> tuple[str, str]:
     pre  = base text of the affected range (ALL insertions stripped, ALL
            deletions kept).
     post = the range with S -- and only S -- applied.
+
+    Sliced out of the suggestion's OWN segment: ``ranges()`` is in that
+    segment's index space, and slicing the body with a header's range would
+    quietly produce the wrong window rather than an error.
     """
     lo, hi = doc.ranges()[sid]
-    window = doc.chars[lo:hi]
+    window = doc.segment_of(sid).chars[lo:hi]
     pre = "".join(c.cp for c in window if not c.ins)
     post = "".join(
         c.cp for c in window if (sid in c.ins) or (not c.ins and sid not in c.dels)
@@ -186,44 +253,57 @@ def _model_pre_post(doc: MockDoc, sid: str) -> tuple[str, str]:
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_analysis_agrees_with_the_model(doc):
-    """End-to-end: drive the REAL ``extract_suggestions`` over adapter output
-    and require it to reproduce the model's per-suggestion pre/post text,
-    span, type and author.
+    """End-to-end: drive the REAL ``extract_suggestions_from_tabs`` over
+    adapter output and require it to reproduce the model's per-suggestion
+    pre/post text, span, type, author AND address.
 
     Authors ride the tabs+comments read (the only one that carries thread
     objects), so this drives the whole production read path: tabs payload ->
     ``preview_read`` normalizers -> ``analysis``.
+
+    The address assertions are the ones the flat model could not make. A
+    record's ``start_index`` is checked against its own segment's offsets and
+    then fed back through :func:`to_grapheme_index` *at that segment's base*,
+    so a record that named the right number against the wrong segment fails
+    here instead of at some future review round.
     """
     payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
-    (tab,) = tab_documents(payload)
-    result = extract_suggestions(
-        tab.document,
+    tabs = tab_documents(payload)
+    result = extract_suggestions_from_tabs(
+        [(t.tab_id, t.document) for t in tabs],
         threads=suggestion_threads_by_id(payload),
-        tab_id=tab.tab_id,
     )
 
     assert result["document_id"] == doc.document_id
     assert result["suggestion_count"] == len(doc.registry)
     assert {r["suggestion_id"] for r in result["suggestions"]} == set(doc.registry)
 
-    offsets = utf16_offsets(doc.chars)
     spans = doc.ranges()
     for record in result["suggestions"]:
         sid = record["suggestion_id"]
+        home = doc.segment_of(sid)
         pre, post = _model_pre_post(doc, sid)
         assert record["pre_text"] == pre, f"pre_text mismatch for {sid}"
         assert record["post_text"] == post, f"post_text mismatch for {sid}"
 
+        assert record["tab_id"] == home.tab_id
+        assert record["segment_id"] == home.segment_id
+        assert record["segment"] == home.kind
+
+        offsets = segment_offsets(home)
         lo, hi = spans[sid]
         assert record["start_index"] == offsets[lo]
         assert record["end_index"] == offsets[hi]
-        # The reported index must be usable to address the model again.
-        assert to_grapheme_index(doc.chars, record["start_index"]) == lo
+        # The reported index must be usable to address the model again -- and
+        # only in the segment it was reported for.
+        assert (
+            to_grapheme_index(home.chars, record["start_index"], home.index_base) == lo
+        )
 
-        has_ins = any(sid in c.ins for c in doc.chars)
-        has_del = any(sid in c.dels for c in doc.chars)
+        has_ins = any(sid in c.ins for c in home.chars)
+        has_del = any(sid in c.dels for c in home.chars)
         expected_type = (
             "replacement"
             if has_ins and has_del
@@ -238,21 +318,36 @@ def test_analysis_agrees_with_the_model(doc):
         assert record["author"]["me"] == (doc.registry[sid].author == "alice")
         assert record["status"] == "OPEN"
         assert record["summary_text"] == doc.label(sid)["text"]
-        assert record["tab_id"] == "t.0"
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_rendered_markers_match_the_render_states(doc):
     """``render_document``'s CriticMarkup output must agree with §4: every
     char whose render state involves an insertion mark appears inside
-    ``{+...+}``, every purely struck char inside ``{-...-}``."""
-    payload = document_payload(doc, "SUGGESTIONS_INLINE")
-    rendered = render_document(payload)
-    stripped = rendered["body_text"].replace("{+", "").replace("+}", "")
-    stripped = stripped.replace("{-", "").replace("-}", "")
-    assert stripped == doc.display_text()
-    assert set(rendered["suggestion_ids"]) == set(doc.registry)
+    ``{+...+}``, every purely struck char inside ``{-...-}``.
+
+    Asserted per tab and per segment against ``segment_text``. Deliberately
+    NOT against a whole-document concatenation: the review layer is free to
+    put separators between tabs (and does), and this test is about the marker
+    round-trip, not about presentation.
+    """
+    payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE")
+
+    def unmark(text: str) -> str:
+        for marker in ("{+", "+}", "{-", "-}"):
+            text = text.replace(marker, "")
+        return text
+
+    seen: set[str] = set()
+    for tab in tab_documents(payload):
+        rendered = render_document(tab.document, tab_id=tab.tab_id)
+        assert unmark(rendered["body_text"]) == doc.segment_text((tab.tab_id, None))
+        for field in ("headers", "footers", "footnotes"):
+            for seg_id, text in rendered[field].items():
+                assert unmark(text) == doc.segment_text((tab.tab_id, seg_id))
+        seen.update(rendered["suggestion_ids"])
+    assert seen == set(doc.registry)
 
 
 # ---------------------------------------------------------------------------
@@ -276,20 +371,34 @@ def test_plain_get_carries_no_thread_objects(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=tabbed_docs())
 def test_tabs_read_moves_the_body_and_adds_threads(doc):
     """Tabs mode: no top-level ``body``, content under
     ``tabs[i].documentTab.body`` with the SAME indexes, threads at the top
-    level. Verified against the real API."""
+    level. Verified against the real API.
+
+    The GA read is the FIRST tab byte-for-byte and nothing else -- that is
+    what "``includeTabsContent=false`` returns only the first tab" means, and
+    a mock that silently merged the other tabs in would make the degraded read
+    look lossless.
+    """
     plain = document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
     payload = tabs_document_payload(doc, "SUGGESTIONS_INLINE", me="alice")
 
     assert "body" not in payload
-    (tab,) = payload["tabs"]
-    assert tab["documentTab"]["body"] == plain["body"]
-    assert tab["tabProperties"]["tabId"] == "t.0"
+    assert [t["tabProperties"]["tabId"] for t in payload["tabs"]] == [
+        t.tab_id for t in doc.tabs
+    ]
+    first = payload["tabs"][0]
+    assert first["documentTab"]["body"] == plain["body"]
+    assert first["tabProperties"]["tabId"] == "t.0"
+    for field in ("headers", "footers", "footnotes"):
+        assert first["documentTab"].get(field) == plain.get(field)
+    # Threads are document-wide: top level, not per tab.
     assert payload["commentsViewMode"] == "COMMENTS_VIEW_MODE_INCLUDED"
     assert set(suggestion_threads_by_id(payload)) == set(doc.registry)
+    for tab in payload["tabs"]:
+        assert "suggestions" not in tab and "comments" not in tab
     for thread in payload.get("suggestions", []):
         # A suggestion head post has an author but no content (prod shape).
         assert thread["headPost"]["author"]["displayName"]

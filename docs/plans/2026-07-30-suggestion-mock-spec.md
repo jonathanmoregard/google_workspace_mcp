@@ -429,3 +429,37 @@ harness — and is the only part of this document written by the implementation.
   (`document_payload` vs `tabs_document_payload`) and `mockdocs.fake_services`
   enforces the API's "comments view mode requires tabs content" 400. Details:
   `docs/preview-api-reference.md` § "Reading threads".
+
+### 14.1 Tabs and segments — an amendment to §2 (2026-07-31)
+
+§2 gives a document **one** flat `Char` array, and §6/§11 are stated over it. That is
+one coordinate space, and a real document has many: Docs numbers every
+`(tabId, segmentId)` pair from its own start. The mock now models that, because the
+single-array shape made a whole bug class *unrepresentable* — three consecutive review
+rounds found an index emitted or compared without its `(tab, segment)` in the production
+code, and every one of them was invisible to the mock-backed unit tests and to every
+llmux scenario. Only the prod e2e suite could see them. A test harness that cannot
+express the failure is not evidence about it.
+
+- **`Doc.chars` becomes `Doc.segments: {(tab_id, segment_id): Segment}`**, each `Segment`
+  holding its own `Char` array plus its `kind` (`body`/`header`/`footer`/`footnote`).
+  The registry stays document-wide: suggestion ids and comment threads are not per-tab.
+  A freshly constructed document is single-tab (`t.0`) and body-only, so everything
+  above §14 still describes it exactly, and `MockDoc.chars` remains a live property onto
+  that body.
+- **Index bases.** A body is numbered from **1** (index 0 is that tab's leading section
+  break) — in *every* tab, not only the first. A header, footer or footnote is numbered
+  from its own **0**, and 0 is a writable position there (verified against the live API
+  2026-07-31 by inserting at `{"index": 0, "segmentId": <headerId>}`). The API serialises
+  proto3, so `startIndex: 0` is never emitted; the adapter omits it, which is what
+  exercises `gdocs_preview.analysis._indexes`.
+- **§6 merge is segment-local.** Two same-author suggestions in different segments or
+  different tabs may report the same numbers and are still different places; `gap` is
+  only defined within one segment. Merging them would be a fiction the editor cannot
+  produce.
+- **New invariant I5** (§11.1): *a suggestion's marks live in exactly one segment.* It is
+  what a cross-segment merge would break, and it is what lets §8's `anchor` stay a single
+  integer — paired, now, with the `tab_id`/`segment_id` that make it an address.
+- **An omitted `tabId`/`segmentId` resolves silently to the default tab's body**, as the
+  API does. That is reproduced rather than papered over: it is the footgun, and the
+  llmux scenario `adversarial-header-segment` exists to make an agent fall into it.

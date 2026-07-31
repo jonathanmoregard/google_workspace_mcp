@@ -20,6 +20,16 @@ worth re-reading if a law ever fails:
    not "underline-only" in the global rendering. The law holds when read as
    the per-suggestion projection of the rendering, which is exactly how §8
    defines ``struck``/``added``; the test asserts that reading.
+
+3. **§11 says "the document" and the spec's document is one flat array.**
+   Prod's is not: it is one array per ``(tab, segment)``. Every law below is
+   therefore quantified over :func:`tests.mockdocs.strategies.any_docs`, which
+   generates both the single-tab body-only document the spec imagined and the
+   multi-tab multi-segment one the API actually serves, and every test that
+   used to walk ``doc.chars`` now walks ``doc.display()`` -- the whole
+   document, in document order, rather than the default tab's body. The two
+   are the same list on a body-only document, which is why the change is
+   invisible to the single-segment cases and load-bearing everywhere else.
 """
 
 from __future__ import annotations
@@ -37,10 +47,11 @@ from mockdocs.model import (
     MockDoc,
 )
 from tests.mockdocs.strategies import (
+    any_docs,
     base_texts,
     op_specs,
     small_suggestion_docs,
-    suggestion_docs,
+    tabbed_docs,
 )
 
 SETTINGS = settings(
@@ -57,9 +68,10 @@ SETTINGS = settings(
 
 @SETTINGS
 @given(text=base_texts(), ops=st.lists(op_specs(), min_size=0, max_size=8))
-def test_i1_i4_hold_after_every_operation(text, ops):
+def test_i1_i5_hold_after_every_operation(text, ops):
     """I1 (no orphan marks), I2 (GC), I3 (colour determinism), I4 (render
-    totality) after each of a random multi-author op sequence."""
+    totality), I5 (one home segment per suggestion) after each of a random
+    multi-author op sequence."""
     from tests.mockdocs.strategies import apply_ops
 
     doc = MockDoc(text=text, document_id="d", title="t")
@@ -69,7 +81,7 @@ def test_i1_i4_hold_after_every_operation(text, ops):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_i2_gc_after_resolution(doc):
     """I2 must survive accept/reject, not just §5 edits -- see the module
     docstring, item 1."""
@@ -80,9 +92,9 @@ def test_i2_gc_after_resolution(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_i4_render_states_are_total_and_exclusive(doc):
-    for c in doc.chars:
+    for c in doc.display():
         state = c.render_state()
         assert state == (
             RENDER_BOTH
@@ -101,7 +113,7 @@ def test_i4_render_states_are_total_and_exclusive(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l1_extremes(doc):
     """accept-all ≡ final(D); reject-all ≡ original(D). Each yields a document
     with no marks and an empty registry."""
@@ -112,17 +124,17 @@ def test_l1_extremes(doc):
     accepted.accept_all()
     assert accepted.display_text() == expected_final
     assert not accepted.registry
-    assert all(not c.ins and not c.dels for c in accepted.chars)
+    assert all(not c.ins and not c.dels for c in accepted.display())
 
     rejected = doc.clone()
     rejected.reject_all()
     assert rejected.display_text() == expected_original
     assert not rejected.registry
-    assert all(not c.ins and not c.dels for c in rejected.chars)
+    assert all(not c.ins and not c.dels for c in rejected.display())
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l2_resolution_is_destructive_idempotent(doc):
     for sid in sorted(doc.registry):
         once = doc.clone()
@@ -162,32 +174,33 @@ def test_l3_resolution_commutes(doc):
                 f"L3 violated: {f}({s}) then {g}({t}) != reversed"
             )
             assert sorted(a.registry) == sorted(b.registry)
-            assert [(sorted(c.ins), sorted(c.dels)) for c in a.chars] == [
-                (sorted(c.ins), sorted(c.dels)) for c in b.chars
+            assert [(sorted(c.ins), sorted(c.dels)) for c in a.display()] == [
+                (sorted(c.ins), sorted(c.dels)) for c in b.display()
             ]
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l4_self_cancelling_spans(doc):
     """If S ∈ c.ins ∧ S ∈ c.del then c is in neither extreme, and both
     accept(S) and reject(S) remove it. (The "ul" case.)"""
     original = doc.original()
     final = doc.final()
     for sid in sorted(doc.registry):
-        both = [i for i, c in enumerate(doc.chars) if sid in c.ins and sid in c.dels]
+        chars = doc.display()
+        both = [i for i, c in enumerate(chars) if sid in c.ins and sid in c.dels]
         if not both:
             continue
         for i in both:
-            c = doc.chars[i]
+            c = chars[i]
             assert c not in original and c not in final
 
         marker = object()
         for action in ("accept", "reject"):
             resolved = doc.clone()
-            targets = [id(resolved.chars[i]) for i in both]
+            targets = [id(resolved.display()[i]) for i in both]
             getattr(resolved, action)(sid)
-            survivors = {id(c) for c in resolved.chars}
+            survivors = {id(c) for c in resolved.display()}
             assert not (set(targets) & survivors), (
                 f"L4 violated: both-marks char survived {action}({sid})"
             )
@@ -195,7 +208,7 @@ def test_l4_self_cancelling_spans(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs(), seed=st.data())
+@given(doc=any_docs(), seed=st.data())
 def test_l5_survival(doc, seed):
     """Once every suggestion is resolved, a char survives iff every suggestion
     in its ``ins`` was accepted and every suggestion in its ``dels`` was
@@ -207,7 +220,7 @@ def test_l5_survival(doc, seed):
 
     predicted = [
         c.cp
-        for c in doc.chars
+        for c in doc.display()
         if all(decisions[s] == "accept" for s in c.ins)
         and all(decisions[s] == "reject" for s in c.dels)
     ]
@@ -221,7 +234,7 @@ def test_l5_survival(doc, seed):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l6_extremes_are_mark_free_and_stable(doc):
     for projection in ("original", "final"):
         chars = getattr(doc, projection)()
@@ -236,18 +249,36 @@ def test_l6_extremes_are_mark_free_and_stable(doc):
 # ---------------------------------------------------------------------------
 
 
+def mergeable_pairs(doc):
+    """Every ordered pair §6 is allowed to merge: same author, same segment.
+
+    The segment half is not in §6 -- §6 has one flat array and so cannot see
+    the distinction -- but it is a precondition of the law, not a shortcut in
+    the test. ``gap`` is a distance in characters, and there is no distance
+    between two coordinate spaces; merging across one would let ``accept``
+    on a card in the body silently dispose of a proposal in a header. See
+    ``MockDoc._merge_around``.
+    """
+    sids = sorted(doc.registry)
+    homes = {sid: doc.segment_of(sid) for sid in sids}
+    return [
+        (a, b)
+        for a, b in itertools.permutations(sids, 2)
+        if doc.registry[a].author == doc.registry[b].author
+        and homes[a] is not None
+        and homes[a].key == homes[b].key
+    ]
+
+
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l7_merge_preserves_both_extremes(doc):
     """Merge may change granularity of choice; it must never change content.
 
-    Exercised directly against ``_merge`` for every same-author pair, which is
+    Exercised directly against ``_merge`` for every mergeable pair, which is
     stronger than only observing the merges §6 chose to perform.
     """
-    sids = sorted(doc.registry)
-    for survivor, absorbed in itertools.permutations(sids, 2):
-        if doc.registry[survivor].author != doc.registry[absorbed].author:
-            continue
+    for survivor, absorbed in mergeable_pairs(doc):
         merged = doc.clone()
         merged._merge(survivor, absorbed)
         assert merged.original_text() == doc.original_text()
@@ -256,37 +287,29 @@ def test_l7_merge_preserves_both_extremes(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l9_merge_preserves_rendering(doc):
     """display(merge(D, s, a)) differs from display(D) only in run colour --
     and not at all when both share an author, which §6 guarantees."""
-    sids = sorted(doc.registry)
-    for survivor, absorbed in itertools.permutations(sids, 2):
-        if doc.registry[survivor].author != doc.registry[absorbed].author:
-            continue
+    for survivor, absorbed in mergeable_pairs(doc):
         merged = doc.clone()
         merged._merge(survivor, absorbed)
         assert merged.display_text() == doc.display_text()
-        assert [c.render_state() for c in merged.chars] == [
-            c.render_state() for c in doc.chars
+        assert [c.render_state() for c in merged.display()] == [
+            c.render_state() for c in doc.display()
         ]
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_merge_migrates_threads(doc):
     """§10 recommended policy: the absorbed thread is concatenated onto the
     survivor ordered by createdAt, never silently dropped."""
     from mockdocs.model import Comment
 
-    sids = sorted(doc.registry)
-    assume(len(sids) >= 2)
-    survivor, absorbed = None, None
-    for a, b in itertools.permutations(sids, 2):
-        if doc.registry[a].author == doc.registry[b].author:
-            survivor, absorbed = a, b
-            break
-    assume(survivor is not None)
+    pairs = mergeable_pairs(doc)
+    assume(pairs)
+    survivor, absorbed = pairs[0]
 
     doc.registry[survivor].thread.append(Comment("p1", "alice", "keep me", 1))
     doc.registry[absorbed].thread.append(Comment("p2", "bob", "migrate me", 2))
@@ -296,13 +319,36 @@ def test_merge_migrates_threads(doc):
     assert contents == ["keep me", "migrate me"]
 
 
+@SETTINGS
+@given(doc=tabbed_docs())
+def test_merge_never_crosses_a_segment_or_a_tab(doc):
+    """§6 as it has to be read once indexes are per-segment.
+
+    The generators put same-author edits at the same numeric index in several
+    segments on purpose: a merge implemented over a document-wide range map
+    sees those as adjacent (both report ``(4, 5)``) and absorbs one into the
+    other. It must not. The evidence is in ``merge_log``: every merge the
+    model performed joined two suggestions that lived in one segment, and I5
+    -- one home segment per suggestion -- still holds afterwards.
+    """
+    doc.check_invariants()  # I5 is the invariant a cross-segment merge breaks
+    for survivor, _ in doc.merge_log:
+        if survivor not in doc.registry:
+            continue  # later resolved or absorbed in turn
+        home = doc.segment_of(survivor)
+        assert home is not None
+        assert sum(sid == survivor for c in home.chars for sid in c.marks) == sum(
+            sid == survivor for _, _, c in doc.iter_chars() for sid in c.marks
+        ), f"{survivor} carries marks outside {home.describe()} after a merge"
+
+
 # ---------------------------------------------------------------------------
 # §11.4 label laws
 # ---------------------------------------------------------------------------
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l12_label_render_agreement(doc):
     """The struck side of the label is every strikethrough-rendered char
     marked S; the added side is every char marked S that S does not also
@@ -313,12 +359,12 @@ def test_l12_label_render_agreement(doc):
 
         struck_rendered = "".join(
             c.cp
-            for c in doc.chars
+            for c in doc.display()
             if sid in c.dels and c.render_state() in (RENDER_DELETE, RENDER_BOTH)
         )
         added_rendered = "".join(
             c.cp
-            for c in doc.chars
+            for c in doc.display()
             if sid in c.ins
             and sid not in c.dels
             and c.render_state() in (RENDER_INSERT, RENDER_BOTH)
@@ -335,7 +381,7 @@ def test_l12_label_render_agreement(doc):
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_l11_label_is_recomputed_not_stored(doc):
     """label(S) depends only on the chars marked S, in document order."""
     for sid in sorted(doc.registry):
@@ -392,7 +438,7 @@ def test_5_1_insert_into_a_deleted_region_inherits_the_deletion():
 
 
 @SETTINGS
-@given(doc=suggestion_docs())
+@given(doc=any_docs())
 def test_unmerged_deletion_marks_stay_contiguous(doc):
     """Structural consequence of §5.1's inheritance rule: the chars a *single*
     suggestion strikes are one contiguous block, because anything typed into
@@ -406,16 +452,24 @@ def test_unmerged_deletion_marks_stay_contiguous(doc):
     exactly the granularity loss L8 predicts -- but it means a merged card's
     struck text is not necessarily a substring of the document (§8's ``flat``
     concatenates across the hole).
+
+    Contiguity is asserted **inside the suggestion's own segment**: indexes
+    from two segments cannot be compared, so "contiguous" is only a statement
+    about one of them. I5 guarantees there is exactly one to look at.
     """
     merged_survivors = {survivor for survivor, _ in doc.merge_log}
     for sid in sorted(doc.registry):
         if sid in merged_survivors:
             continue
-        struck = [i for i, c in enumerate(doc.chars) if sid in c.dels]
+        home = doc.segment_of(sid)
+        if home is None:
+            continue
+        struck = [i for i, c in enumerate(home.chars) if sid in c.dels]
         if not struck:
             continue
         assert struck == list(range(struck[0], struck[-1] + 1)), (
-            f"deletion marks for unmerged {sid} are not contiguous: {struck}"
+            f"deletion marks for unmerged {sid} are not contiguous in "
+            f"{home.describe()}: {struck}"
         )
 
 

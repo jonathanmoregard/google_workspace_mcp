@@ -245,6 +245,126 @@ def test_replay_is_the_same_algebra_as_the_live_engine():
 
 
 # ---------------------------------------------------------------------------
+# The other editor works in one coordinate space at a time
+# ---------------------------------------------------------------------------
+
+TABBED_SEED = {
+    "me": "mockuser",
+    "documents": [
+        {
+            "document_id": "tab-doc",
+            "title": "Tabbed",
+            "text": "The brave new plan ships in March.\n",
+            "headers": {"kix.h1": "Draft header.\n"},
+            "tabs": [{"tab_id": "t.second", "text": "Risks are unchanged.\n"}],
+        }
+    ],
+}
+
+
+def tabbed_backend() -> FakeBackend:
+    backend = FakeBackend(me="mockuser")
+    backend.seed(TABBED_SEED)
+    return backend
+
+
+def test_shift_indexes_moves_only_the_segment_it_names():
+    """Each segment is numbered from its own start, so a shift is confined to
+    one of them. A harness that edited the body while claiming to have shifted
+    the header would produce a scenario whose "stale index" was never stale."""
+    backend = tabbed_backend()
+    doc = backend.documents["tab-doc"]
+    before = {s.key: doc.segment_text(s.key) for s in doc.ordered_segments()}
+
+    effect = fire(
+        backend,
+        "shift_indexes",
+        {"mode": "insert", "at": 0, "text": "!!", "segment_id": "kix.h1"},
+        "dana",
+    )
+
+    assert effect["segment_id"] == "kix.h1"
+    assert effect["tab_id"] == "t.0"
+    assert effect["utf16_shift"] == 2
+    after = {s.key: doc.segment_text(s.key) for s in doc.ordered_segments()}
+    assert after[("t.0", "kix.h1")] == "!!" + before[("t.0", "kix.h1")]
+    assert {k: v for k, v in after.items() if k != ("t.0", "kix.h1")} == {
+        k: v for k, v in before.items() if k != ("t.0", "kix.h1")
+    }
+
+
+def test_an_anchor_is_searched_inside_its_own_segment_only():
+    """``anchor_text`` resolves in the named segment. Text that exists only in
+    another tab is not found -- loudly, rather than by silently matching a
+    lookalike in the body."""
+    backend = tabbed_backend()
+    effect = fire(
+        backend,
+        "overlapping_suggestion",
+        {"anchor_text": "unchanged", "text": "stable", "tab_id": "t.second"},
+        "frank",
+    )
+    assert effect["tab_id"] == "t.second"
+    doc = backend.documents["tab-doc"]
+    assert "stable" in doc.segment_text(("t.second", None))
+    assert "stable" not in doc.segment_text(("t.0", None))
+
+    with pytest.raises(InterferenceError, match="occurs 0 time"):
+        fire(
+            backend,
+            "overlapping_suggestion",
+            {"anchor_text": "unchanged", "text": "x"},  # default tab's body
+            "frank",
+        )
+
+
+def test_merge_absorb_follows_its_target_into_the_targets_segment():
+    """§6 does not merge across segments, so an edit meant to absorb a header
+    suggestion has to be made in the header. ``after_suggestion`` resolves the
+    target's own segment rather than assuming the body."""
+    backend = tabbed_backend()
+    doc = backend.documents["tab-doc"]
+    theirs = doc.insert(0, "URGENT ", "mockuser", ("t.0", "kix.h1"))
+
+    effect = fire(
+        backend,
+        "merge_absorb",
+        {"after_suggestion": "$latest", "text": "(!) ", "author": "mockuser"},
+        "mockuser",
+    )
+
+    assert effect["segment_id"] == "kix.h1"
+    assert effect["merged"] is True
+    assert theirs in effect["absorbed_ids"]
+    assert len(doc.registry) == 1
+    doc.check_invariants()
+
+
+def test_an_unknown_segment_in_a_script_is_a_loud_error():
+    """The API resolves an omitted tab/segment silently and the adapter copies
+    that. A *script* naming one that does not exist is a different thing --
+    a harness bug -- and must not quietly edit the body instead."""
+    backend = tabbed_backend()
+    with pytest.raises(InterferenceError, match="Invalid segment ID"):
+        fire(
+            backend,
+            "shift_indexes",
+            {"mode": "insert", "at": 0, "text": "x", "segment_id": "kix.nope"},
+        )
+
+
+def test_check_model_covers_every_segment():
+    """The L5 prediction is over the whole document. Scoped to the body it
+    would agree with ``display_text`` only by accident on a body-only
+    document, and would fire spuriously on every other one."""
+    backend = tabbed_backend()
+    doc = backend.documents["tab-doc"]
+    doc.insert(0, "A", "alice", ("t.0", "kix.h1"))
+    doc.delete(0, 5, "bob", ("t.second", None))
+    assert check_model(doc) == []
+
+
+# ---------------------------------------------------------------------------
 # The checker must be able to fail
 # ---------------------------------------------------------------------------
 
@@ -252,6 +372,17 @@ def test_replay_is_the_same_algebra_as_the_live_engine():
 def test_check_model_catches_an_orphan_mark():
     doc = MockDoc(text="abc", document_id="broken")
     doc.chars[0] = Char("a", ins={"sug.ghost.1"}, colour="ghost")
+    violations = check_model(doc)
+    assert any("I1" in v for v in violations)
+
+
+def test_check_model_catches_an_orphan_mark_in_a_header():
+    """I1 over every segment, not only the body: a mark orphaned in a header
+    is exactly as much of a bug and exactly as invisible to a body-only sweep.
+    """
+    doc = MockDoc(text="abc", document_id="broken")
+    header = doc.add_segment("header", "hi\n")
+    header.chars[0] = Char("h", ins={"sug.ghost.1"}, colour="ghost")
     violations = check_model(doc)
     assert any("I1" in v for v in violations)
 

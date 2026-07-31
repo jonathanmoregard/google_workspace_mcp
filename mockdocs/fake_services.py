@@ -25,7 +25,7 @@ from mockdocs.adapter import (
     http_error,
     tabs_document_payload,
 )
-from mockdocs.model import MockDoc, MockDocsError
+from mockdocs.model import FOOTER, FOOTNOTE, HEADER, MockDoc, MockDocsError
 
 _ISO = "2026-07-30T12:00:{:02d}.000Z"
 
@@ -335,6 +335,58 @@ class FakeBackend:
         return out
 
     # -- seeding ----------------------------------------------------------
+    def _seed_segments(self, doc: MockDoc, spec: dict[str, Any], tab_id: str) -> None:
+        """Attach one tab's declared header/footer/footnote segments.
+
+        ``{"headers": {"kix.h1": "Draft — do not circulate\\n"}}``, or
+        ``{"headers": ["Draft\\n"]}`` to let the model mint an opaque id the
+        way prod does. Values are the segment's base text.
+        """
+        for kind, field in (
+            (HEADER, "headers"),
+            (FOOTER, "footers"),
+            (FOOTNOTE, "footnotes"),
+        ):
+            declared = spec.get(field) or {}
+            if isinstance(declared, dict):
+                items = list(declared.items())
+            else:
+                items = [(None, text) for text in declared]
+            for segment_id, text in items:
+                doc.add_segment(
+                    kind, text=text or "\n", segment_id=segment_id, tab_id=tab_id
+                )
+
+    def _seed_ops(
+        self, doc: MockDoc, ops: list[dict[str, Any]], default_tab: Optional[str] = None
+    ) -> None:
+        """Replay §5 operations, each into the segment it names.
+
+        ``tab_id``/``segment_id`` on an op place it; omitting both puts it in
+        the default tab's body, which keeps every pre-tabs seed working
+        verbatim. An op declared inside a ``tabs`` entry defaults to that
+        tab -- otherwise a scenario would have to repeat the tab id on every
+        line and a forgotten one would silently seed the wrong tab, which is
+        the very mistake these seeds exist to set up deliberately.
+        """
+        for op in ops:
+            kind = op.get("op")
+            author = op.get("author", self.me)
+            tab_id = op.get("tab_id", default_tab)
+            segment_id = op.get("segment_id")
+            try:
+                segment = doc.resolve_segment(tab_id=tab_id, segment_id=segment_id).key
+            except MockDocsError as exc:
+                raise MockDocsError(f"seed op {op!r}: {exc}") from None
+            if kind == "insert":
+                doc.insert(op["index"], op["text"], author, segment)
+            elif kind == "delete":
+                doc.delete(op["start"], op["end"], author, segment)
+            elif kind == "replace":
+                doc.replace(op["start"], op["end"], op["text"], author, segment)
+            else:
+                raise MockDocsError(f"unknown seed op: {kind!r}")
+
     def seed(self, spec: dict[str, Any]) -> None:
         """Load documents (and pending suggestions/comments) from a dict.
 
@@ -343,9 +395,26 @@ class FakeBackend:
         reachable state -- a seed can never encode a document the editor
         could not have produced.
 
-        Seed op indexes are MODEL (grapheme-cluster) indexes into the document
+        Seed op indexes are MODEL (grapheme-cluster) indexes into the segment
         as it stands when that op runs, NOT the UTF-16 API indexes the tools
         use: ops apply in order, so each one sees its predecessors' edits.
+
+        Tabs and non-body segments are optional and additive, so **every
+        pre-tabs seed still means exactly what it meant**: a document spec
+        with only ``text`` + ``suggestions`` is single-tab (``t.0``) and
+        body-only, and its ops land in that body. To go further::
+
+            {"document_id": "d1",
+             "text": "Body of the first tab.\\n",
+             "headers": {"kix.h1": "Confidential\\n"},
+             "suggestions": [{"op": "insert", "index": 0, "text": "DRAFT ",
+                              "segment_id": "kix.h1"}],
+             "tabs": [{"tab_id": "t.second", "title": "Appendix",
+                       "text": "Body of the second tab.\\n",
+                       "suggestions": [{"op": "delete", "start": 0, "end": 4}]}]}
+
+        Both suggestions above sit at index 0/1 of their own segment and are
+        by the same author, and they do NOT merge: they are different places.
         """
         if "me" in spec:
             self.me = spec["me"]
@@ -359,17 +428,22 @@ class FakeBackend:
                 document_id=doc_spec.get("document_id"),
                 title=doc_spec.get("title", "Mock Document"),
             )
-            for op in doc_spec.get("suggestions", []):
-                kind = op.get("op")
-                author = op.get("author", self.me)
-                if kind == "insert":
-                    doc.insert(op["index"], op["text"], author)
-                elif kind == "delete":
-                    doc.delete(op["start"], op["end"], author)
-                elif kind == "replace":
-                    doc.replace(op["start"], op["end"], op["text"], author)
-                else:
-                    raise MockDocsError(f"unknown seed op: {kind!r}")
+            self._seed_segments(doc, doc_spec, doc.default_tab_id)
+            extra_tabs = []
+            for tab_spec in doc_spec.get("tabs", []):
+                tab = doc.add_tab(
+                    text=tab_spec.get("text", "\n"),
+                    tab_id=tab_spec.get("tab_id"),
+                    title=tab_spec.get("title"),
+                )
+                self._seed_segments(doc, tab_spec, tab.tab_id)
+                extra_tabs.append((tab, tab_spec))
+            # The default tab's ops first, then each extra tab's own, so an
+            # index in a tab spec means "this tab as declared" rather than
+            # "after whatever a later tab did".
+            self._seed_ops(doc, doc_spec.get("suggestions", []))
+            for tab, tab_spec in extra_tabs:
+                self._seed_ops(doc, tab_spec.get("suggestions", []), tab.tab_id)
             for comment in doc_spec.get("comments", []):
                 self.create_comment_thread(
                     doc.document_id,

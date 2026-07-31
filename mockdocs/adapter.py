@@ -1,20 +1,34 @@
 """Docs API adapter: :mod:`mockdocs.model` <-> ``documents.get`` /
 ``documents.batchUpdate`` payloads.
 
-Two responsibilities:
+Three responsibilities:
 
 1. **Unit conversion.** The model counts grapheme clusters; the API counts
    UTF-16 code units. Every index crossing this boundary is converted here.
    The mismatch is deliberate (spec §14): it is what exercises
    ``gdocs_preview/analysis.py``'s UTF-16 index discipline, so generators and
    fixtures include astral-plane emoji.
-2. **Request semantics.** ``writeControl.writeMode`` SUGGEST routes content
+2. **Coordinate-space resolution.** An index is only half of an address: the
+   API numbers every ``(tabId, segmentId)`` pair from its own start, so a
+   request's index is meaningless until its tab and segment are known. Every
+   index conversion below is therefore per-segment, against
+   :meth:`mockdocs.model.MockDoc.resolve_segment`, and a request that names
+   neither resolves to the default tab's body -- silently, as prod does.
+3. **Request semantics.** ``writeControl.writeMode`` SUGGEST routes content
    edits through the SPEC §5 suggestion operations; EDIT mutates the base
    text. Preview-only request types are rejected with a 400-shaped
    ``HttpError`` when the backend simulates a non-enrolled caller.
 
 Payload shapes follow ``docs/preview-api-reference.md``. Where that document
 marks an item UNCERTAIN the code says so at the point of the assumption.
+
+**proto3 omits defaults, and so does this module.** ``startIndex: 0`` is
+never serialized by the real API: a header segment's only paragraph came back
+as ``{"endIndex": 13, "paragraph": {...}}`` with no ``startIndex`` at all, and
+its inner element likewise (verified 2026-07-31). Index 0 is only reachable in
+a header, footer or footnote -- a body's first paragraph starts at 1 -- so the
+absence is exactly the shape ``gdocs_preview.analysis._indexes`` has to read
+as 0, and the mock must produce it or that code path is never exercised.
 """
 
 from __future__ import annotations
@@ -26,7 +40,13 @@ import httplib2
 from googleapiclient.errors import HttpError
 
 from mockdocs.graphemes import split_graphemes, utf16_len
-from mockdocs.model import Char, MockDoc, MockDocsError
+from mockdocs.model import (
+    SEGMENT_CONTAINERS,
+    Char,
+    MockDoc,
+    MockDocsError,
+    Segment,
+)
 
 #: documents.get suggestionsViewMode -> model projection (brief's mapping).
 VIEW_MODE_PROJECTIONS = {
@@ -134,7 +154,11 @@ def utf16_offsets(chars: list[Char], start: int = 1) -> list[int]:
     """UTF-16 offset of each char, plus a trailing end sentinel.
 
     The body of a real Google Doc starts at index 1 (index 0 is the leading
-    section break), hence ``start=1``.
+    section break) -- in every tab, not only the first -- hence ``start=1``.
+    A header, footer or footnote is numbered from its own 0 and needs
+    ``start=0``; :attr:`mockdocs.model.Segment.index_base` is the value to
+    pass, and passing the wrong one is precisely the bug this mock exists to
+    make visible.
     """
     offsets = [start]
     for c in chars:
@@ -143,8 +167,17 @@ def utf16_offsets(chars: list[Char], start: int = 1) -> list[int]:
     return offsets
 
 
+def segment_offsets(segment: Segment) -> list[int]:
+    """:func:`utf16_offsets` for a segment, at that segment's own base."""
+    return utf16_offsets(segment.chars, segment.index_base)
+
+
 def to_grapheme_index(chars: list[Char], utf16_index: int, start: int = 1) -> int:
     """UTF-16 index (API space) -> grapheme index (model space).
+
+    ``start`` is the segment's index base; the caller must know which segment
+    the index came from, because the same number means a different character
+    in each.
 
     Raises ``MockDocsError`` when the index is out of range or lands inside a
     surrogate pair / grapheme cluster -- the real API rejects such indexes
@@ -171,15 +204,16 @@ def to_grapheme_index(chars: list[Char], utf16_index: int, start: int = 1) -> in
 # ---------------------------------------------------------------------------
 
 
-def _project(doc: MockDoc, view_mode: str) -> list[Char]:
+def _project(chars: list[Char], view_mode: str) -> list[Char]:
+    """SPEC §3's three projections, applied to one segment's chars."""
     projection = VIEW_MODE_PROJECTIONS.get(view_mode)
     if projection is None:
         raise MockDocsError(f"Invalid value at 'suggestions_view_mode' ({view_mode})")
-    return {
-        "display": doc.display,
-        "original": doc.original,
-        "final": doc.final,
-    }[projection]()
+    if projection == "original":
+        return [c for c in chars if not c.ins]
+    if projection == "final":
+        return [c for c in chars if not c.dels]
+    return list(chars)
 
 
 def _coalesce_runs(
@@ -265,20 +299,51 @@ def suggestion_threads(doc: MockDoc, me: Optional[str] = None) -> list[dict[str,
     return threads
 
 
-def _body_content(doc: MockDoc, view_mode: str) -> list[dict[str, Any]]:
-    """The body ``content`` array for one view mode.
+def _indexed(node: dict[str, Any], start: int, end: int) -> dict[str, Any]:
+    """``node`` with its index pair attached, **omitting a zero start**.
+
+    proto3 does not serialize default values, so the real API never writes
+    ``startIndex: 0``: a header's first paragraph arrives as
+    ``{"endIndex": 13, "paragraph": …}`` (verified 2026-07-31). Emitting the
+    absence rather than an explicit zero is what makes
+    ``gdocs_preview.analysis._indexes`` -- which reads a missing start on an
+    indexed node as 0 -- a code path the mock actually exercises.
+    """
+    out: dict[str, Any] = {}
+    if start:
+        out["startIndex"] = start
+    out["endIndex"] = end
+    out.update(node)
+    return out
+
+
+def _segment_content(
+    segment: Segment, view_mode: str, chars: Optional[list[Char]] = None
+) -> list[dict[str, Any]]:
+    """One segment's ``content`` array for one view mode.
 
     All ``startIndex``/``endIndex`` values are UTF-16 code units, converted
-    from the grapheme model here and nowhere else.
+    from the grapheme model here and nowhere else, and they start at the
+    segment's own base: **1 for a body** (index 0 is the leading section
+    break, in every tab) and **0 for a header, footer or footnote**. Two
+    segments therefore hand out the same numbers for different characters,
+    which is the whole reason this function takes a segment rather than a
+    document.
+
+    A body opens with the leading ``sectionBreak``; a non-body segment does
+    not have one -- verified 2026-07-31, where a header's content was a bare
+    one-paragraph array starting at index 0.
     """
-    chars = _project(doc, view_mode)
+    if chars is None:
+        chars = segment.chars
+    chars = _project(chars, view_mode)
     marked = VIEW_MODE_PROJECTIONS[view_mode] == "display"
 
-    content: list[dict[str, Any]] = [
+    content: list[dict[str, Any]] = []
+    index = segment.index_base
+    if segment.is_body:
         # Real body payloads open with a sectionBreak carrying no startIndex.
-        {"endIndex": 1, "sectionBreak": {"sectionStyle": {}}}
-    ]
-    index = 1
+        content.append({"endIndex": 1, "sectionBreak": {"sectionStyle": {}}})
     for para_chars in _paragraphs(chars):
         elements = []
         para_start = index
@@ -289,19 +354,45 @@ def _body_content(doc: MockDoc, view_mode: str) -> list[dict[str, Any]]:
                 text_run["suggestedInsertionIds"] = sorted(ins)
             if dels:
                 text_run["suggestedDeletionIds"] = sorted(dels)
-            elements.append({"startIndex": index, "endIndex": end, "textRun": text_run})
+            elements.append(_indexed({"textRun": text_run}, index, end))
             index = end
         content.append(
-            {
-                "startIndex": para_start,
-                "endIndex": index,
-                "paragraph": {
-                    "elements": elements,
-                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+            _indexed(
+                {
+                    "paragraph": {
+                        "elements": elements,
+                        "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                    }
                 },
-            }
+                para_start,
+                index,
+            )
         )
     return content
+
+
+def _non_body_segments(doc: MockDoc, tab_id: str, view_mode: str) -> dict[str, Any]:
+    """``headers``/``footers``/``footnotes`` for one tab.
+
+    Shape per ``docs/preview-api-reference.md``: each is a dict keyed by
+    segment id whose value repeats the id under ``headerId``/``footerId``/
+    ``footnoteId`` alongside ``content``. Absent keys rather than empty dicts,
+    because proto3 omits empty maps and so does the real payload -- a document
+    with no header has no ``headers`` key at all.
+    """
+    out: dict[str, Any] = {}
+    for kind, (container, id_field) in SEGMENT_CONTAINERS.items():
+        segments = doc.tab_segments(tab_id, kind)
+        if not segments:
+            continue
+        out[container] = {
+            segment.segment_id: {
+                id_field: segment.segment_id,
+                "content": _segment_content(segment, view_mode),
+            }
+            for segment in segments
+        }
+    return out
 
 
 def document_payload(
@@ -310,6 +401,14 @@ def document_payload(
     me: Optional[str] = None,
 ) -> dict[str, Any]:
     """Render a plain ``documents.get`` Document payload for one view mode.
+
+    **The default tab only.** ``includeTabsContent=false`` is Google's
+    backwards-compatibility read: the first tab's content is flattened onto
+    the top level as ``body``/``headers``/``footers``/``footnotes`` and every
+    other tab is simply not in the response. That is a lossy read, and the
+    degraded-read path in ``gdocs_preview`` depends on it being lossy in
+    exactly this way -- a mock that quietly returned all tabs here would make
+    the fallback look safe.
 
     Deliberately carries NO thread objects: verified 2026-07-30 that the
     real plain read returns only
@@ -321,10 +420,13 @@ def document_payload(
     ``me`` is unused here and kept for signature symmetry with the tabs
     payload (authors only exist on threads).
     """
+    tab_id = doc.default_tab_id
+    body = doc.segment((tab_id, None))
     return {
         "documentId": doc.document_id,
         "title": doc.title,
-        "body": {"content": _body_content(doc, view_mode)},
+        "body": {"content": _segment_content(body, view_mode)},
+        **_non_body_segments(doc, tab_id, view_mode),
         "documentStyle": {},
         "namedStyles": {"styles": []},
         "revisionId": f"rev-{doc._clock}",
@@ -342,16 +444,25 @@ def tabs_document_payload(
 ) -> dict[str, Any]:
     """Render the ``includeTabsContent=true`` Document payload.
 
-    Verified against the live API 2026-07-30: requesting tabs content moves
+    Verified against the live API 2026-07-30/31: requesting tabs content moves
     the content out of the top-level ``body`` into
     ``tabs[i].documentTab.body`` (byte-identical, same indexes), and the
-    top level gains ``tabs``. ``suggestions`` and ``comments`` appear only
-    when ``commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`` is also sent --
-    with ``includeTabsContent`` alone the response says
+    top level gains ``tabs``. Each entry carries ``tabProperties``
+    ``{tabId, title, index}`` and non-body segments under
+    ``tabs[i].documentTab.headers`` / ``.footers`` / ``.footnotes``.
+    ``suggestions`` and ``comments`` appear only when
+    ``commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`` is also sent -- with
+    ``includeTabsContent`` alone the response says
     ``commentsViewMode: COMMENTS_VIEW_MODE_OMITTED`` and carries neither.
 
-    The mock is single-tab (``t.0``): the model has no tab concept, and the
-    multi-tab code path is covered by unit fixtures instead.
+    ``suggestions``/``comments`` stay at the TOP level even in a multi-tab
+    document: suggestion ids and comment threads are document-wide, not
+    per-tab (verified 2026-07-31).
+
+    **Every tab's body starts at index 1, and the numbers repeat.** A two-tab
+    document with a suggestion near the top of each reports
+    ``start_index: 1`` for both, which is why nothing downstream may compare
+    or dedupe indexes without their tab.
     """
     payload: dict[str, Any] = {
         "documentId": doc.document_id,
@@ -365,13 +476,23 @@ def tabs_document_payload(
         ),
         "tabs": [
             {
-                "tabProperties": {"tabId": "t.0", "title": "Tab 1", "index": 0},
+                "tabProperties": {
+                    "tabId": tab.tab_id,
+                    "title": tab.title,
+                    "index": tab.index,
+                },
                 "documentTab": {
-                    "body": {"content": _body_content(doc, view_mode)},
+                    "body": {
+                        "content": _segment_content(
+                            doc.segment((tab.tab_id, None)), view_mode
+                        )
+                    },
+                    **_non_body_segments(doc, tab.tab_id, view_mode),
                     "documentStyle": {},
                     "namedStyles": {"styles": []},
                 },
             }
+            for tab in doc.tabs
         ],
     }
     if include_comments:
@@ -405,8 +526,8 @@ def _suggestion_response(**kwargs: list[str]) -> dict[str, list[str]]:
     return out
 
 
-def _plain_quote(doc: MockDoc, start: int, end: int) -> str:
-    return MockDoc.text_of(doc.chars[start:end])
+def _plain_quote(segment: Segment, start: int, end: int) -> str:
+    return MockDoc.text_of(segment.chars[start:end])
 
 
 class BatchUpdateApplier:
@@ -551,28 +672,31 @@ class BatchUpdateApplier:
                 400, f"Invalid requests[{i}].insertText: text is required."
             )
         location = payload.get("location") or payload.get("endOfSegmentLocation") or {}
+        segment = self._segment(location)
         if "index" in location:
-            index = self._grapheme_index(location["index"])
-        else:  # endOfSegmentLocation
-            index = len(self.doc.chars)
+            index = self._grapheme_index(segment, location["index"])
+        else:  # endOfSegmentLocation: the end of THAT segment, not the body's
+            index = len(segment.chars)
         if suggest:
-            sid = self.doc.insert(index, text, self.author)
+            sid = self.doc.insert(index, text, self.author, segment.key)
             self._record(
                 _suggestion_response(createdSuggestionIds=[sid] if sid else []), {}
             )
         else:
-            self._edit_insert(index, text)
+            self._edit_insert(segment, index, text)
             self._record(None, {})
 
     def _do_deleteContentRange(self, i: int, payload: dict, suggest: bool) -> None:
-        start, end = self._grapheme_range(payload.get("range") or {}, i)
+        range_ = payload.get("range") or {}
+        segment = self._segment(range_)
+        start, end = self._grapheme_range(segment, range_, i)
         if suggest:
-            sid = self.doc.delete(start, end, self.author)
+            sid = self.doc.delete(start, end, self.author, segment.key)
             self._record(
                 _suggestion_response(createdSuggestionIds=[sid] if sid else []), {}
             )
         else:
-            self._edit_delete(start, end)
+            self._edit_delete(segment, start, end)
             self._record(None, {})
 
     def _do_replaceAllText(self, i: int, payload: dict, suggest: bool) -> None:
@@ -582,33 +706,40 @@ class BatchUpdateApplier:
             raise http_error(
                 400, f"Invalid requests[{i}].replaceAllText: containsText is required."
             )
-        # Search the display text (the SUGGESTIONS_INLINE coordinate space),
-        # right to left so earlier match offsets stay valid. Both sides are
-        # grapheme-clustered so a match never splits a cluster.
-        haystack = [c.cp for c in self.doc.chars]
+        # ``replaceAllText`` names no index and no segment: it is the one
+        # content request whose scope is the whole document, so it sweeps
+        # every segment of every tab. (The real request narrows with
+        # ``tabsCriteria``; unset means all tabs, which is what this is.)
         needle = split_graphemes(contains)
-        hits = [
-            n
-            for n in range(len(haystack) - len(needle), -1, -1)
-            if haystack[n : n + len(needle)] == needle
-        ]
         created: list[str] = []
-        for n in hits:
-            if suggest:
-                sid = self.doc.replace(n, n + len(needle), replacement, self.author)
-                if sid:
-                    created.append(sid)
-            else:
-                self._edit_delete(n, n + len(needle))
-                if replacement:
-                    self._edit_insert(n, replacement)
+        for segment in self.doc.ordered_segments():
+            # Search the display text (the SUGGESTIONS_INLINE coordinate
+            # space), right to left so earlier match offsets stay valid. Both
+            # sides are grapheme-clustered so a match never splits a cluster.
+            haystack = [c.cp for c in segment.chars]
+            hits = [
+                n
+                for n in range(len(haystack) - len(needle), -1, -1)
+                if haystack[n : n + len(needle)] == needle
+            ]
+            for n in hits:
+                if suggest:
+                    sid = self.doc.replace(
+                        n, n + len(needle), replacement, self.author, segment.key
+                    )
+                    if sid:
+                        created.append(sid)
+                else:
+                    self._edit_delete(segment, n, n + len(needle))
+                    if replacement:
+                        self._edit_insert(segment, n, replacement)
         self._record(_suggestion_response(createdSuggestionIds=created), {})
 
-    def _edit_insert(self, index: int, text: str) -> None:
-        self.doc.chars[index:index] = [Char(cp) for cp in split_graphemes(text)]
+    def _edit_insert(self, segment: Segment, index: int, text: str) -> None:
+        segment.chars[index:index] = [Char(cp) for cp in split_graphemes(text)]
 
-    def _edit_delete(self, start: int, end: int) -> None:
-        del self.doc.chars[start:end]
+    def _edit_delete(self, segment: Segment, start: int, end: int) -> None:
+        del segment.chars[start:end]
         self.doc._gc()
 
     # -- suggestion resolution -------------------------------------------
@@ -660,8 +791,9 @@ class BatchUpdateApplier:
         anchor = payload.get("range")
         quote = ""
         if anchor:
-            start, end = self._grapheme_range(anchor, i)
-            quote = _plain_quote(self.doc, start, end)
+            segment = self._segment(anchor)
+            start, end = self._grapheme_range(segment, anchor, i)
+            quote = _plain_quote(segment, start, end)
         thread = self.backend.create_comment_thread(
             self.doc.document_id,
             content=content,
@@ -765,15 +897,43 @@ class BatchUpdateApplier:
         self._record(None, {})
 
     # -- index helpers ---------------------------------------------------
-    def _grapheme_index(self, utf16_index: int) -> int:
+    def _segment(self, located: dict) -> Segment:
+        """The segment a ``Location``/``Range``/``EndOfSegmentLocation`` names.
+
+        **Both fields are optional, and both default silently.** An omitted
+        ``segmentId`` means the tab's body; an omitted ``tabId`` means the
+        default tab. That is the API's own behaviour and the exact shape of
+        the bug this mock was extended to catch: a caller that forgot to carry
+        the tab and segment alongside an index gets a *successful* write into
+        the default tab's body, at a numerically valid index, silently
+        corrupting a document it never read. Nothing 400s.
+        """
         try:
-            return to_grapheme_index(self.doc.chars, utf16_index)
+            return self.doc.resolve_segment(
+                tab_id=located.get("tabId"), segment_id=located.get("segmentId")
+            )
         except MockDocsError as exc:
             raise http_error(400, str(exc)) from None
 
-    def _grapheme_range(self, range_: dict, i: int) -> tuple[int, int]:
+    def _grapheme_index(self, segment: Segment, utf16_index: int) -> int:
+        try:
+            return to_grapheme_index(segment.chars, utf16_index, segment.index_base)
+        except MockDocsError as exc:
+            raise http_error(400, str(exc)) from None
+
+    def _grapheme_range(
+        self, segment: Segment, range_: dict, i: int
+    ) -> tuple[int, int]:
         start = range_.get("startIndex")
         end = range_.get("endIndex")
+        # proto3 omits a zero, so a Range over a header's first characters
+        # arrives as ``{"endIndex": 4, "segmentId": …}`` with no startIndex.
+        # Reading that as "missing" would 400 on a request the API accepts.
+        # The same reading against a body yields start 0, which is the section
+        # break and out of bounds -- rejected below, by the bounds check that
+        # already knows the segment, rather than by a special case here.
+        if start is None and end is not None:
+            start = 0
         if start is None or end is None:
             raise http_error(
                 400, f"Invalid requests[{i}]: range requires startIndex and endIndex."
@@ -784,7 +944,10 @@ class BatchUpdateApplier:
                 f"Invalid requests[{i}]: endIndex ({end}) must be greater than "
                 f"startIndex ({start}).",
             )
-        return self._grapheme_index(start), self._grapheme_index(end)
+        return (
+            self._grapheme_index(segment, start),
+            self._grapheme_index(segment, end),
+        )
 
 
 def apply_batch_update(

@@ -30,8 +30,17 @@ Determinism is therefore structural rather than best-effort:
 4. **The other editor's edits go through the SPEC §5 model operations**, the
    same ones the seed replay and the adapter use. It cannot reach a state the
    editor could not have produced.
+5. **Every located interference names a coordinate space.** ``tab_id`` and
+   ``segment_id`` in an interference's ``params`` pick the segment an anchor
+   resolves in and the edit lands in; omitting both means the default tab's
+   body, which is what every pre-tabs script meant and still means. Anchors
+   are searched inside one segment rather than across the document, because
+   the index they produce is only valid there -- a script that searched
+   document-wide would hand back an index from the wrong space and the edit
+   would land somewhere numerically valid and semantically wrong, which is
+   the production bug class this harness is supposed to expose, not commit.
 
-After every interference the model is re-checked (I1-I4, plus L1/L5 and the
+After every interference the model is re-checked (I1-I5, plus L1/L5 and the
 per-op extreme-preservation half of L7). Violations are recorded on the
 backend rather than raised: a bug in *this* module must be distinguishable
 from an agent mistake at grading time, which means the grader has to be able
@@ -53,7 +62,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from mockdocs.graphemes import split_graphemes, utf16_len
-from mockdocs.model import Char, MockDoc
+from mockdocs.model import Char, MockDoc, MockDocsError, Segment
 
 #: Bumped when the on-disk interference script shape changes incompatibly.
 SCHEMA_VERSION = 1
@@ -392,14 +401,40 @@ class ConcurrencyRecord:
 # ---------------------------------------------------------------------------
 
 
-def find_clusters(doc: MockDoc, needle: str, occurrence: int = 1) -> int:
-    """Grapheme index of ``needle`` in the SUGGESTIONS_INLINE (display) text.
+def segment_for(doc: MockDoc, params: dict[str, Any]) -> Segment:
+    """The segment an interference's ``params`` name.
+
+    ``{"tab_id": …, "segment_id": …}``, either or both omitted. Omitting both
+    is the default tab's body, so every pre-tabs script keeps meaning what it
+    meant. Unlike the API's own resolution -- which is silent by design and is
+    reproduced as such in :meth:`mockdocs.adapter.BatchUpdateApplier._segment`
+    -- a script that names a segment which does not exist is a *script* bug,
+    so it raises here and the engine records it as a harness fault rather than
+    quietly editing the body instead.
+    """
+    try:
+        return doc.resolve_segment(
+            tab_id=params.get("tab_id"), segment_id=params.get("segment_id")
+        )
+    except MockDocsError as exc:
+        raise InterferenceError(str(exc)) from None
+
+
+def find_clusters(
+    doc: MockDoc,
+    needle: str,
+    occurrence: int = 1,
+    segment: Optional[Segment] = None,
+) -> int:
+    """Grapheme index of ``needle`` in one segment's SUGGESTIONS_INLINE text.
 
     Cluster-wise rather than code-point-wise, so an anchor never lands inside
     an emoji or a combining sequence -- the same discipline
-    ``adapter._do_replaceAllText`` uses.
+    ``adapter._do_replaceAllText`` uses. The search is scoped to one segment
+    because the index it returns only means anything there.
     """
-    haystack = [c.cp for c in doc.chars]
+    chars = (segment or doc.segment()).chars
+    haystack = [c.cp for c in chars]
     clusters = split_graphemes(needle)
     if not clusters:
         raise InterferenceError("anchor text must be non-empty")
@@ -410,41 +445,53 @@ def find_clusters(doc: MockDoc, needle: str, occurrence: int = 1) -> int:
     ]
     if len(hits) < occurrence:
         raise InterferenceError(
-            f"anchor text {needle!r} occurs {len(hits)} time(s) in the document; "
+            f"anchor text {needle!r} occurs {len(hits)} time(s) in "
+            f"{(segment or doc.segment()).describe()}; "
             f"occurrence {occurrence} was requested"
         )
     return hits[occurrence - 1]
 
 
-def _anchor_index(doc: MockDoc, params: dict[str, Any]) -> int:
-    """Resolve ``at`` / ``before_text`` / ``after_text`` / ``at_end`` to an index."""
+def _anchor_index(
+    doc: MockDoc, params: dict[str, Any], segment: Optional[Segment] = None
+) -> int:
+    """Resolve ``at`` / ``before_text`` / ``after_text`` / ``at_end`` to an
+    index **in ``segment``** (the default tab's body when unnamed)."""
+    segment = segment or segment_for(doc, params)
+    size = len(segment.chars)
     occurrence = int(params.get("occurrence", 1))
     if "at" in params:
         index = int(params["at"])
     elif "before_text" in params:
-        index = find_clusters(doc, str(params["before_text"]), occurrence)
+        index = find_clusters(doc, str(params["before_text"]), occurrence, segment)
     elif "after_text" in params:
         needle = str(params["after_text"])
-        index = find_clusters(doc, needle, occurrence) + len(split_graphemes(needle))
+        index = find_clusters(doc, needle, occurrence, segment) + len(
+            split_graphemes(needle)
+        )
     elif params.get("at_end"):
-        index = len(doc.chars)
+        index = size
     else:
         raise InterferenceError(
             "need one of at / before_text / after_text / at_end to locate the edit"
         )
-    if not 0 <= index <= len(doc.chars):
+    if not 0 <= index <= size:
         raise InterferenceError(
-            f"resolved index {index} is outside [0, {len(doc.chars)}]"
+            f"resolved index {index} is outside [0, {size}] in {segment.describe()}"
         )
     return index
 
 
-def _span(doc: MockDoc, params: dict[str, Any]) -> tuple[int, int]:
+def _span(
+    doc: MockDoc, params: dict[str, Any], segment: Optional[Segment] = None
+) -> tuple[int, int]:
     """Resolve a half-open ``[start, end)`` span from explicit indexes or an
-    anchor plus its own length."""
+    anchor plus its own length, in ``segment``."""
+    segment = segment or segment_for(doc, params)
+    size = len(segment.chars)
     if "anchor_text" in params:
         needle = str(params["anchor_text"])
-        start = find_clusters(doc, needle, int(params.get("occurrence", 1)))
+        start = find_clusters(doc, needle, int(params.get("occurrence", 1)), segment)
         return start, start + len(split_graphemes(needle))
     if "start" in params and "end" in params:
         start, end = int(params["start"]), int(params["end"])
@@ -453,9 +500,9 @@ def _span(doc: MockDoc, params: dict[str, Any]) -> tuple[int, int]:
         end = start + int(params["span"])
     else:
         raise InterferenceError("need anchor_text, or start plus end/span")
-    if not 0 <= start <= end <= len(doc.chars):
+    if not 0 <= start <= end <= size:
         raise InterferenceError(
-            f"span [{start}, {end}) is outside [0, {len(doc.chars)}]"
+            f"span [{start}, {end}) is outside [0, {size}] in {segment.describe()}"
         )
     return start, end
 
@@ -516,11 +563,13 @@ def check_model(
         violations.append("L1 violated: reject-all left suggestions in the registry")
 
     # L5 -- mixed assignment. Deterministic split (every other id in document
-    # order) so a failure reproduces exactly.
+    # order) so a failure reproduces exactly. Over every segment of every tab,
+    # because ``display_text`` is: scoping the prediction to the body while
+    # comparing against the whole document would fail on any multi-tab doc.
     ids = sorted(doc.registry)
     accept_set = set(ids[::2])
     expected = "".join(
-        c.cp for c in doc.chars if c.ins <= accept_set and not (c.dels & accept_set)
+        c.cp for c in doc.display() if c.ins <= accept_set and not (c.dels & accept_set)
     )
     mixed = doc.clone()
     for sid in ids:
@@ -627,20 +676,28 @@ def _do_shift_indexes(
     which is what makes the shift invisible to a suggestion listing. Set
     ``as_suggestion`` to have them suggest instead -- indexes still shift,
     because SUGGESTIONS_INLINE counts marked text.
+
+    The shift is confined to ONE segment: each is numbered from its own start,
+    so typing in the header moves the header's indexes and nothing else. The
+    effect therefore reports ``tab_id``/``segment_id`` next to
+    ``utf16_shift``, because a grader that applied the shift to the wrong
+    coordinate space would be making the very mistake the scenario is about.
     """
     params = interference.params
     mode = str(params.get("mode") or "insert").lower()
     as_suggestion = bool(params.get("as_suggestion"))
+    segment = segment_for(doc, params)
+    where = {"tab_id": segment.tab_id, "segment_id": segment.segment_id}
     if mode == "insert":
         text = str(params.get("text") or "")
         if not text:
             raise InterferenceError("shift_indexes insert needs text")
-        index = _anchor_index(doc, params)
+        index = _anchor_index(doc, params, segment)
         if as_suggestion:
-            sid = doc.insert(index, text, interference.editor)
+            sid = doc.insert(index, text, interference.editor, segment.key)
             preserves = (True, False)
         else:
-            doc.chars[index:index] = [Char(cp) for cp in split_graphemes(text)]
+            segment.chars[index:index] = [Char(cp) for cp in split_graphemes(text)]
             sid = None
             preserves = (False, False)
         effect = {
@@ -650,15 +707,16 @@ def _do_shift_indexes(
             "utf16_shift": utf16_len(text),
             "as_suggestion": as_suggestion,
             "suggestion_id": sid,
+            **where,
         }
     elif mode == "delete":
-        start, end = _span(doc, params)
-        removed = "".join(c.cp for c in doc.chars[start:end])
+        start, end = _span(doc, params, segment)
+        removed = "".join(c.cp for c in segment.chars[start:end])
         if as_suggestion:
-            sid = doc.delete(start, end, interference.editor)
+            sid = doc.delete(start, end, interference.editor, segment.key)
             preserves = (True, False)
         else:
-            del doc.chars[start:end]
+            del segment.chars[start:end]
             doc._gc()
             sid = None
             preserves = (False, False)
@@ -670,6 +728,7 @@ def _do_shift_indexes(
             "utf16_shift": -utf16_len(removed) if not as_suggestion else 0,
             "as_suggestion": as_suggestion,
             "suggestion_id": sid,
+            **where,
         }
     else:
         raise InterferenceError(
@@ -726,32 +785,41 @@ def _do_overlapping_suggestion(
     Produces the both-marks state of SPEC §4 and the conjunctive/disjunctive
     interaction of §2: neither party can now resolve their own suggestion
     without moving the other's rendering.
+
+    Overlap is only possible *within* a segment, so the other editor's
+    suggestion lands in the segment ``params`` names (the default tab's body
+    when they name none). Aiming it at the wrong one produces two independent
+    cards instead of an overlap -- which the ``pending_after`` count makes
+    visible rather than leaving the scenario silently toothless.
     """
     params = interference.params
     text = params.get("text")
+    segment = segment_for(doc, params)
+    where = {"tab_id": segment.tab_id, "segment_id": segment.segment_id}
     if (
         "at" in params
         or "before_text" in params
         or "after_text" in params
         or params.get("at_end")
     ):
-        index = _anchor_index(doc, params)
+        index = _anchor_index(doc, params, segment)
         if not text:
             raise InterferenceError("overlapping_suggestion insertion needs text")
-        sid = doc.insert(index, str(text), interference.editor)
+        sid = doc.insert(index, str(text), interference.editor, segment.key)
         effect = {
             "mode": "insertion",
             "start": index,
             "text": text,
             "suggestion_id": sid,
+            **where,
         }
     else:
-        start, end = _span(doc, params)
+        start, end = _span(doc, params, segment)
         if text:
-            sid = doc.replace(start, end, str(text), interference.editor)
+            sid = doc.replace(start, end, str(text), interference.editor, segment.key)
             mode = "replacement"
         else:
-            sid = doc.delete(start, end, interference.editor)
+            sid = doc.delete(start, end, interference.editor, segment.key)
             mode = "deletion"
         effect = {
             "mode": mode,
@@ -759,6 +827,7 @@ def _do_overlapping_suggestion(
             "end": end,
             "text": text,
             "suggestion_id": sid,
+            **where,
         }
     effect["pending_after"] = sorted(doc.registry)
     return effect, (True, False)
@@ -779,6 +848,11 @@ def _do_merge_absorb(
     The editor here is deliberately the authenticated user (a second session
     of the same account -- the phone, the other tab), because §6 refuses to
     merge across authors.
+
+    ``after_suggestion`` resolves the target's OWN segment and edits there:
+    §6 never merges across segments or tabs, so an edit placed in the body
+    beside a header suggestion's index would produce a second card instead of
+    absorbing the first -- a dead scenario that still looks like it fired.
     """
     params = interference.params
     author = str(params.get("author") or backend.me)
@@ -800,18 +874,21 @@ def _do_merge_absorb(
                 )
             sid = max(candidates, key=lambda s: (s.touched_at, s.id)).id
         spans = doc.ranges()
-        if sid not in spans:
+        home = doc.segment_of(sid)
+        if sid not in spans or home is None:
             raise InterferenceError(
                 f"merge_absorb: suggestion {sid!r} has no marks to sit next to"
             )
+        segment = home
         index = spans[sid][1]
         anchor = sid
     else:
-        index = _anchor_index(doc, params)
+        segment = segment_for(doc, params)
+        index = _anchor_index(doc, params, segment)
         anchor = None
     watermark = len(doc.merge_log)
     before = set(doc.registry)
-    survivor = doc.insert(index, text, author)
+    survivor = doc.insert(index, text, author, segment.key)
     merges = doc.merge_log[watermark:]
     effect = {
         "author": author,
@@ -824,6 +901,8 @@ def _do_merge_absorb(
         "absorbed_ids": sorted({absorbed for _, absorbed in merges}),
         "vanished_ids": sorted(before - set(doc.registry)),
         "pending_after": sorted(doc.registry),
+        "tab_id": segment.tab_id,
+        "segment_id": segment.segment_id,
     }
     return effect, (True, False)
 

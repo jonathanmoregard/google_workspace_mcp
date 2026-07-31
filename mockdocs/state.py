@@ -28,7 +28,16 @@ from typing import Any, Optional
 
 from mockdocs.concurrency import ConcurrencyRecord
 from mockdocs.fake_services import FakeBackend
-from mockdocs.model import Char, Comment, MockDoc, Suggestion
+from mockdocs.model import (
+    BODY,
+    DEFAULT_TAB_ID,
+    Char,
+    Comment,
+    MockDoc,
+    Segment,
+    Suggestion,
+    TabProperties,
+)
 
 #: Bumped when the snapshot shape changes incompatibly.
 #:
@@ -74,10 +83,32 @@ def dump_suggestion(sug: Suggestion) -> dict[str, Any]:
     }
 
 
+def dump_segment(segment: Segment) -> dict[str, Any]:
+    return {
+        "kind": segment.kind,
+        "tab_id": segment.tab_id,
+        "segment_id": segment.segment_id,
+        "chars": [dump_char(c) for c in segment.chars],
+    }
+
+
 def dump_document(doc: MockDoc) -> dict[str, Any]:
+    """One document, losslessly.
+
+    ``segments`` is the authoritative content; ``chars`` repeats the default
+    tab's body and is kept because a grader written before tabs existed reads
+    it, and because it is what the overwhelming majority of snapshots contain
+    in full. On load ``segments`` wins when present, so an old snapshot (no
+    ``segments`` key) still restores as the single-tab body-only document it
+    described -- which is why adding tabs is not a schema-version bump.
+    """
     return {
         "document_id": doc.document_id,
         "title": doc.title,
+        "tabs": [
+            {"tab_id": t.tab_id, "title": t.title, "index": t.index} for t in doc.tabs
+        ],
+        "segments": [dump_segment(s) for s in doc.ordered_segments()],
         "chars": [dump_char(c) for c in doc.chars],
         "registry": {sid: dump_suggestion(s) for sid, s in doc.registry.items()},
         "clock": doc._clock,
@@ -124,19 +155,53 @@ def dump_backend(backend: FakeBackend) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def load_document(state: dict[str, Any]) -> MockDoc:
-    doc = MockDoc.__new__(MockDoc)
-    doc.document_id = state["document_id"]
-    doc.title = state.get("title", "Mock Document")
-    doc.chars = [
+def _load_chars(entries: Any) -> list[Char]:
+    return [
         Char(
             cp=c["cp"],
             ins=set(c.get("ins") or []),
             dels=set(c.get("dels") or []),
             colour=c.get("colour"),
         )
-        for c in state.get("chars", [])
+        for c in entries or []
     ]
+
+
+def load_document(state: dict[str, Any]) -> MockDoc:
+    doc = MockDoc.__new__(MockDoc)
+    doc.document_id = state["document_id"]
+    doc.title = state.get("title", "Mock Document")
+    tabs = state.get("tabs") or [
+        {"tab_id": DEFAULT_TAB_ID, "title": "Tab 1", "index": 0}
+    ]
+    doc.tabs = [
+        TabProperties(
+            tab_id=t.get("tab_id", DEFAULT_TAB_ID),
+            title=t.get("title", "Tab 1"),
+            index=int(t.get("index", i)),
+        )
+        for i, t in enumerate(tabs)
+    ]
+    segments = state.get("segments")
+    if segments is None:
+        # Pre-tabs snapshot: one body in the default tab, from ``chars``.
+        segments = [
+            {
+                "kind": BODY,
+                "tab_id": doc.tabs[0].tab_id,
+                "segment_id": None,
+                "chars": state.get("chars", []),
+            }
+        ]
+    doc.segments = {}
+    for entry in segments:
+        segment = Segment(
+            kind=entry.get("kind", BODY),
+            tab_id=entry.get("tab_id", doc.tabs[0].tab_id),
+            segment_id=entry.get("segment_id"),
+            chars=_load_chars(entry.get("chars")),
+        )
+        doc.segments[segment.key] = segment
     doc.registry = {
         sid: Suggestion(
             id=s["id"],

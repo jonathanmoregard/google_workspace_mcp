@@ -602,6 +602,103 @@ class TestPageToken:
             listing(ladder(3), page_token=token)
 
 
+class TestPageTokenCannotRescope:
+    """A token must never come back scoped to a different (tab, segment).
+
+    ``tab_id`` is omitted from ``filters`` when the caller did not pass one,
+    so the requested query alone cannot tell "tab A, resolved implicitly"
+    from "tab B, resolved implicitly". The fingerprint therefore carries the
+    RESOLVED ``range_scope``. Without it the sequence below replays cleanly,
+    the anchor is gone, the ordinal fallback fires, and the caller silently
+    gets tab B's cards for a sweep it started in tab A -- a skipped
+    suggestion, which is the worst outcome this product has.
+    """
+
+    @staticmethod
+    def _in_tab(tab: str, n: int, prefix: str) -> list[dict]:
+        return [
+            record(f"{prefix}{i}", tab_id=tab, start=i * 10, end=i * 10 + 5)
+            for i in range(n)
+        ]
+
+    def test_an_implicitly_resolved_tab_is_part_of_the_token(self):
+        only_a = self._in_tab("t.a", 6, "a.")
+        first = listing(only_a, start_index=0, end_index=1000, page_size=3)
+        assert first["filters"]["range_scope"]["tab_id"] == "t.a"
+        # tab_id was never REQUESTED, so it is not in the filter echo -- the
+        # thing the old fingerprint was built from.
+        assert "tab_id" not in first["filters"]
+
+        # The agent resolves tab A's cards; tab B's are now the only ones,
+        # and the identical call resolves to tab B.
+        only_b = self._in_tab("t.b", 6, "b.")
+        with pytest.raises(rp.PageTokenError, match="different query"):
+            listing(
+                only_b,
+                start_index=0,
+                end_index=1000,
+                page_size=3,
+                page_token=first["page"]["next_page_token"],
+            )
+
+    def test_the_refusal_says_how_to_make_the_query_stable(self):
+        first = listing(
+            self._in_tab("t.a", 6, "a."), start_index=0, end_index=1000, page_size=3
+        )
+        with pytest.raises(rp.PageTokenError, match="Pass tab_id explicitly"):
+            listing(
+                self._in_tab("t.b", 6, "b."),
+                start_index=0,
+                end_index=1000,
+                page_size=3,
+                page_token=first["page"]["next_page_token"],
+            )
+
+    def test_naming_the_tab_makes_the_token_replay(self):
+        """The stable form of the same sweep: the scope is pinned by the
+        caller, so it cannot be re-resolved underneath the token."""
+        records = self._in_tab("t.a", 6, "a.")
+        first = listing(
+            records, start_index=0, end_index=1000, tab_id="t.a", page_size=3
+        )
+        second = listing(
+            records,
+            start_index=0,
+            end_index=1000,
+            tab_id="t.a",
+            page_size=3,
+            page_token=first["page"]["next_page_token"],
+        )
+        assert [s["suggestion_id"] for s in second["suggestions"]] == [
+            "a.3",
+            "a.4",
+            "a.5",
+        ]
+
+    def test_a_segment_rescope_is_refused_too(self):
+        """Same failure one level down: the range resolved to the body, then
+        to a header, under an unchanged request."""
+        body = [record(f"b.{i}", start=i * 10, end=i * 10 + 5) for i in range(6)]
+        first = listing(body, start_index=0, end_index=1000, page_size=3)
+        assert first["filters"]["range_scope"]["segment"] == "body"
+        header = [
+            record(
+                f"h.{i}", start=i * 10, end=i * 10 + 5,
+                segment="header", segment_id="kix.h1",
+            )
+            for i in range(6)
+        ]
+        with pytest.raises(rp.PageTokenError, match="different query"):
+            listing(
+                header,
+                start_index=0,
+                end_index=1000,
+                segment_id="kix.h1",
+                page_size=3,
+                page_token=first["page"]["next_page_token"],
+            )
+
+
 class TestPageTokenStability:
     """A cursor has to survive the writes the agent makes between pages."""
 

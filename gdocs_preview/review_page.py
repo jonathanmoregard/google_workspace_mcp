@@ -399,6 +399,29 @@ def filter_records(
 # ---------------------------------------------------------------------------
 
 
+#: What makes two calls "the same query" for pagination. ``range_scope`` is
+#: the RESOLVED ``(tab, segment)``, not the requested one, and it is here
+#: because the requested one is not enough: ``tab_id`` is omitted from
+#: ``applied`` when the caller did not pass it, so a token minted against a
+#: document whose only cards were in tab A -- where
+#: :func:`resolve_range_scope` resolves the tab implicitly -- carried a
+#: fingerprint identical to one minted later, after those cards were
+#: resolved and tab B's became the only ones. The token replayed cleanly and
+#: the page silently rescoped to a different tab: the anchor is gone, the
+#: ordinal fallback fires, and the caller is handed records from a part of
+#: the document it never asked about. A silently skipped suggestion is the
+#: worst outcome this product has.
+_FINGERPRINT_KEYS = (
+    "author",
+    "status",
+    "start_index",
+    "end_index",
+    "segment_id",
+    "tab_id",
+    "range_scope",
+)
+
+
 def _fingerprint(document_id: str, fields: str, applied: dict[str, Any]) -> str:
     """Identity of the query a token belongs to.
 
@@ -407,10 +430,7 @@ def _fingerprint(document_id: str, fields: str, applied: dict[str, Any]) -> str:
     carries this and :func:`decode_page_token` refuses the mismatch.
     """
     stable = {
-        k: v
-        for k, v in sorted(applied.items())
-        if k
-        in ("author", "status", "start_index", "end_index", "segment_id", "tab_id")
+        k: v for k, v in sorted(applied.items()) if k in _FINGERPRINT_KEYS
     }
     return json.dumps(
         {"d": document_id, "f": fields, "q": stable}, sort_keys=True, ensure_ascii=False
@@ -462,10 +482,16 @@ def decode_page_token(
         )
     if payload.get("k") != _fingerprint(document_id, fields, applied):
         raise PageTokenError(
-            "page_token was issued for a different query (document_id, fields "
-            "or filters changed). Pagination is per query: re-request the "
-            "first page with the parameters you want, or repeat the exact "
-            "parameters the token was issued under."
+            "page_token was issued for a different query (document_id, fields, "
+            "filters, or the (tab, segment) an index range resolved to). "
+            "Pagination is per query: re-request the first page with the "
+            "parameters you want, or repeat the exact parameters the token "
+            "was issued under. If you passed an index range WITHOUT a tab_id, "
+            "the tab was resolved from the document's own cards -- so the "
+            "same call can resolve to a different tab once the first tab's "
+            "cards are gone, and replaying the token there would answer about "
+            "a part of the document you never asked for. Pass tab_id "
+            "explicitly to make the query stable across writes."
         )
     ordinal = payload.get("i")
     if not isinstance(ordinal, int) or ordinal < 0:

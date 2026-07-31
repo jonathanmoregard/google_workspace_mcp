@@ -103,7 +103,18 @@ class RunResult:
     returncode: Optional[int] = None
     timed_out: bool = False
     artifacts: Optional[Path] = None
+    #: Something went wrong with the RUN: the CLI would not start, the wall
+    #: clock killed it, there was no gradeable end state, the interleaving
+    #: broke a spec invariant. The run did not measure the tools, so it is
+    #: INCONCLUSIVE.
     harness_error: Optional[str] = None
+    #: Something went wrong AFTER the grade, classifying an already-graded
+    #: run. The taxonomy is the most volatile code in the harness and it runs
+    #: once the money is spent; a crash in it costs the mistake labels, not
+    #: the measurement. Deliberately NOT a reason for INCONCLUSIVE -- doing
+    #: that converts a genuine agent FAIL into "not a capability result",
+    #: which is the same inflation from the other direction.
+    analysis_error: Optional[str] = None
     scenario_path: Optional[Path] = None
     #: What the scripted second editor did, when the scenario declared one.
     interference: Optional[dict[str, Any]] = None
@@ -120,7 +131,11 @@ class RunResult:
         """Why this run's grade should not be read as a capability result.
 
         Empty for a clean run, which is the only kind whose pass/fail is
-        quoted without a caveat.
+        quoted without a caveat. Note what is NOT here: a crash while
+        classifying an already-graded run (:attr:`analysis_error`). The agent
+        did the work and the grader read the end state; losing the mistake
+        labels afterwards is a gap in the taxonomy, not a reason to throw
+        away a measurement that was paid for.
         """
         reasons: list[str] = []
         if self.transcript.rate_limited:
@@ -190,6 +205,7 @@ class RunResult:
             "returncode": self.returncode,
             "timed_out": self.timed_out,
             "harness_error": self.harness_error,
+            "analysis_error": self.analysis_error,
             "contamination": list(self.contamination),
             "artifacts": str(self.artifacts) if self.artifacts else None,
             # Recorded so a report can be rebuilt from artifacts alone after
@@ -346,7 +362,11 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
 
     # Classification is the most volatile code in the harness -- the taxonomy
     # changes whenever we learn something -- and it runs AFTER the money has
-    # been spent. It must never be the reason a paid-for run is lost.
+    # been spent. It must never be the reason a paid-for run is lost, and it
+    # is recorded apart from harness_error: folding it in there made a crash
+    # in the labeller turn a genuine agent FAIL into INCONCLUSIVE, i.e. into
+    # "not a capability result", which hides real failures.
+    analysis_error: Optional[str] = None
     try:
         findings = classify(
             ScenarioFacts.from_scenario(scenario),
@@ -358,8 +378,11 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         )
     except Exception as exc:  # noqa: BLE001 - see comment above
         findings = []
-        note = f"classification failed ({type(exc).__name__}: {exc})"
-        harness_error = f"{harness_error}; {note}" if harness_error else note
+        analysis_error = (
+            f"classification failed ({type(exc).__name__}: {exc}); the grade "
+            "and the transcript are unaffected, only the mistake labels are "
+            "missing"
+        )
 
     result = RunResult(
         scenario_id=scenario.id,
@@ -373,6 +396,7 @@ def execute_run(scenario: Scenario, model: str, options: RunOptions) -> RunResul
         timed_out=timed_out,
         artifacts=run_dir,
         harness_error=harness_error,
+        analysis_error=analysis_error,
         scenario_path=scenario.path,
         interference=report.as_dict() if report is not None else None,
         contamination=contamination,

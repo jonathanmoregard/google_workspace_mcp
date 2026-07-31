@@ -108,7 +108,13 @@ class Aggregate:
     by_scenario: dict[str, dict[str, Any]] = field(default_factory=dict)
     taxonomy: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: The RUN went wrong: no gradeable end state, a dead CLI, a broken
+    #: interleaving. These runs are INCONCLUSIVE.
     harness_errors: list[str] = field(default_factory=list)
+    #: Something after the grade went wrong -- classification, or a
+    #: transcript that could not be re-read. The grade stands; only the
+    #: mistake labels are missing, so these runs stay in the pass rate.
+    analysis_errors: list[str] = field(default_factory=list)
     #: One entry per run of a scenario that declared a concurrent editor.
     interference: list[dict[str, Any]] = field(default_factory=list)
     #: Runs whose grade is not a capability result: throttled, killed by the
@@ -160,6 +166,7 @@ class Aggregate:
             "taxonomy": self.taxonomy,
             "tool_usage": self.tool_usage,
             "harness_errors": self.harness_errors,
+            "analysis_errors": self.analysis_errors,
             "interference": self.interference,
         }
 
@@ -256,6 +263,11 @@ def _fold(
     if result.harness_error:
         agg.harness_errors.append(
             f"{result.scenario_id} [{result.model}]: {result.harness_error}"
+        )
+    analysis_error = getattr(result, "analysis_error", None)
+    if analysis_error:
+        agg.analysis_errors.append(
+            f"{result.scenario_id} [{result.model}]: {analysis_error}"
         )
     interference = getattr(result, "interference", None)
     if interference:
@@ -356,10 +368,26 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         lines.append("")
         lines.append(
             "These runs did not measure the tool surface -- something in the "
-            "harness went wrong."
+            "harness went wrong while the run was happening."
         )
         lines.append("")
         for problem in agg.harness_errors:
+            lines.append(f"- {problem}")
+        lines.append("")
+
+    if agg.analysis_errors:
+        lines.append("## Classification problems (the grades still stand)")
+        lines.append("")
+        lines.append(
+            "Something went wrong AFTER these runs were graded -- the "
+            "taxonomy, or re-reading a transcript. The agent did the work "
+            "and the grader read the end state, so these runs are still in "
+            "the pass rate; what is missing is their mistake labels. "
+            "Treating this as 'not a capability result' would turn a real "
+            "FAIL into a shrug."
+        )
+        lines.append("")
+        for problem in agg.analysis_errors:
             lines.append(f"- {problem}")
         lines.append("")
 
@@ -553,13 +581,22 @@ def reanalyze(runs_dir: Path) -> list[Any]:
     scenario it came from, which is enough to re-grade and re-classify it.
     That is how a taxonomy rule change gets validated against real runs
     instead of against synthetic ones.
+
+    **This is the recovery path, so it must not be the thing that breaks.**
+    It is reached precisely when something else already went wrong -- a
+    half-written ``run.json``, a scenario directory that moved, a taxonomy
+    rule mid-edit -- and the point of it is that a finished, paid-for batch
+    survives that. Every step that touches a single run's artifacts is
+    therefore guarded on its own: one unrebuildable run costs a warning, an
+    unclassifiable one keeps its grade and loses only its labels, and neither
+    takes the other fifteen with it.
     """
     from llmux.runner.interference import InterferenceReport
     from llmux.runner.run import RunResult, detect_contamination
     from llmux.runner.scenarios import GradeResult, load_scenario
     from llmux.runner.scenarios import grade_backend
     from llmux.runner.taxonomy import ScenarioFacts, classify
-    from llmux.runner.transcript import parse_transcript_file
+    from llmux.runner.transcript import Transcript, parse_transcript_file
     from mockdocs.state import StateFormatError, read_state
 
     runs_dir = Path(runs_dir)
@@ -569,18 +606,45 @@ def reanalyze(runs_dir: Path) -> list[Any]:
         record_path = run_dir / "run.json"
         if not record_path.is_file():
             continue
-        record = json.loads(record_path.read_text(encoding="utf-8"))
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            skipped.append(
+                f"{record_path}: the run record is unreadable "
+                f"({type(exc).__name__}: {exc}); a batch killed mid-write "
+                "leaves one of these"
+            )
+            continue
+        if not isinstance(record, dict):
+            skipped.append(f"{record_path}: the run record is not an object")
+            continue
         scenario_path = record.get("scenario_path")
         if not scenario_path:
-            # This is the recovery path; it must not be the thing that
-            # breaks. One unrebuildable run costs a warning, not the batch.
             skipped.append(
                 f"{record_path}: no scenario_path (predates its recording, or "
                 "the record was written by the crash fallback)"
             )
             continue
-        scenario = load_scenario(Path(scenario_path))
-        transcript = parse_transcript_file(run_dir / "transcript.jsonl")
+        try:
+            scenario = load_scenario(Path(scenario_path))
+        except Exception as exc:  # noqa: BLE001 - one run, not the batch
+            skipped.append(
+                f"{record_path}: cannot load the scenario it names "
+                f"({scenario_path}): {type(exc).__name__}: {exc}"
+            )
+            continue
+
+        analysis_error: Optional[str] = record.get("analysis_error")
+        try:
+            transcript = parse_transcript_file(run_dir / "transcript.jsonl")
+        except (OSError, ValueError) as exc:  # noqa: PERF203 - per-run guard
+            transcript = Transcript()
+            analysis_error = _join_notes(
+                analysis_error,
+                f"the transcript could not be read ({type(exc).__name__}: "
+                f"{exc}); turns, cost and tool calls are missing from this row",
+            )
+
         report = None
         try:
             backend = read_state(run_dir / "state.json")
@@ -588,35 +652,61 @@ def reanalyze(runs_dir: Path) -> list[Any]:
             report = InterferenceReport.from_backend(backend)
         except StateFormatError as exc:
             grade = GradeResult.crashed(f"no gradeable end state: {exc}")
-        findings = classify(
-            ScenarioFacts.from_scenario(scenario),
-            transcript,
-            passed=grade.passed,
-            failures=grade.failures,
-            timed_out=bool(record.get("timed_out")),
-            interference=report,
-        )
-        results.append(
-            RunResult(
-                scenario_id=scenario.id,
-                model=str(record.get("model") or "unknown"),
-                difficulty=scenario.difficulty,
-                grade=grade,
-                transcript=transcript,
-                findings=findings,
-                wall_s=float(record.get("wall_s") or 0.0),
-                returncode=record.get("returncode"),
-                timed_out=bool(record.get("timed_out")),
-                artifacts=run_dir,
-                harness_error=record.get("harness_error"),
-                scenario_path=scenario.path,
-                interference=report.as_dict() if report is not None else None,
-                contamination=detect_contamination(transcript),
+        except Exception as exc:  # noqa: BLE001 - a grader may raise anything
+            grade = GradeResult.crashed(
+                f"the grader raised: {type(exc).__name__}: {exc}"
             )
-        )
+
+        try:
+            findings = classify(
+                ScenarioFacts.from_scenario(scenario),
+                transcript,
+                passed=grade.passed,
+                failures=grade.failures,
+                timed_out=bool(record.get("timed_out")),
+                interference=report,
+            )
+        except Exception as exc:  # noqa: BLE001 - the grade still stands
+            findings = []
+            analysis_error = _join_notes(
+                analysis_error,
+                f"classification failed ({type(exc).__name__}: {exc}); the "
+                "grade and the transcript are unaffected, only the mistake "
+                "labels are missing",
+            )
+
+        try:
+            results.append(
+                RunResult(
+                    scenario_id=scenario.id,
+                    model=str(record.get("model") or "unknown"),
+                    difficulty=scenario.difficulty,
+                    grade=grade,
+                    transcript=transcript,
+                    findings=findings,
+                    wall_s=float(record.get("wall_s") or 0.0),
+                    returncode=record.get("returncode"),
+                    timed_out=bool(record.get("timed_out")),
+                    artifacts=run_dir,
+                    harness_error=record.get("harness_error"),
+                    analysis_error=analysis_error,
+                    scenario_path=scenario.path,
+                    interference=report.as_dict() if report is not None else None,
+                    contamination=detect_contamination(transcript),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one run, not the batch
+            skipped.append(
+                f"{record_path}: could not rebuild the run "
+                f"({type(exc).__name__}: {exc})"
+            )
     for problem in skipped:
         print(f"skipped {problem}")
     return results
+
+
+def _join_notes(existing: Optional[str], note: str) -> str:
+    return f"{existing}; {note}" if existing else note
 
 
 def write_report(

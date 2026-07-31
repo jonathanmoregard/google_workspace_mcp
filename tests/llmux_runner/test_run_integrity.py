@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from llmux.runner import analyze as analyze_mod
 from llmux.runner import run as run_mod
 from llmux.runner import session
 from llmux.runner.analyze import aggregate, render_markdown, write_report
@@ -469,6 +470,151 @@ class TestReportResilience:
         assert payload["runs"][0]["scenario_id"] == "sc-good"
         assert "POSITIVE_CLASSES" in payload["summary"]["aggregate_error"]
         assert "markdown" not in paths
+
+
+class TestHarnessErrorVsAnalysisError:
+    """A crash in the labeller is not a reason to void a measurement.
+
+    `harness_error` with no other reason makes a run INCONCLUSIVE, which is
+    right for "the CLI never started" and wrong for "the taxonomy raised
+    while labelling an already-graded run": the second turns a genuine agent
+    FAIL into "not a capability result" and hides it.
+    """
+
+    def test_a_run_level_failure_is_still_inconclusive(self):
+        result = _run(
+            parse_stream_json([_init(["mcp__gdocsmock__x"]), RESULT]),
+            grade=GradeResult(passed=False, score=0.0),
+            harness_error="no gradeable end state: state.json is empty",
+        )
+        assert result.outcome == OUTCOME_INCONCLUSIVE
+
+    def test_a_classification_crash_leaves_the_grade_alone(self):
+        result = _run(
+            parse_stream_json([_init(["mcp__gdocsmock__x"]), RESULT]),
+            grade=GradeResult(passed=False, score=0.4, failures=("wrong card",)),
+            analysis_error="classification failed (TypeError: nope)",
+        )
+        assert result.inconclusive_reasons == []
+        assert result.outcome == OUTCOME_FAIL
+        agg = aggregate([result])
+        assert agg.total_fails == 1
+        assert agg.analysis_errors and "TypeError" in agg.analysis_errors[0]
+        assert agg.harness_errors == []
+
+    def test_the_report_separates_the_two(self):
+        crashed_label = _run(
+            parse_stream_json([_init(["mcp__gdocsmock__x"]), RESULT]),
+            scenario_id="sc-labels",
+            grade=GradeResult(passed=False, score=0.4),
+            analysis_error="classification failed (TypeError: nope)",
+        )
+        text = render_markdown(aggregate([crashed_label]), stamp="20260731-000006")
+        assert "## Classification problems (the grades still stand)" in text
+        assert "## Harness problems" not in text
+
+    def test_a_classification_crash_in_a_real_run_is_recorded_apart(
+        self, monkeypatch, tmp_path
+    ):
+        """The wiring, not just the dataclass: execute_run must put a
+        taxonomy crash in analysis_error and leave harness_error alone."""
+        import llmux.runner.run as run_module
+
+        def boom(*_a, **_kw):
+            raise TypeError("taxonomy mid-edit")
+
+        monkeypatch.setattr(run_module, "classify", boom)
+        monkeypatch.setattr(
+            run_module.session_mod, "build_claude_argv", lambda *a, **k: ["true"]
+        )
+        scenario = next(iter(run_module.discover(run_module.FIXTURE_CORPUS, limit=1)))
+        result = run_module.execute_run(
+            scenario, "sonnet", run_module.RunOptions(workdir=tmp_path, timeout_s=60)
+        )
+        assert result.analysis_error and "taxonomy mid-edit" in result.analysis_error
+        assert "taxonomy mid-edit" not in (result.harness_error or "")
+        assert result.findings == []
+
+
+class TestReanalyzeIsUnbreakable:
+    """`reanalyze` is the documented crash-recovery path.
+
+    It is reached precisely when something else already went wrong, so
+    anything in it that can raise takes the finished, paid-for batch with
+    it -- the opposite of its own stated contract that one unrebuildable run
+    costs a warning, not the batch.
+    """
+
+    def _batch(self, tmp_path, models=("good", "other")):
+        from mockdocs.fake_services import FakeBackend
+        from mockdocs.state import write_state
+
+        scenario = run_mod.discover(run_mod.FIXTURE_CORPUS, limit=1)[0]
+        runs = tmp_path / "runs"
+        for model in models:
+            run_dir = runs / f"{scenario.id}__{model}"
+            run_dir.mkdir(parents=True)
+            backend = FakeBackend()
+            backend.seed(scenario.seed)
+            write_state(backend, run_dir / "state.json")
+            (run_dir / "transcript.jsonl").write_text(RESULT + "\n", encoding="utf-8")
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_id": scenario.id,
+                        "model": model,
+                        "scenario_path": str(scenario.path),
+                        "wall_s": 1.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return runs, scenario
+
+    def test_a_half_written_record_costs_one_row(self, tmp_path, capsys):
+        runs, scenario = self._batch(tmp_path)
+        (runs / f"{scenario.id}__other" / "run.json").write_text(
+            '{"scenario_id": "x", "sce', encoding="utf-8"
+        )
+        rebuilt = analyze_mod.reanalyze(runs)
+        assert [r.model for r in rebuilt] == ["good"]
+        assert "run record is unreadable" in capsys.readouterr().out
+
+    def test_a_scenario_that_moved_costs_one_row(self, tmp_path, capsys):
+        runs, scenario = self._batch(tmp_path)
+        record_path = runs / f"{scenario.id}__other" / "run.json"
+        record = json.loads(record_path.read_text())
+        record["scenario_path"] = str(tmp_path / "gone" / "meta.json")
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        rebuilt = analyze_mod.reanalyze(runs)
+        assert [r.model for r in rebuilt] == ["good"]
+        assert "cannot load the scenario" in capsys.readouterr().out
+
+    def test_a_taxonomy_crash_keeps_the_run_and_its_grade(
+        self, tmp_path, monkeypatch
+    ):
+        runs, _scenario = self._batch(tmp_path, models=("good",))
+
+        def boom(*_a, **_kw):
+            raise TypeError("taxonomy mid-edit")
+
+        monkeypatch.setattr("llmux.runner.taxonomy.classify", boom)
+        (rebuilt,) = analyze_mod.reanalyze(runs)
+        assert rebuilt.findings == []
+        assert "taxonomy mid-edit" in rebuilt.analysis_error
+        # And it is NOT inconclusive: the agent worked, the grader graded.
+        assert rebuilt.inconclusive_reasons == []
+
+    def test_a_missing_transcript_costs_the_turns_not_the_row(self, tmp_path):
+        runs, scenario = self._batch(tmp_path, models=("good",))
+        (runs / f"{scenario.id}__good" / "transcript.jsonl").unlink()
+        (rebuilt,) = analyze_mod.reanalyze(runs)
+        assert rebuilt.transcript.num_turns == 0
+        assert "transcript could not be read" in rebuilt.analysis_error
+
+    def test_an_empty_batch_directory_is_not_an_error(self, tmp_path):
+        (tmp_path / "runs").mkdir()
+        assert analyze_mod.reanalyze(tmp_path / "runs") == []
 
 
 class TestPreflightToolProbe:

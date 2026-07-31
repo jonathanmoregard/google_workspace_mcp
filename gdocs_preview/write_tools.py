@@ -159,6 +159,13 @@ class _PostWriteRead:
         self.records: dict[str, dict[str, Any]] = {
             r["suggestion_id"]: r for r in analysed["suggestions"]
         }
+        #: Every tab this read saw, whether or not it holds a suggestion.
+        #: This is the inventory :func:`resolve_range_scope` refuses against,
+        #: and it must not be re-derived from ``records``: a multi-tab
+        #: document whose pending cards all sit in one tab would then look
+        #: single-tab, and the echo would name that tab's suggestions as the
+        #: ones the edit landed on.
+        self.tab_ids: list[Optional[str]] = [tab_id for tab_id, _ in read.tabs]
         self.segment_texts: dict[tuple[Optional[str], Optional[str]], str] = {}
         for tab_id, document in read.tabs:
             rendered = render_document(document, tab_id=tab_id)
@@ -185,10 +192,10 @@ class _PostWriteRead:
         segment_id = record.get("segment_id") or None
         tab_id = record.get("tab_id") or None
         if tab_id is None:
-            candidates = {tab for (tab, segment) in self.segment_texts if tab}
+            candidates = sorted({tab for tab in self.tab_ids if tab})
             if len(candidates) > 1:
                 return None
-            tab_id = next(iter(candidates), None)
+            tab_id = candidates[0] if candidates else None
         return self.segment_texts.get((tab_id, segment_id))
 
 
@@ -695,7 +702,10 @@ async def _verify_suggest(
     if not echoed_ids:
         try:
             scope = resolve_range_scope(
-                list(read.records.values()), segment_id=segment_id, tab_id=tab_id
+                list(read.records.values()),
+                tab_ids=read.tab_ids,
+                segment_id=segment_id,
+                tab_id=tab_id,
             )
         except ValueError as error:
             # Multi-tab document, no tab_id given: the listing REFUSES this

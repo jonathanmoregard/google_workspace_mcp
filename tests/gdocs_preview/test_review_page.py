@@ -65,8 +65,21 @@ def analysis(records: list[dict], document_id: str = "doc-1") -> dict:
     }
 
 
+def tabs_of(items: list[dict]) -> list[str]:
+    return sorted({i.get("tab_id") for i in items if i.get("tab_id")})
+
+
 def listing(records: list[dict], **kwargs) -> dict:
+    """``build_listing`` with the document's tab inventory defaulted.
+
+    Production reads the inventory off ``read.tab_metadata``; here the
+    records' own tabs stand in for it, which is right for every test that is
+    not ABOUT the inventory. The tests that are (a document with more tabs
+    than its cards occupy) pass ``tab_ids`` explicitly -- that divergence is
+    the whole point of :class:`TestTabInventoryIsTheDocumentsNotTheRecords`.
+    """
     kwargs.setdefault("fields", rp.FIELDS_SUMMARY)
+    kwargs.setdefault("tab_ids", tabs_of(records))
     return rp.build_listing(
         analysis(records),
         document_id="doc-1",
@@ -74,6 +87,12 @@ def listing(records: list[dict], **kwargs) -> dict:
         ga_source="ga_documents_get",
         **kwargs,
     )
+
+
+def review_view(rendered: dict, **kwargs) -> dict:
+    """``build_review_view`` with the tab inventory defaulted, as above."""
+    kwargs.setdefault("tab_ids", tabs_of(rendered.get("paragraphs") or []))
+    return rp.build_review_view(rendered, **kwargs)
 
 
 def ladder(n: int, **kwargs) -> list[dict]:
@@ -809,7 +828,7 @@ def rendered_document() -> dict:
 
 class TestReviewView:
     def test_text_mode_drops_the_paragraph_map_and_declares_it(self):
-        view = rp.build_review_view(rendered_document(), fields="text")
+        view = review_view(rendered_document(), fields="text")
         assert view["body_text"] == "First.\nSecond.\nThird.\n"
         assert "paragraphs" not in view
         assert view["omitted_fields"] == ["paragraphs"]
@@ -817,13 +836,13 @@ class TestReviewView:
         assert view["returned_paragraph_count"] == 3
 
     def test_paragraph_mode_drops_body_text_and_declares_it(self):
-        view = rp.build_review_view(rendered_document(), fields="paragraphs")
+        view = review_view(rendered_document(), fields="paragraphs")
         assert "body_text" not in view
         assert "body_text" in view["omitted_fields"]
         assert len(view["paragraphs"]) == 3
 
     def test_full_mode_keeps_both_and_declares_nothing(self):
-        view = rp.build_review_view(rendered_document(), fields="full")
+        view = review_view(rendered_document(), fields="full")
         assert view["body_text"] == "First.\nSecond.\nThird.\n"
         assert len(view["paragraphs"]) == 3
         assert "omitted_fields" not in view
@@ -832,12 +851,12 @@ class TestReviewView:
         source = rendered_document()
         for mode in ("text", "full"):
             assert (
-                rp.build_review_view(source, fields=mode)["body_text"]
+                review_view(source, fields=mode)["body_text"]
                 == source["body_text"]
             )
 
     def test_window_narrows_paragraphs_body_text_and_suggestion_ids(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_document(), fields="full", start_index=8, end_index=16
         )
         assert view["returned_paragraph_count"] == 1
@@ -850,7 +869,7 @@ class TestReviewView:
         start/end, ask for it back. Half-open means it returns exactly one."""
         source = rendered_document()
         for paragraph in source["paragraphs"]:
-            view = rp.build_review_view(
+            view = review_view(
                 source,
                 fields="paragraphs",
                 start_index=paragraph["start_index"],
@@ -859,19 +878,19 @@ class TestReviewView:
             assert [p["text"] for p in view["paragraphs"]] == [paragraph["text"]]
 
     def test_window_spanning_two_paragraphs_returns_both(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_document(), fields="paragraphs", start_index=8, end_index=23
         )
         assert [p["text"] for p in view["paragraphs"]] == ["Second.\n", "Third.\n"]
 
     def test_a_backwards_window_is_refused(self):
         with pytest.raises(ValueError, match="half-open"):
-            rp.build_review_view(
+            review_view(
                 rendered_document(), fields="full", start_index=16, end_index=8
             )
 
     def test_window_that_matches_nothing_is_an_empty_map_not_an_error(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_document(), fields="full", start_index=900, end_index=999
         )
         assert view["returned_paragraph_count"] == 0
@@ -881,7 +900,7 @@ class TestReviewView:
 
     def test_unknown_field_mode_is_rejected(self):
         with pytest.raises(ValueError, match="Invalid fields"):
-            rp.build_review_view(rendered_document(), fields="prose")
+            review_view(rendered_document(), fields="prose")
 
 
 def rendered_with_header() -> dict:
@@ -908,7 +927,7 @@ def rendered_with_header() -> dict:
 
 class TestReviewViewWindowScope:
     def test_a_body_window_does_not_pull_in_the_header(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_with_header(), fields="full", start_index=1, end_index=8
         )
         assert [p["text"] for p in view["paragraphs"]] == ["First.\n"]
@@ -916,7 +935,7 @@ class TestReviewViewWindowScope:
         assert view["body_text"] == "First.\n"
 
     def test_naming_the_segment_reads_the_window_in_the_header(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_with_header(),
             fields="full",
             start_index=0,
@@ -932,14 +951,14 @@ class TestReviewViewWindowScope:
         source = rendered_document()
         source["paragraphs"][1]["tab_id"] = "t.second"
         with pytest.raises(ValueError, match="needs a tab_id"):
-            rp.build_review_view(source, fields="full", start_index=1, end_index=30)
+            review_view(source, fields="full", start_index=1, end_index=30)
 
 
 class TestReviewViewWindowIsWholeResponse:
     """A window has to narrow every text surface, not just ``body_text``."""
 
     def test_a_body_window_does_not_carry_the_whole_header(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_with_header(), fields="full", start_index=1, end_index=8
         )
         assert view["body_text"] == "First.\n"
@@ -948,7 +967,7 @@ class TestReviewViewWindowIsWholeResponse:
         assert view["headers"] == {}
 
     def test_a_header_window_returns_the_header_text_it_selected(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_with_header(),
             fields="full",
             start_index=0,
@@ -961,7 +980,7 @@ class TestReviewViewWindowIsWholeResponse:
         assert view["body_text"] == ""
 
     def test_an_unwindowed_read_still_returns_every_segment(self):
-        view = rp.build_review_view(rendered_with_header(), fields="full")
+        view = review_view(rendered_with_header(), fields="full")
         assert view["headers"] == {"kix.h1": "Header.\n"}
         assert view["body_text"] == "First.\nSecond.\nThird.\n"
 
@@ -972,20 +991,20 @@ class TestReviewViewScopeArguments:
         carries, so the window came back empty -- indistinguishable from a
         range that genuinely selected nothing."""
         with pytest.raises(ValueError, match="segment_id"):
-            rp.build_review_view(
+            review_view(
                 rendered_with_header(), fields="full",
                 start_index=0, end_index=12, segment_id="   ",
             )
 
     def test_a_blank_tab_id_is_refused(self):
         with pytest.raises(ValueError, match="tab_id"):
-            rp.build_review_view(
+            review_view(
                 rendered_document(), fields="full",
                 start_index=1, end_index=8, tab_id=" ",
             )
 
     def test_a_scope_without_a_window_says_it_did_nothing(self):
-        view = rp.build_review_view(
+        view = review_view(
             rendered_with_header(), fields="full", segment_id="kix.h1"
         )
         assert "IGNORED" in view["scope_note"]
@@ -995,13 +1014,13 @@ class TestReviewViewScopeArguments:
         assert view["body_text"] == "First.\nSecond.\nThird.\n"
 
     def test_a_tab_id_without_a_window_says_it_did_nothing(self):
-        view = rp.build_review_view(rendered_document(), fields="text", tab_id="t.0")
+        view = review_view(rendered_document(), fields="text", tab_id="t.0")
         assert "tab_id='t.0'" in view["scope_note"]
 
     def test_no_scope_note_when_none_was_passed(self):
-        assert "scope_note" not in rp.build_review_view(
+        assert "scope_note" not in review_view(
             rendered_document(), fields="full"
         )
-        assert "scope_note" not in rp.build_review_view(
+        assert "scope_note" not in review_view(
             rendered_document(), fields="full", start_index=1, end_index=8
         )

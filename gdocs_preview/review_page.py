@@ -273,6 +273,7 @@ def normalize_filter_value(value: Any, parameter: str) -> Optional[str]:
 def filter_records(
     records: Sequence[dict[str, Any]],
     *,
+    tab_ids: Sequence[Optional[str]],
     author: Optional[str] = None,
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
@@ -294,6 +295,13 @@ def filter_records(
     footer or footnote is excluded from it and counted in
     ``excluded_other_segments``. That default is what makes an index range
     mean one thing; see :func:`resolve_range_scope`.
+
+    ``tab_ids`` is the DOCUMENT's tab inventory (``read.tab_metadata`` via
+    :func:`gdocs_preview.address.tab_inventory`), and it is what decides
+    whether an omitted ``tab_id`` can be resolved or must be refused.
+    Deriving that from ``records`` counted the tabs the cards are in rather
+    than the tabs the document has, so a multi-tab document whose cards all
+    sit in one tab resolved silently to that tab.
     """
     wants_range = start_index is not None or end_index is not None
     if (
@@ -316,7 +324,9 @@ def filter_records(
     segment_key = segment_id.strip() if segment_id is not None else None
     tab_key = tab_id.strip() if tab_id is not None else None
     scope = (
-        resolve_range_scope(records, segment_id=segment_key, tab_id=tab_key)
+        resolve_range_scope(
+            records, tab_ids=tab_ids, segment_id=segment_key, tab_id=tab_key
+        )
         if wants_range
         else None
     )
@@ -649,6 +659,7 @@ def build_listing(
     read_source: str,
     ga_source: str,
     fields: str,
+    tab_ids: Sequence[Optional[str]],
     page_size: Optional[int] = None,
     page_token: Optional[str] = None,
     author: Optional[str] = None,
@@ -699,6 +710,7 @@ def build_listing(
     size, size_note = resolve_page_size(page_size, fields)
     kept, applied = filter_records(
         records,
+        tab_ids=tab_ids,
         author=author,
         start_index=start_index,
         end_index=end_index,
@@ -767,6 +779,7 @@ def build_review_view(
     rendered: dict[str, Any],
     *,
     fields: str,
+    tab_ids: Sequence[Optional[str]],
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
     segment_id: Optional[str] = None,
@@ -790,6 +803,13 @@ def build_review_view(
     for the same reason the listing's range filter is
     (:func:`resolve_range_scope`): a header paragraph numbered from 0 would
     otherwise fall inside every window taken off the body's first page.
+
+    ``tab_ids`` is the document's tab inventory and decides that resolution,
+    the same way it does for the listing. The paragraph map does happen to
+    touch every tab today, so deriving the count from it was accidentally
+    right here while it was wrong for the two suggestion-record callers --
+    which is precisely the kind of agreement-by-coincidence that let this
+    class survive three rounds. All three now count the same thing.
     """
     fields = validate_fields(fields, VIEW_FIELD_MODES)
     windowed = start_index is not None or end_index is not None
@@ -818,7 +838,9 @@ def build_review_view(
     total_paragraphs = len(paragraphs)
     scope: dict[str, Any] = {}
     if windowed:
-        scope = resolve_range_scope(paragraphs, segment_id=segment_key, tab_id=tab_key)
+        scope = resolve_range_scope(
+            paragraphs, tab_ids=tab_ids, segment_id=segment_key, tab_id=tab_key
+        )
         paragraphs = [
             p
             for p in paragraphs

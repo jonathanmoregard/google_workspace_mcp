@@ -2132,12 +2132,15 @@ class TestOverlapSemanticsAreShared:
          "tab_id": "t.second", "start_index": 5, "end_index": 9},
     ]
 
+    #: The DOCUMENT's tabs. ``RECORDS`` occupy only two of the three.
+    TAB_IDS = ("t.0", "t.second", "t.third")
+
     @staticmethod
-    def _read_side(records, *, segment_id, tab_id):
+    def _read_side(records, *, tab_ids, segment_id, tab_id):
         """The listing's range filter: ``("refused", why)`` or ``("ok", ids)``."""
         try:
             kept, _ = review_page.filter_records(
-                records, start_index=0, end_index=10_000,
+                records, tab_ids=tab_ids, start_index=0, end_index=10_000,
                 segment_id=segment_id, tab_id=tab_id,
             )
         except ValueError as error:
@@ -2145,11 +2148,11 @@ class TestOverlapSemanticsAreShared:
         return ("ok", [r["suggestion_id"] for r in kept])
 
     @staticmethod
-    def _write_side(records, *, segment_id, tab_id):
+    def _write_side(records, *, tab_ids, segment_id, tab_id):
         """The write echo's ``suggestions_at_edit_range``, same shape."""
         try:
             scope = address.resolve_range_scope(
-                records, segment_id=segment_id, tab_id=tab_id
+                records, tab_ids=tab_ids, segment_id=segment_id, tab_id=tab_id
             )
         except ValueError as error:
             return ("refused", str(error))
@@ -2176,25 +2179,50 @@ class TestOverlapSemanticsAreShared:
     def test_both_paths_answer_a_range_identically(self, segment_id, tab_id):
         """Same verdict AND same reason -- including refusing together."""
         assert self._read_side(
-            self.RECORDS, segment_id=segment_id, tab_id=tab_id
-        ) == self._write_side(self.RECORDS, segment_id=segment_id, tab_id=tab_id)
+            self.RECORDS, tab_ids=self.TAB_IDS, segment_id=segment_id, tab_id=tab_id
+        ) == self._write_side(
+            self.RECORDS, tab_ids=self.TAB_IDS, segment_id=segment_id, tab_id=tab_id
+        )
 
     def test_both_paths_refuse_a_multi_tab_range_without_a_tab_id(self):
         for side in (self._read_side, self._write_side):
-            verdict, reason = side(self.RECORDS, segment_id=None, tab_id=None)
+            verdict, reason = side(
+                self.RECORDS, tab_ids=self.TAB_IDS, segment_id=None, tab_id=None
+            )
             assert verdict == "refused"
             assert "needs a tab_id" in reason
 
     def test_a_single_tab_document_resolves_implicitly_on_both_paths(self):
         single = [r for r in self.RECORDS if r["tab_id"] == "t.0"]
-        assert self._read_side(single, segment_id=None, tab_id=None) == (
-            "ok",
-            ["b.t0"],
-        )
-        assert self._write_side(single, segment_id=None, tab_id=None) == (
-            "ok",
-            ["b.t0"],
-        )
+        for side in (self._read_side, self._write_side):
+            assert side(
+                single, tab_ids=("t.0",), segment_id=None, tab_id=None
+            ) == ("ok", ["b.t0"])
+
+    def test_a_tab_holding_no_cards_still_forces_a_tab_id(self):
+        """HIGH 1: the round-1/2 class surviving UNDER the refusal.
+
+        The refusal counted the tabs the RECORDS occupy, which is a
+        different question from how many tabs the document has. A three-tab
+        document whose cards all sit in tab B looks single-tab from the
+        records, so the refusal never fired and the omitted ``tab_id``
+        resolved silently to B -- and a caller meaning the default tab got
+        tab B's cards echoed as "the suggestion(s) at the edited range".
+        """
+        in_one_tab = [r for r in self.RECORDS if r["tab_id"] == "t.second"]
+        # The premise: from the records alone this document looks single-tab.
+        assert {r["tab_id"] for r in in_one_tab} == {"t.second"}
+
+        for side in (self._read_side, self._write_side):
+            verdict, reason = side(
+                in_one_tab, tab_ids=self.TAB_IDS, segment_id=None, tab_id=None
+            )
+            assert verdict == "refused"
+            assert "3 tabs" in reason
+            # And the answer it USED to give, which was a wrong-tab answer.
+            assert side(
+                in_one_tab, tab_ids=("t.second",), segment_id=None, tab_id=None
+            ) == ("ok", ["b.t1"])
 
     @pytest.mark.asyncio
     async def test_the_write_echo_declines_rather_than_naming_another_tab(self):

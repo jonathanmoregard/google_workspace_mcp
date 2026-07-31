@@ -25,7 +25,7 @@ from auth.scopes import DOCS_PREVIEW_SCOPES
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_status, review_page, suggestion_ledger
+from gdocs_preview import address, preview_status, review_page, suggestion_ledger
 from gdocs_preview.analysis import extract_suggestions_from_tabs, render_tabs
 from gdocs_preview.preview_read import (
     READ_SOURCE_GA,
@@ -203,8 +203,10 @@ async def list_document_suggestions(
             document body.
         tab_id (str): Only suggestions in this tab, and the tab an index
             range is read in. Omit for a single-tab document -- it is
-            resolved from the records; a document with more than one tab
-            REFUSES an index range without it rather than guessing. When it
+            resolved from the DOCUMENT's tab list (the response's ``tabs``),
+            not from whichever suggestions came back, so a document with
+            more than one tab REFUSES an index range without it even when
+            every pending card happens to sit in one of them. When it
             matches nothing the response lists filters.tabs_present, the
             same way author and status list theirs.
 
@@ -230,6 +232,10 @@ async def list_document_suggestions(
             read_source=read.source,
             ga_source=READ_SOURCE_GA,
             fields=fields,
+            # The DOCUMENT's tabs, not the tabs its cards happen to sit in:
+            # an index range is refused on a multi-tab document even when
+            # every pending suggestion is in one of them.
+            tab_ids=address.tab_inventory(read.tab_metadata),
             page_size=page_size,
             page_token=page_token,
             author=author,
@@ -446,9 +452,10 @@ async def get_doc_review_view(
             own segment_id). Only meaningful with start_index/end_index;
             without them it is reported as ignored, not silently applied.
         tab_id (str): Read the window in this tab. Omit for a single-tab
-            document -- it is resolved from the paragraphs; a document with
-            more than one tab REFUSES a window without it rather than
-            guessing. Only meaningful with start_index/end_index.
+            document -- it is resolved from the DOCUMENT's tab list (the
+            response's ``tabs``); a document with more than one tab REFUSES
+            a window without it rather than guessing. Only meaningful with
+            start_index/end_index.
         include_comments (bool): Return the comment threads. Default True;
             pass False when you only want the prose.
 
@@ -478,6 +485,7 @@ async def get_doc_review_view(
         shaped = review_page.build_review_view(
             rendered,
             fields=fields,
+            tab_ids=address.tab_inventory(read.tab_metadata),
             start_index=start_index,
             end_index=end_index,
             segment_id=segment_id,

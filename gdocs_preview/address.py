@@ -27,6 +27,15 @@ document has only one, REFUSING to guess when it has several), and
 :func:`in_range_scope` is the membership test. Read and write paths share
 both, so "which suggestions are at this range" cannot mean two different
 things depending on which module asked.
+
+That refusal is only as honest as what it counts. It counted the tabs
+occupied by the records the caller was holding, which is a different
+question from how many tabs the document has: a three-tab document whose
+cards all sit in one tab presented as single-tab, and the omitted ``tab_id``
+resolved silently to that tab. :func:`resolve_range_scope` therefore takes
+the document's ``tab_ids`` as a required argument -- :func:`tab_inventory`
+reads them off the same ``tab_metadata`` every review response already
+carries -- so all three resolvers are counting the document.
 """
 
 from __future__ import annotations
@@ -70,9 +79,21 @@ def with_address(payload: dict[str, Any], record: dict[str, Any]) -> dict[str, A
     return {**payload, **address_of(record)}
 
 
+def tab_inventory(tab_metadata: Sequence[dict[str, Any]]) -> list[str]:
+    """The document's tab ids, from a read's ``tab_metadata``.
+
+    ``None`` entries (the GA fallback's single implicit tab) are dropped, so
+    an empty list means "this read cannot see tabs", which
+    :func:`resolve_range_scope` treats as the single unnamed coordinate space
+    it is.
+    """
+    return sorted({t.get("tab_id") for t in tab_metadata if t.get("tab_id")})
+
+
 def resolve_range_scope(
     records: Sequence[dict[str, Any]],
     *,
+    tab_ids: Sequence[Optional[str]],
     segment_id: Optional[str],
     tab_id: Optional[str],
 ) -> dict[str, Any]:
@@ -80,14 +101,29 @@ def resolve_range_scope(
 
     ``segment_id=None`` means the body: a non-body segment always carries an
     id (:func:`gdocs_preview.analysis._collect_segments`), so ``None`` is not
-    ambiguous. ``tab_id=None`` is resolved from the records -- a single-tab
+    ambiguous. ``tab_id=None`` is resolved from ``tab_ids`` -- a single-tab
     or GA read has exactly one, and the caller should not have to name it --
     but a genuinely multi-tab document is REFUSED rather than guessed at,
     because each tab is numbered from its own start and picking one silently
     would answer a different question than the one asked.
+
+    **``tab_ids`` is the DOCUMENT's tab inventory, never the tabs the passed
+    records happen to occupy**, and it is a required argument for that
+    reason. Counting the records was the same bug wearing the refusal as a
+    disguise: a three-tab document whose cards all sit in tab B has exactly
+    one tab "present" among its records, so the refusal did not fire and the
+    omitted ``tab_id`` silently resolved to B. A caller that meant the
+    default tab was then handed tab B's cards as "the suggestion(s) at the
+    edited range" -- a wrong-tab answer arrived at through the very check
+    that exists to prevent one. The three callers (the listing's range
+    filter, ``get_doc_review_view``'s window, and the write path's
+    range echo) each see a different record subset -- pending suggestions,
+    every paragraph, all suggestions -- so records could not make them agree
+    even in principle. ``read.tab_metadata``
+    (:class:`gdocs_preview.preview_read.ReviewRead`) can, and does.
     """
     if tab_id is None:
-        present = sorted({r.get("tab_id") for r in records if r.get("tab_id")})
+        present = sorted({t for t in tab_ids if t})
         if len(present) > 1:
             raise ValueError(
                 "An index range needs a tab_id in this document: it has "

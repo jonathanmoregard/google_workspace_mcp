@@ -23,6 +23,17 @@ from tests.gdocs_preview import fixtures as fx
 
 EMAIL = "reviewer@example.com"
 
+#: Three tabs; every pending suggestion sits in the middle one. Counting the
+#: records makes this document look single-tab, which is how a wrong-tab
+#: answer used to get past the multi-tab refusal (HIGH 1).
+THREE_TABS_CARDS_IN_ONE = fx.build_tabs_payload(
+    [
+        ("t.0", fx.DOC_EMPTY),
+        ("t.second", fx.DOC_PLAIN_INSERTION),
+        ("t.third", fx.DOC_EMPTY),
+    ]
+)
+
 
 def _unwrap(tool):
     """Unwrap the decorated tool function to the original implementation."""
@@ -254,6 +265,48 @@ class TestListSuggestions:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_range_is_refused_on_a_tab_the_cards_do_not_reach(self):
+        """HIGH 1: the refusal must count the DOCUMENT's tabs.
+
+        Three tabs, every pending card in the middle one. Counting the
+        records saw a single tab, so the refusal did not fire and the
+        omitted ``tab_id`` resolved silently to ``t.second`` -- a caller
+        meaning the default tab got that tab's cards back as though they
+        were at the range it named.
+        """
+        service = _docs_get_service(THREE_TABS_CARDS_IN_ONE)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        with pytest.raises(UserInputError, match="3 tabs"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=100,
+            )
+
+    @pytest.mark.asyncio
+    async def test_naming_the_tab_answers_the_same_range(self):
+        service = _docs_get_service(THREE_TABS_CARDS_IN_ONE)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=100,
+                tab_id="t.second",
+            )
+        )
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["suggest.ins1"]
+        assert result["filters"]["range_scope"]["tab_id"] == "t.second"
+        # The inventory really is the document's: all three tabs are echoed.
+        assert [t["tab_id"] for t in result["tabs"]] == ["t.0", "t.second", "t.third"]
+
+    @pytest.mark.asyncio
     async def test_falls_back_to_the_ga_read_when_not_enrolled(self):
         """Enrollment is a property of the caller's project, not the
         document: a preview-read failure must degrade, never fail."""
@@ -415,6 +468,42 @@ class TestReadDocument:
         assert [p["text"] for p in result["paragraphs"]] == ["Hello{+ brave+} world.\n"]
         assert result["suggestion_ids"] == ["suggest.ins1"]
         assert "omitted_fields" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_window_refuses_the_same_document_the_listing_refuses(self):
+        """The third resolver, counting the same inventory as the other two.
+
+        ``build_review_view`` reads the paragraph map, which does happen to
+        touch every tab -- so it was accidentally right here while the two
+        suggestion-record callers were wrong. Agreement by coincidence is
+        what let this class survive three rounds; this pins it to the
+        document's ``tab_metadata`` instead.
+        """
+        service = _docs_get_service(THREE_TABS_CARDS_IN_ONE)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        with pytest.raises(UserInputError, match="3 tabs"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=100,
+            )
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+                start_index=1,
+                end_index=100,
+                tab_id="t.second",
+            )
+        )
+        assert result["window"]["scope"]["tab_id"] == "t.second"
+        assert result["body_text"] == "Hello{+ brave+} world.\n"
 
     @pytest.mark.asyncio
     async def test_paragraphs_fields_drop_body_text_without_losing_characters(self):

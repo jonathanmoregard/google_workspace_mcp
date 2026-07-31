@@ -1130,15 +1130,18 @@ async def manage_document_suggestion(
             a write that landed from one that did not.
 
             matches_expectation is null ONLY when no check could be run, and
-            resulting_text_unavailable then names which of the four reasons
+            resulting_text_unavailable then names which of the six reasons
             it was: suggestion_not_listed (this session never listed the id,
             so there is no before/after to compare), ambiguous_tab (the card
             carried no tab_id and the document has several),
-            segment_not_in_read (the post-write read lost that (tab,
-            segment) -- a degraded GA read carries no tab ids), or
+            segment_not_in_read (the post-write read lost the tab/segment the
+            card was listed in -- a degraded GA read carries no tab ids),
             anchor_not_found (the base text before the range is gone, which
-            means a concurrent edit). None of them says the write failed;
-            still_pending is the evidence about that.
+            means a concurrent edit), ambiguous_anchor (that base text
+            repeats, so several places read as the range and they disagree),
+            nothing_to_compare (the card was listed without the before/after
+            text a resolution is checked against). None of them says the
+            write failed; still_pending is the evidence about that.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":

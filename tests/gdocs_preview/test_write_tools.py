@@ -17,6 +17,7 @@ Mocked Google service objects only -- no network. Covers:
 
 import json
 import logging
+import re
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -48,6 +49,10 @@ NOT_ENROLLED_BODY = (
 #: A semantic 400 that is NOT about a missing suggestion, so the tools must
 #: let it through to handle_http_errors untouched.
 SEMANTIC_400_BODY = b'{"error": {"message": "Invalid requests[0]: bad range"}}'
+
+#: For reading the count word out of an agent-facing docstring, so that
+#: growing a reason list without renumbering the prose is a test failure.
+_NUMBER_WORDS = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
 
 
 def missing_suggestion_400(suggestion_id: str = "sug.bob.1") -> bytes:
@@ -3339,6 +3344,25 @@ class TestAnUnlocatedWindowSaysWhy:
         assert "reason_from_the_future" in note
         assert "concurrent edit" not in note
         assert "reason_from_the_future" in caplog.text
+
+    def test_the_returns_contract_lists_the_reasons_the_code_can_send(self):
+        """Round 5 MEDIUM: the agent-facing docstring named FOUR of six.
+
+        ``ambiguous_anchor`` and ``nothing_to_compare`` were reachable and
+        undocumented, so the only description of the tool an agent ever reads
+        was missing two of the values it can receive. The enumeration is
+        parsed back out of the docstring here: adding a reason without
+        documenting it, or documenting them in a different order from
+        ``UNLOCATED_REASONS``, fails.
+        """
+        doc = _unwrap(write_tools.manage_document_suggestion).__doc__
+        match = re.search(
+            r"names which of the (\w+)\s+reasons\s+it was:(.*)", doc, re.S
+        )
+        assert match, doc
+        assert match.group(1) == _NUMBER_WORDS[len(write_tools.UNLOCATED_REASONS)]
+        listed = re.findall(r"([a-z]+(?:_[a-z]+)+) \(", match.group(2))
+        assert listed == list(write_tools.UNLOCATED_REASONS), listed
 
 
 class TestAStillPendingSuggestionIsNeverAMatch:

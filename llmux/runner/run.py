@@ -140,6 +140,20 @@ class RunResult:
                 "killed by the harness wall clock, so what it would have "
                 "scored is unknown"
             )
+        advertised = self.transcript.leaked_builtin_tools(session_mod.SERVER_NAME)
+        if advertised:
+            reasons.append(
+                "the tool surface was contaminated: non-MCP tool(s) "
+                + ", ".join(advertised)
+                + " were ADVERTISED to the agent. A denied call is not a "
+                "clean run -- in batch 20260730-224247 `Monitor` was "
+                "advertised and then refused by --permission-mode dontAsk, "
+                "and the agent spent its turns discovering that instead of "
+                "reviewing, then ended by asking the absent operator a "
+                "question; the batch graded it normally and exited 0. Add "
+                "the names to llmux.runner.session.BUILTIN_TOOLS_DENIED and "
+                "confirm with `uv run python -m llmux.runner.toolprobe`."
+            )
         escaped = [
             call.name
             for call in self.transcript.tool_calls
@@ -208,6 +222,34 @@ def detect_contamination(transcript: Transcript) -> list[str]:
     if called:
         notes.append("agent called non-MCP tool(s): " + ", ".join(called))
     return notes
+
+
+def preflight_toolprobe(
+    *, model: str = "haiku", timeout_s: float = 180.0, claude_bin: str = "claude"
+) -> tuple[bool, list[str], Optional[str]]:
+    """Ask a real spawned agent what it can see, BEFORE the batch spends money.
+
+    ``(clean, leaked, error)``. The deny list in :mod:`llmux.runner.session`
+    is a promise, not a guarantee -- Claude Code ships built-ins between
+    releases and each one is advertised until somebody adds its name -- and
+    every run against a stale list is INCONCLUSIVE. Discovering that after
+    $17 of agents is the expensive way to learn it; the probe costs one
+    haiku turn.
+
+    A probe that cannot run at all is NOT a reason to refuse the batch (the
+    per-run ``system``/``init`` check still catches leakage after the fact),
+    so its own failure comes back as ``error`` rather than as a verdict.
+    """
+    from llmux.runner.toolprobe import probe_advertised_tools
+
+    try:
+        result = probe_advertised_tools(
+            model=model, timeout_s=timeout_s, claude_bin=claude_bin
+        )
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return True, [], f"{type(exc).__name__}: {exc}"
+    leaked = list(result.get("leaked") or [])
+    return not leaked, leaked, None
 
 
 def estimate_cost(scenario_count: int, models: Sequence[str]) -> float:
@@ -465,6 +507,12 @@ def dry_run(scenarios: Sequence[Scenario], models: Sequence[str]) -> int:
         + ("FAILED" if failures else "clean")
         + f" ({failures} problem(s)); no tokens spent"
     )
+    print(
+        "  note: the deny-list check is NOT part of this -- it has to spawn a "
+        "real agent, which a dry run must not do. A real batch runs it "
+        "automatically; run it alone with `uv run python -m "
+        "llmux.runner.toolprobe`."
+    )
     return 1 if failures else 0
 
 
@@ -615,6 +663,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the cost confirmation prompt",
     )
+    parser.add_argument(
+        "--skip-toolprobe",
+        action="store_true",
+        help="do not check the deny list against a real agent before the "
+        "batch (the check costs one haiku turn and refuses a batch whose "
+        "runs would all be INCONCLUSIVE)",
+    )
     parser.add_argument("--all", action="store_true", help="ignore --limit")
     return parser
 
@@ -657,6 +712,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not _confirm(estimate_cost(len(scenarios), models), args.yes):
         print("aborted; nothing spent")
         return 1
+
+    # Before the money: what does an agent under this exact isolation
+    # actually see? Every run against a stale deny list is INCONCLUSIVE, so
+    # a batch that starts against one buys nothing.
+    if args.skip_toolprobe:
+        print("tool probe: SKIPPED (--skip-toolprobe)")
+    else:
+        print("tool probe: asking one agent what tools it can see ...", flush=True)
+        clean, leaked, probe_error = preflight_toolprobe()
+        if probe_error:
+            print(f"  ! the probe itself could not run ({probe_error}); "
+                  "continuing -- every run's system/init is still checked")
+        elif clean:
+            print("  clean: the agent sees the mock MCP server and nothing else")
+        else:
+            print(
+                f"  LEAKED {len(leaked)} non-MCP tool(s): {', '.join(leaked)}\n"
+                "\nEvery run in this batch would be INCONCLUSIVE: a surface "
+                "with built-ins on it is not the surface under measurement, "
+                "whether or not the agent gets permission to call them. Add "
+                "these names to llmux.runner.session.BUILTIN_TOOLS_DENIED and "
+                "re-run, or pass --skip-toolprobe to spend the money anyway.",
+                file=sys.stderr,
+            )
+            return 2
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     reports_dir = Path(args.reports_dir)

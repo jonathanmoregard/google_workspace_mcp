@@ -79,10 +79,11 @@ SERVER_ENV_PINS = {
 #: ``PushNotification``, ``RemoteTrigger``), and two runs spent turns calling
 #: ``Monitor`` -- which the ``dontAsk`` permission mode then denied at call
 #: time -- before ending by asking the absent operator to paste in a file.
-#: The names below have been added, but the structural fix is elsewhere:
-#: :mod:`llmux.runner.toolprobe` asks a real spawned agent what it can see,
-#: and every real run's ``system``/``init`` event is checked for non-MCP
-#: names so leakage is REPORTED even when this tuple has fallen behind.
+#: The names below have been added, but the structural fix is elsewhere, and
+#: it is not a report -- a note nobody acts on is how that batch shipped:
+#: :mod:`llmux.runner.toolprobe` runs at the START of every batch and REFUSES
+#: to spend money against a stale list, and any run whose ``system``/``init``
+#: still advertises a non-MCP name is INCONCLUSIVE, called or not.
 BUILTIN_TOOLS_DENIED = (
     "Agent",
     "Artifact",

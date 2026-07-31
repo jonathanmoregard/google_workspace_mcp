@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from llmux.runner import run as run_mod
 from llmux.runner import session
 from llmux.runner.analyze import aggregate, render_markdown, write_report
 from llmux.runner.run import (
@@ -184,9 +185,17 @@ class TestToolLeakage:
         )
         assert transcript.leaked_builtin_tools("gdocsmock") == []
 
-    def test_a_denied_builtin_call_is_reported_but_not_inconclusive(self):
-        """The permission gate did its job: the call failed, the agent
-        recovered. Worth reporting, not worth voiding the measurement."""
+    def test_an_advertised_then_denied_builtin_voids_the_measurement(self):
+        """The real 20260730-224247 contamination, exactly.
+
+        `Monitor` was advertised, the agent reached for it, `dontAsk` refused
+        the call -- and because the run only produced a *note*, it graded
+        normally and the batch exited 0. But the agent had already spent its
+        turns planning around a tool that did not exist for it, and one run
+        ended by asking the absent operator a question. A surface with
+        built-ins on it is not the surface under measurement, whether or not
+        the calls are permitted.
+        """
         transcript = parse_stream_json(
             [
                 _init(["mcp__gdocsmock__list_document_suggestions", "Monitor"]),
@@ -198,7 +207,42 @@ class TestToolLeakage:
         result = _run(transcript)
         assert transcript.builtin_tools_called() == ["Monitor"]
         assert any("called non-MCP" in note for note in result.contamination)
+        assert result.outcome == OUTCOME_INCONCLUSIVE
+        reason = " ".join(result.inconclusive_reasons)
+        assert "ADVERTISED" in reason
+        assert "Monitor" in reason
+        assert "BUILTIN_TOOLS_DENIED" in reason
+
+    def test_advertising_alone_is_enough_even_if_never_called(self):
+        transcript = parse_stream_json(
+            [
+                _init(["mcp__gdocsmock__list_document_suggestions", "AskUserQuestion"]),
+                RESULT,
+            ]
+        )
+        result = _run(transcript)
+        assert result.outcome == OUTCOME_INCONCLUSIVE
+
+    def test_a_clean_surface_is_still_a_capability_result(self):
+        transcript = parse_stream_json(
+            [_init(["mcp__gdocsmock__list_document_suggestions"]), RESULT]
+        )
+        result = _run(transcript)
+        assert result.inconclusive_reasons == []
         assert result.outcome == OUTCOME_PASS
+
+    def test_the_harness_waiter_does_not_void_a_run(self):
+        """WaitForMcpServers is the CLI connecting our own server; treating
+        it as contamination would make every run INCONCLUSIVE."""
+        transcript = parse_stream_json(
+            [
+                _init(
+                    ["mcp__gdocsmock__list_document_suggestions", "WaitForMcpServers"]
+                ),
+                RESULT,
+            ]
+        )
+        assert _run(transcript).outcome == OUTCOME_PASS
 
     def test_a_successful_builtin_call_voids_the_measurement(self):
         transcript = parse_stream_json(
@@ -425,6 +469,97 @@ class TestReportResilience:
         assert payload["runs"][0]["scenario_id"] == "sc-good"
         assert "POSITIVE_CLASSES" in payload["summary"]["aggregate_error"]
         assert "markdown" not in paths
+
+
+class TestPreflightToolProbe:
+    """A batch must not start against a deny list that has fallen behind.
+
+    Every run against one is INCONCLUSIVE, so the money buys nothing; the
+    probe costs one haiku turn and is the only empirical answer to "what
+    does the agent actually see?".
+    """
+
+    def test_a_clean_probe_lets_the_batch_run(self, monkeypatch):
+        import llmux.runner.toolprobe as toolprobe
+
+        monkeypatch.setattr(
+            toolprobe,
+            "probe_advertised_tools",
+            lambda **_kw: {"leaked": [], "tools": ["mcp__gdocsmock__x"]},
+        )
+        assert run_mod.preflight_toolprobe() == (True, [], None)
+
+    def test_a_leak_is_reported_as_not_clean(self, monkeypatch):
+        import llmux.runner.toolprobe as toolprobe
+
+        monkeypatch.setattr(
+            toolprobe,
+            "probe_advertised_tools",
+            lambda **_kw: {"leaked": ["Monitor", "RemoteTrigger"]},
+        )
+        clean, leaked, error = run_mod.preflight_toolprobe()
+        assert clean is False
+        assert leaked == ["Monitor", "RemoteTrigger"]
+        assert error is None
+
+    def test_a_probe_that_cannot_run_does_not_refuse_the_batch(self, monkeypatch):
+        """The per-run system/init check still catches leakage after the
+        fact, so a broken probe must not be a veto."""
+        import llmux.runner.toolprobe as toolprobe
+
+        def boom(**_kw):
+            raise FileNotFoundError("claude")
+
+        monkeypatch.setattr(toolprobe, "probe_advertised_tools", boom)
+        clean, leaked, error = run_mod.preflight_toolprobe()
+        assert clean is True
+        assert leaked == []
+        assert "FileNotFoundError" in error
+
+    def test_main_refuses_a_batch_when_the_probe_leaks(self, monkeypatch, capsys):
+        import llmux.runner.toolprobe as toolprobe
+
+        monkeypatch.setattr(
+            toolprobe, "probe_advertised_tools", lambda **_kw: {"leaked": ["Monitor"]}
+        )
+        monkeypatch.setattr(run_mod.session_mod, "claude_available", lambda: "/x/claude")
+        monkeypatch.setattr(run_mod, "_confirm", lambda *_a, **_kw: True)
+
+        def never(*_a, **_kw):  # pragma: no cover - the point is it is not called
+            raise AssertionError("the batch spent tokens against a stale deny list")
+
+        monkeypatch.setattr(run_mod, "run_batch", never)
+        code = run_mod.main(
+            ["--fixtures", "--limit", "1", "--models", "sonnet", "--yes"]
+        )
+        assert code == 2
+        assert "LEAKED" in capsys.readouterr().err
+
+    def test_skip_toolprobe_says_so_out_loud(self, monkeypatch, capsys, tmp_path):
+        import llmux.runner.toolprobe as toolprobe
+
+        def never(**_kw):  # pragma: no cover - the point is it is not called
+            raise AssertionError("the probe ran despite --skip-toolprobe")
+
+        monkeypatch.setattr(toolprobe, "probe_advertised_tools", never)
+        monkeypatch.setattr(run_mod.session_mod, "claude_available", lambda: "/x/claude")
+        monkeypatch.setattr(run_mod, "_confirm", lambda *_a, **_kw: True)
+        monkeypatch.setattr(run_mod, "run_batch", lambda *_a, **_kw: [])
+        code = run_mod.main(
+            [
+                "--fixtures",
+                "--limit",
+                "1",
+                "--models",
+                "sonnet",
+                "--yes",
+                "--skip-toolprobe",
+                "--reports-dir",
+                str(tmp_path),
+            ]
+        )
+        assert code == 0
+        assert "SKIPPED (--skip-toolprobe)" in capsys.readouterr().out
 
 
 class TestReportContent:

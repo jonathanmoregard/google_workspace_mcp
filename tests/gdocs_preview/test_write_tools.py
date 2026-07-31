@@ -1698,6 +1698,34 @@ class TestMergedEditEcho:
         assert "suggestions_at_edit_range" not in verification
 
     @pytest.mark.asyncio
+    async def test_index_zero_is_writable_in_a_segment_but_not_the_body(self):
+        """A header/footer/footnote is numbered from its own start, so 0 is
+        a position there -- verified against the live API 2026-07-31. The
+        blanket `start_index >= 1` rule made the first character of every
+        such segment unwritable."""
+        service = _batch_service({}, document=REPLACEMENT_READ)
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        with pytest.raises(UserInputError, match="section break"):
+            await fn(
+                service, user_google_email=EMAIL, document_id=DOC,
+                start_index=0, text="X",
+            )
+        json.loads(
+            await fn(
+                service, user_google_email=EMAIL, document_id=DOC,
+                start_index=0, text="X", segment_id="kix.h1",
+            )
+        )
+        request = service.documents.return_value.batchUpdate.call_args.kwargs["body"][
+            "requests"
+        ][0]
+        assert request["insertText"]["location"] == {
+            "index": 0,
+            "segmentId": "kix.h1",
+        }
+
+    @pytest.mark.asyncio
     async def test_a_suggestion_in_another_segment_is_not_at_the_edit(self):
         """Docs numbers a header from its own start, so a header suggestion
         can carry the same numbers as a body edit without being anywhere

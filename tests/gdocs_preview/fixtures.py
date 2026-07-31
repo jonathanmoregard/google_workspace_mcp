@@ -47,6 +47,21 @@ def table(rows: list[list[list[dict[str, Any]]]]) -> dict[str, Any]:
     return {"kind": "table", "rows": rows}
 
 
+def _omit_zero_start(node: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``startIndex`` when it is 0, the way the real API does.
+
+    The Docs API serializes proto3, which omits default values, so index 0 is
+    never written out. Verified against the live API 2026-07-31: a header
+    segment's only paragraph came back as ``{"endIndex": 13, "paragraph":
+    ...}``. Fixtures that spell the 0 out do not exercise the code path prod
+    actually takes, which is how a header suggestion at index 0 came back
+    with ``start_index: null``.
+    """
+    if node.get("startIndex") == 0:
+        node = {k: v for k, v in node.items() if k != "startIndex"}
+    return node
+
+
 def _build_text_run(spec: dict[str, Any], index: int) -> tuple[dict[str, Any], int]:
     end = index + utf16_len(spec["text"])
     text_run: dict[str, Any] = {"content": spec["text"], "textStyle": {}}
@@ -58,7 +73,9 @@ def _build_text_run(spec: dict[str, Any], index: int) -> tuple[dict[str, Any], i
         text_run["suggestedTextStyleChanges"] = {
             sid: {"textStyle": {"bold": True}} for sid in spec["styles"]
         }
-    element = {"startIndex": index, "endIndex": end, "textRun": text_run}
+    element = _omit_zero_start(
+        {"startIndex": index, "endIndex": end, "textRun": text_run}
+    )
     return element, end
 
 
@@ -73,12 +90,14 @@ def _build_paragraph(spec: dict[str, Any], index: int) -> tuple[dict[str, Any], 
     }
     if spec.get("bullet"):
         para["bullet"] = {"listId": "kix.list0", "nestingLevel": 0}
-    start = elements[0]["startIndex"] if elements else index
-    structural = {
-        "startIndex": start,
-        "endIndex": index,
-        "paragraph": para,
-    }
+    start = elements[0].get("startIndex", 0) if elements else index
+    structural = _omit_zero_start(
+        {
+            "startIndex": start,
+            "endIndex": index,
+            "paragraph": para,
+        }
+    )
     return structural, index
 
 

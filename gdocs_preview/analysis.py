@@ -15,6 +15,18 @@ i.e. directly usable for batchUpdate requests computed against that view).
 Context windows are sliced on Python strings for display only and are never
 fed back to the API.
 
+One exception, and it is not a computation: **an absent ``startIndex`` means
+0.** The API serializes proto3, which omits default values, so index 0 is
+never written out. Verified against the live API 2026-07-31: a header
+segment's only paragraph came back as ``{"endIndex": 13, "paragraph": ...}``
+with no ``startIndex`` at all, and its element likewise. Index 0 is only
+reachable in a header, footer or footnote (a body's first paragraph starts
+at 1), so reading the absence as "no index" silently made every suggestion
+at the start of one of those segments unaddressable -- ``start_index: null``,
+excluded from every index-range filter, and nothing for a caller to hand
+back to ``suggest_doc_edit``. The default is applied only where ``endIndex``
+is present, i.e. only to elements the payload did index.
+
 Pre/post semantics for a suggestion S:
   - ``pre_text``  = the base text of the affected range: ALL pending
     insertions stripped, ALL pending deletions kept (what
@@ -61,6 +73,22 @@ _NON_TEXT_ELEMENT_KEYS = (
 def utf16_len(s: str) -> int:
     """Length of ``s`` in UTF-16 code units (the Docs API index unit)."""
     return sum(2 if ord(ch) > 0xFFFF else 1 for ch in s)
+
+
+def _indexes(node: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """``(startIndex, endIndex)`` as the payload means them, not as it spells
+    them.
+
+    proto3 omits default values, so ``startIndex: 0`` is never serialized --
+    see the module docstring. An indexed node (one with an ``endIndex``) that
+    has no ``startIndex`` starts at 0; a node with neither is genuinely
+    unindexed and stays that way.
+    """
+    end = node.get("endIndex")
+    start = node.get("startIndex")
+    if start is None and end is not None:
+        start = 0
+    return start, end
 
 
 @dataclass
@@ -130,11 +158,12 @@ def _run_from_paragraph_element(
                 break
     if payload is None:
         return None
+    start, end = _indexes(element)
     return _Run(
         segment=segment,
         segment_id=segment_id,
-        start=element.get("startIndex"),
-        end=element.get("endIndex"),
+        start=start,
+        end=end,
         text=text or "",
         ins_ids=tuple(payload.get("suggestedInsertionIds") or ()),
         del_ids=tuple(payload.get("suggestedDeletionIds") or ()),
@@ -159,12 +188,13 @@ def _collect_paragraphs(
                 if r is not None:
                     runs.append(r)
             style = para.get("paragraphStyle") or {}
+            para_start, para_end = _indexes(structural)
             paragraphs.append(
                 _Paragraph(
                     segment=segment,
                     segment_id=segment_id,
-                    start=structural.get("startIndex"),
-                    end=structural.get("endIndex"),
+                    start=para_start,
+                    end=para_end,
                     named_style=style.get("namedStyleType"),
                     is_list_item="bullet" in para,
                     in_table=in_table,

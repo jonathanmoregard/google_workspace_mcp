@@ -501,6 +501,15 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
         f"[{header['start_index']}, {header['end_index']})"
     )
     assert header["segment_id"], header
+    # RECORD: prod serializes proto3, which omits default values, so a header
+    # segment's first paragraph arrives with NO startIndex at all -- observed
+    # 2026-07-31 as {"endIndex": 13, "paragraph": ...}. A header numbered from
+    # 0 is therefore the one place that absence is meaningful, and reading it
+    # as "unindexed" made those suggestions unaddressable.
+    assert header["start_index"] == 0, (
+        "a header segment is numbered from its own start; index 0 must "
+        f"survive the read rather than arrive as null: {header}"
+    )
 
     # One suggestion in the body and one in the header, so the listing has to
     # tell two cards apart that prod numbers in different coordinate spaces.
@@ -511,7 +520,7 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
             {
                 "user_google_email": email,
                 "document_id": doc_id,
-                "start_index": header["start_index"] + 1,
+                "start_index": header["start_index"],
                 "text": "DRAFT ",
                 "segment_id": header["segment_id"],
                 **({"tab_id": header["tab_id"]} if header["tab_id"] else {}),

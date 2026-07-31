@@ -406,7 +406,10 @@ async def suggest_doc_edit(
     Args:
         user_google_email (str): The user's Google email address. Required.
         document_id (str): The ID of the document to suggest an edit in.
-        start_index (int): UTF-16 start index of the edit. Must be >= 1.
+        start_index (int): UTF-16 start index of the edit. Must be >= 1 in
+            the body (index 0 is the section break) and >= 0 in a
+            header/footer/footnote segment, which is numbered from its own
+            start.
         end_index (int): UTF-16 end index (exclusive) of the range to
             delete. Omit for a pure insertion.
         text (str): Text to insert. Omit for a pure deletion.
@@ -428,10 +431,26 @@ async def suggest_doc_edit(
             which happens when the edit merged into an existing same-author
             suggestion), also_removed_suggestion_ids, and notes}.
     """
-    if start_index < 1:
+    # The body's first insertable position is 1 (index 0 is the section
+    # break). A header/footer/footnote segment is numbered from its own start,
+    # so 0 IS a position there -- verified against the live API 2026-07-31 by
+    # inserting at {"index": 0, "segmentId": <header>}. Refusing it made the
+    # first character of every such segment unwritable.
+    floor = 0 if segment_id else 1
+    if start_index < floor:
         raise UserInputError(
-            "start_index must be >= 1. Take indexes verbatim from "
-            "list_document_suggestions or get_doc_review_view output."
+            f"start_index must be >= {floor}"
+            + (
+                " in a header/footer/footnote segment (segments are numbered "
+                "from their own start)."
+                if segment_id
+                else " in the document body (index 0 is the section break). "
+                "Pass segment_id to write into a header, footer or footnote, "
+                "where 0 is a valid position."
+            )
+            + " Take indexes verbatim from list_document_suggestions or "
+            "get_doc_review_view output, together with the segment_id and "
+            "tab_id they came with."
         )
     if text is None and end_index is None:
         raise UserInputError(
@@ -1036,8 +1055,17 @@ async def create_anchored_doc_comment(
     """
     if not content or not content.strip():
         raise UserInputError("content must be non-empty.")
-    if start_index < 1:
-        raise UserInputError("start_index must be >= 1.")
+    # 0 is a real position in a header/footer/footnote; see suggest_doc_edit.
+    floor = 0 if segment_id else 1
+    if start_index < floor:
+        raise UserInputError(
+            f"start_index must be >= {floor}"
+            + (
+                " in a header/footer/footnote segment."
+                if segment_id
+                else " in the document body (index 0 is the section break)."
+            )
+        )
     if end_index <= start_index:
         raise UserInputError(
             f"end_index ({end_index}) must be greater than start_index ({start_index})."

@@ -164,6 +164,47 @@ class TestSegments:
         assert (s["start_index"], s["end_index"]) == (6, 14)
         assert s["context_before"] == "Header"
 
+    def test_a_suggestion_at_index_zero_is_still_addressable(self):
+        """proto3 omits default values, so the API never writes
+        ``startIndex: 0`` -- verified against the live API 2026-07-31, where a
+        header paragraph came back as ``{"endIndex": 13, "paragraph": ...}``.
+        Index 0 is only reachable in a header/footer/footnote, so reading the
+        absence as "no index" made exactly those suggestions unwritable:
+        null indexes, dropped by every range filter, nothing to hand back to
+        suggest_doc_edit."""
+        document = fx.build_doc(
+            [fx.paragraph(fx.run("Body.\n"))],
+            headers={
+                "kix.h1": [
+                    fx.paragraph(
+                        fx.run("DRAFT ", ins=["suggest.hdr0"]), fx.run("header\n")
+                    )
+                ]
+            },
+        )
+        # The fixture must reproduce prod's omission, or it tests nothing.
+        element = document["headers"]["kix.h1"]["content"][0]["paragraph"][
+            "elements"
+        ][0]
+        assert "startIndex" not in element, element
+
+        s = by_id(document, "suggest.hdr0")
+        assert (s["start_index"], s["end_index"]) == (0, 6)
+        assert s["segment_id"] == "kix.h1"
+
+    def test_a_header_paragraph_at_index_zero_keeps_its_index(self):
+        document = fx.build_doc(
+            [fx.paragraph(fx.run("Body.\n"))],
+            headers={"kix.h1": [fx.paragraph(fx.run("Header.\n"))]},
+        )
+        (header,) = [
+            p
+            for p in render_document(document)["paragraphs"]
+            if p["segment"] == "header"
+        ]
+        assert header["start_index"] == 0
+        assert header["end_index"] == 8
+
 
 class TestStyleAndMixed:
     def test_style_only_suggestion(self):

@@ -93,16 +93,26 @@ def _resolution_verification(result: dict) -> dict:
     landed (a suggested insertion is stripped from it either way, a
     suggested deletion kept either way).
 
+    Round 6 widened the invariant from "never both true" to its contrapositive
+    form: a positive verdict requires the pending set to have been OBSERVED
+    and the id to have been absent from it. ``still_pending`` is now
+    three-valued -- null when the post-write read could not see the space the
+    card lives in -- and a null there must NOT come back as a confident
+    ``matches_expectation``, which is the exact shape a blind read used to
+    produce. Stated this way, the check also covers a future fourth value.
+
     Every resolution this suite makes goes through here, so if prod ever
-    produces that pair -- the API is documented to answer a resolution with
+    produces the bad pair -- the API is documented to answer a resolution with
     HTTP 200 and no effect -- the suite fails instead of passing on the
     positive half.
     """
     verification = result["verification"]
-    assert not (
-        verification.get("still_pending") is True
-        and verification.get("matches_expectation") is True
-    ), verification
+    if verification.get("matches_expectation") is True:
+        assert verification.get("still_pending") is False, verification
+    if verification.get("still_pending") is None:
+        # Null is not a quiet null: it names its reason and says so in words.
+        assert verification.get("matches_expectation") is None, verification
+        assert verification.get("still_pending_unavailable"), verification
     return verification
 
 
@@ -1813,6 +1823,82 @@ def test_a_reject_that_takes_no_effect_is_never_reported_as_a_match(
             # the pending set says it did not. The pending set wins.
             assert repeat["matches_expectation"] is False, repeat
             assert any("pending set" in note for note in repeat["notes"]), repeat
+
+
+def test_a_degraded_post_write_read_never_reports_a_landing(
+    preview_ready, mcp, ga_auth, degraded_read_mcp, make_scratch_doc
+):
+    """Round 6 HIGH 1+2, against prod: a read that cannot see the tab.
+
+    The degradation is REAL, not simulated. The two reads this service makes
+    run on different HTTP stacks -- the thread-bearing preview read is a raw
+    ``google.auth.transport.requests.AuthorizedSession`` (requests), the
+    fallback is ``documents.get`` through googleapiclient (httplib2) -- and
+    only the first honours ``REQUESTS_CA_BUNDLE``. Pointing it at a CA file
+    with no certificates in it is a production misconfiguration (a corporate
+    TLS bundle deployed wrong), it involves no product code that knows tests
+    exist, and it breaks exactly the read whose failure this fix is about:
+    the server answers ``read_source: "ga_documents_get"`` with one unnamed
+    body and no tab ids, exactly as an unenrolled or lapsed project would.
+
+    What the old code did here, on the DESTRUCTIVE path: reported
+    ``still_pending: false`` -- absence from a read that never looked -- and
+    pointed the agent at that field as "the evidence about whether the
+    resolution itself took effect".
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-degraded", content="Alpha Omega.")
+    _suggest_insert(mcp, email, doc_id, " DEGRADED", index=6)
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+
+    # The degraded server has its own process and therefore its own ledger:
+    # it has never listed this id, which is itself one of the two ways the
+    # post-write read ends up unable to answer.
+    resolved = tool_json(
+        degraded_read_mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": card["suggestion_id"],
+            },
+        )
+    )
+    verification = _resolution_verification(resolved)
+    REPORT.note(f"degraded-read accept verification: {verification!r}")
+
+    assert verification["read_source"] == "ga_documents_get", (
+        "the preview read did NOT degrade, so this test did not exercise a "
+        "blind post-write read. REQUESTS_CA_BUNDLE no longer selects the raw "
+        f"authorized request: {verification!r}"
+    )
+    # The whole finding, live: absence from a read that could not look is not
+    # a landing, and the response says so instead of claiming one.
+    assert verification["still_pending"] is None, verification
+    assert verification["still_pending_unavailable"] in (
+        "segment_not_in_read",
+        "read_incomplete",
+    ), verification
+    assert verification["matches_expectation"] is None, verification
+    note = next(n for n in verification["notes"] if "UNKNOWN" in n)
+    assert "not evidence" in note, note
+    assert "list_document_suggestions" in note, note
+    # And no note tells the agent to trust the field that is now null.
+    for note in verification["notes"]:
+        assert "`still_pending` is the evidence" not in note, note
+
+    # The accept itself landed -- verification never fails a real mutation --
+    # and the fully-sighted session is where that is confirmed.
+    after = _list_suggestions(mcp, email, doc_id)
+    assert after["read_source"] == "preview_threads", after.get("degraded_reason")
+    assert after["suggestion_count"] == 0, after
+    REPORT.note(
+        "the degraded-read accept DID land (the enrolled session lists 0 "
+        "pending suggestions afterwards) -- the tool declined to claim it, "
+        "which is the point: it had no evidence either way."
+    )
 
 
 def test_accept_nonexistent_suggestion_id(preview_ready, mcp, ga_auth, scratch_doc):

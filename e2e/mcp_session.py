@@ -58,17 +58,26 @@ def build_server_env(
     credentials_dir: str,
     user_email: str,
     base_env: dict[str, str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Subprocess env: host env minus mode-flipping vars, plus our pins.
 
     (The mcp SDK replaces - not merges - the child env, so we must pass a
     complete environment including PATH/HOME.)
+
+    ``extra_env`` is applied LAST, over the pins, and exists for tests that
+    need the server to run under a hostile-but-real environment -- the
+    degraded-read scenario points ``REQUESTS_CA_BUNDLE`` at a broken CA file,
+    which is a production misconfiguration rather than a test hook: nothing in
+    the product knows the variable exists. It cannot re-introduce a stripped
+    var by accident, because a caller that passes one is stating it on purpose.
     """
     env = dict(os.environ if base_env is None else base_env)
     for var in _CONFLICTING_ENV_VARS:
         env.pop(var, None)
     env["WORKSPACE_MCP_CREDENTIALS_DIR"] = credentials_dir
     env["USER_GOOGLE_EMAIL"] = user_email
+    env.update(extra_env or {})
     return env
 
 
@@ -101,10 +110,12 @@ class ServerSession:
         credentials_dir: str,
         user_email: str,
         tools: tuple[str, ...] = ("docs", "docs_preview"),
+        extra_env: dict[str, str] | None = None,
     ) -> None:
         self.credentials_dir = credentials_dir
         self.user_email = user_email
         self.tools = tools
+        self.extra_env = extra_env
         self.log_path = ARTIFACTS_DIR / f"server-{time.strftime('%Y%m%d-%H%M%S')}.log"
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -121,7 +132,9 @@ class ServerSession:
         transport = StdioTransport(
             command=sys.executable,
             args=build_server_args(self.tools),
-            env=build_server_env(self.credentials_dir, self.user_email),
+            env=build_server_env(
+                self.credentials_dir, self.user_email, extra_env=self.extra_env
+            ),
             cwd=str(REPO_ROOT),
             log_file=self.log_path,
         )

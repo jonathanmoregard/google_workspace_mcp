@@ -232,6 +232,38 @@ def mcp(ga_auth) -> ServerSession:
     session.stop()
 
 
+@pytest.fixture(scope="session")
+def degraded_read_mcp(ga_auth, tmp_path_factory) -> ServerSession:
+    """A second real server whose PREVIEW read is broken and GA read is not.
+
+    The two reads run on different HTTP stacks: the thread-bearing preview
+    read is a raw ``google.auth.transport.requests.AuthorizedSession``
+    (requests), while ``documents.get`` and every other API call go through
+    googleapiclient (httplib2). ``REQUESTS_CA_BUNDLE`` is honoured by requests
+    and ignored by httplib2, so a CA file containing no certificates fails the
+    preview read with an SSLError -- caught by ``preview_read`` as a
+    ``PreviewReadError`` -- and leaves everything else working. That is the
+    exact production shape of a lapsed/unenrolled preview or a proxy that eats
+    the raw request: ``read_source: "ga_documents_get"``, one unnamed body, no
+    tab ids.
+
+    Nothing in the product knows this variable exists: it is a real
+    misconfiguration, not a test hook, which is why the degraded read is
+    reachable from a blackbox suite at all. Its own process, so its broken
+    TLS cannot leak into the primary session.
+    """
+    empty_ca = tmp_path_factory.mktemp("degraded-ca") / "no-certificates.pem"
+    empty_ca.write_text("")
+    session = ServerSession(
+        credentials_dir=str(ga_auth.credentials_dir),
+        user_email=ga_auth.email,
+        extra_env={"REQUESTS_CA_BUNDLE": str(empty_ca)},
+    )
+    session.start()
+    yield session
+    session.stop()
+
+
 @pytest.fixture
 def make_scratch_doc(mcp, ga_auth, doc_tracker):
     """Factory creating scratch docs through the MCP surface.

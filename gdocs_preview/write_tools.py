@@ -1379,12 +1379,22 @@ async def create_anchored_doc_comment(
             # plainTextQuote included -- the anchored text for free.
             "source": "batch_update_response",
             "saved": comment_update_state == "ALL_SAVED",
-            "anchored_range": {
-                "start_index": start_index,
-                "end_index": end_index,
-                "segment_id": segment_id,
-                "tab_id": tab_id,
-            },
+            # The last agent-facing index block that was not built from
+            # ADDRESS_FIELDS; it omitted ``segment``, so the echo of a
+            # footnote comment read like a body one. ``segment`` is null
+            # rather than guessed when a segment_id was given: this tool
+            # makes no read, so it knows the id but not the kind -- the same
+            # convention resolve_range_scope uses for an unrecognised id.
+            "anchored_range": with_address(
+                {},
+                {
+                    "segment": "body" if segment_id is None else None,
+                    "segment_id": segment_id,
+                    "tab_id": tab_id,
+                    "start_index": start_index,
+                    "end_index": end_index,
+                },
+            ),
             "anchored_text": _clip(quoted_text),
             "stored_content": _clip(stored_content),
             "matches_request": (

@@ -51,6 +51,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gdocs_preview.address import with_address
+
 CONTEXT_WINDOW = 40
 
 #: Placeholder for non-text inline content (images, footnote refs, ...),
@@ -344,27 +346,39 @@ def extract_suggestions(
 
         thread = threads.get(sid) or {}
         author = thread.get("author")
+        # Through :func:`~gdocs_preview.address.with_address`, not as five
+        # more dict keys. These records are returned VERBATIM by
+        # ``review_page.project`` under ``fields="full"``, so this literal is
+        # an agent-facing index payload, and an agent that reads a bare index
+        # out of one hands it back to a tool defaulting to the body of the
+        # default tab. Building the address here means the block cannot lose
+        # a field silently: ``ADDRESS_FIELDS`` decides its shape, and a
+        # dropped source below arrives as an explicit ``None``.
         records.append(
-            {
-                "suggestion_id": sid,
-                "type": _suggestion_type(frozenset(kinds[sid])),
-                "pre_text": pre_text,
-                "post_text": post_text,
-                "context_before": context_before,
-                "context_after": context_after,
-                "segment": seg.segment,
-                "segment_id": seg.segment_id,
-                "tab_id": tab_id,
-                "in_table": any(r.in_table for r in own_runs),
-                "start_index": range_start,
-                "end_index": range_end,
-                "author": author,
-                "author_source": "suggestion_thread" if author else "unavailable",
-                "status": thread.get("status"),
-                "create_time": thread.get("create_time"),
-                "summary_text": thread.get("summary_text"),
-                "replies": thread.get("replies") or [],
-            }
+            with_address(
+                {
+                    "suggestion_id": sid,
+                    "type": _suggestion_type(frozenset(kinds[sid])),
+                    "pre_text": pre_text,
+                    "post_text": post_text,
+                    "context_before": context_before,
+                    "context_after": context_after,
+                    "in_table": any(r.in_table for r in own_runs),
+                    "author": author,
+                    "author_source": "suggestion_thread" if author else "unavailable",
+                    "status": thread.get("status"),
+                    "create_time": thread.get("create_time"),
+                    "summary_text": thread.get("summary_text"),
+                    "replies": thread.get("replies") or [],
+                },
+                {
+                    "segment": seg.segment,
+                    "segment_id": seg.segment_id,
+                    "tab_id": tab_id,
+                    "start_index": range_start,
+                    "end_index": range_end,
+                },
+            )
         )
 
     return {
@@ -457,19 +471,26 @@ def render_document(
                         suggestion_ids.append(sid)
             text = "".join(text_parts)
             seg_text_parts.append(text)
+            # The paragraph map is how an agent locates a range to write to,
+            # so it is an agent-facing index payload and gets its address the
+            # same way a suggestion record does -- see the note there.
             paragraphs.append(
-                {
-                    "segment": seg.segment,
-                    "segment_id": seg.segment_id,
-                    "tab_id": tab_id,
-                    "start_index": para.start,
-                    "end_index": para.end,
-                    "text": text,
-                    "named_style": para.named_style,
-                    "is_list_item": para.is_list_item,
-                    "in_table": para.in_table,
-                    "suggestion_ids": para_ids,
-                }
+                with_address(
+                    {
+                        "text": text,
+                        "named_style": para.named_style,
+                        "is_list_item": para.is_list_item,
+                        "in_table": para.in_table,
+                        "suggestion_ids": para_ids,
+                    },
+                    {
+                        "segment": seg.segment,
+                        "segment_id": seg.segment_id,
+                        "tab_id": tab_id,
+                        "start_index": para.start,
+                        "end_index": para.end,
+                    },
+                )
             )
         seg_text = "".join(seg_text_parts)
         if seg.segment == "body":

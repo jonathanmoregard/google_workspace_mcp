@@ -1593,10 +1593,11 @@ class TestFreeVerificationEchoes:
             "source": "batch_update_response",
             "saved": True,
             "anchored_range": {
-                "start_index": 1,
-                "end_index": 6,
+                "segment": "body",
                 "segment_id": None,
                 "tab_id": None,
+                "start_index": 1,
+                "end_index": 6,
             },
             "anchored_text": "The q",
             "stored_content": "Needs work",

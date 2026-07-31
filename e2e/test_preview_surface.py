@@ -82,6 +82,30 @@ def _wait_for_suggestions(mcp, email: str, doc_id: str, minimum: int = 1) -> dic
     )
 
 
+def _resolution_verification(result: dict) -> dict:
+    """The verification block, plus the one invariant every resolution owes.
+
+    ``still_pending`` is the STRUCTURAL evidence about a resolution: an
+    accepted or rejected suggestion is gone from the document's pending set,
+    so an id still in it is a write that did not take effect. A positive
+    ``matches_expectation`` beside it is the round-5 HIGH -- and the text
+    cannot catch it, because base text is identical whether or not a REJECT
+    landed (a suggested insertion is stripped from it either way, a
+    suggested deletion kept either way).
+
+    Every resolution this suite makes goes through here, so if prod ever
+    produces that pair -- the API is documented to answer a resolution with
+    HTTP 200 and no effect -- the suite fails instead of passing on the
+    positive half.
+    """
+    verification = result["verification"]
+    assert not (
+        verification.get("still_pending") is True
+        and verification.get("matches_expectation") is True
+    ), verification
+    return verification
+
+
 def _create_anchored_comment(
     mcp, email: str, doc_id: str, content: str, start: int, end: int
 ) -> dict:
@@ -1147,7 +1171,7 @@ def test_accept_and_reject_collapse_pre_post(
         assert by_token["ACCEPTED-TOKEN"] in accept["accepted_suggestion_ids"]
     # The accept verifies itself: the target is gone and the text it
     # promised is what the range now reads.
-    accept_verification = accept["verification"]
+    accept_verification = _resolution_verification(accept)
     assert accept_verification["source"] == "post_write_read"
     assert accept_verification["still_pending"] is False, accept_verification
     assert "ACCEPTED-TOKEN" in accept_verification["expected_text"]
@@ -1176,7 +1200,7 @@ def test_accept_and_reject_collapse_pre_post(
     )
     if reject["rejected_suggestion_ids"]:
         assert by_token["REJECTED-TOKEN"] in reject["rejected_suggestion_ids"]
-    reject_verification = reject["verification"]
+    reject_verification = _resolution_verification(reject)
     assert reject_verification["still_pending"] is False, reject_verification
     # Rejecting an insertion expects the ORIGINAL text back, i.e. the token
     # must be gone from the range.
@@ -1287,7 +1311,7 @@ def test_accepting_a_deletion_that_spans_a_style_boundary(
             },
         )
     )
-    verification = accepted["verification"]
+    verification = _resolution_verification(accepted)
     REPORT.note(f"style-split accept verification: {verification!r}")
     assert verification["still_pending"] is False, verification
     assert verification["matches_expectation"] is True, verification
@@ -1331,8 +1355,9 @@ def test_accepting_a_deletion_that_spans_a_style_boundary(
             },
         )
     )
-    reject_verification = rejected["verification"]
+    reject_verification = _resolution_verification(rejected)
     REPORT.note(f"style-split reject verification: {reject_verification!r}")
+    assert reject_verification["still_pending"] is False, reject_verification
     assert reject_verification["expected_text"] == "brave new", reject_verification
     assert reject_verification["matches_expectation"] is True, reject_verification
 
@@ -1401,7 +1426,7 @@ def test_accepting_next_to_another_pending_card_is_verified_not_diagnosed(
             },
         )
     )
-    verification = accepted["verification"]
+    verification = _resolution_verification(accepted)
     REPORT.note(f"accept beside a pending neighbour: {verification!r}")
     assert verification["still_pending"] is False, verification
     assert verification["matches_expectation"] is True, verification
@@ -1709,6 +1734,85 @@ def test_double_accept_same_suggestion(preview_ready, mcp, ga_auth, base_doc):
             f"comment_update_state={response.get('comment_update_state')!r}",
         )
         assert response["suggestion_id"] == suggestion_id
+
+
+def test_a_reject_that_takes_no_effect_is_never_reported_as_a_match(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Is the API's HTTP-200-no-op resolution reachable, and what does it say?
+
+    A REJECT is invisible in base text: the suggestion's insertion is
+    stripped from base text whether or not it was rejected, its deletion
+    kept either way, so the post-write text check reads what the card
+    promised in BOTH worlds and only the pending set separates them. The
+    verdict is therefore derived from the pending set first
+    (``write_tools._ResolutionVerdict``), and this asks prod whether the
+    branch that derivation exists for is reachable at all -- the mock cannot
+    answer it, because a 200-no-op is an API behaviour, not an analysis one.
+
+    Both outcomes are RECORDED. The assertions are the invariant, which must
+    hold whichever branch prod takes: a reject that left the id pending is
+    never a match, and a reject that removed it is verified by the text as
+    before.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-noop-reject", content="Alpha Omega.")
+    _suggest_insert(mcp, email, doc_id, " NOOP-REJECT", index=6)
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+    args = {
+        "user_google_email": email,
+        "document_id": doc_id,
+        "action": "reject",
+        "suggestion_id": card["suggestion_id"],
+    }
+
+    first = tool_json(mcp.call_tool("manage_document_suggestion", dict(args)))
+    verification = _resolution_verification(first)
+    REPORT.note(f"reject that landed, verification: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    # The reject really is the case the text cannot decide: the range reads
+    # the same string it would have read had nothing happened.
+    assert verification["expected_text"] == "", verification
+    assert verification["matches_expectation"] is True, verification
+
+    # Now the same reject again -- the documented no-op path.
+    second = mcp.call_tool_raw("manage_document_suggestion", dict(args))
+    text = tool_text(second)
+    if second.is_error:
+        REPORT.record_error_shape(
+            "reject an already-rejected suggestion", 0, text[:400]
+        )
+        # Not reachable as a 200 here: prod refuses the id outright, and the
+        # refusal names our own earlier write rather than reading as a typo.
+        assert "You rejected it yourself" in text, text
+    else:
+        response = tool_json(second)
+        repeat = _resolution_verification(response)
+        REPORT.record_error_shape(
+            "reject an already-rejected suggestion (non-error)",
+            200,
+            f"rejected_suggestion_ids={response['rejected_suggestion_ids']!r}, "
+            f"comment_update_state={response.get('comment_update_state')!r}, "
+            f"still_pending={repeat['still_pending']!r}, "
+            f"matches_expectation={repeat['matches_expectation']!r}",
+        )
+        REPORT.note(
+            "the HTTP-200 no-op resolution IS reachable against prod (a "
+            "repeat reject answers 200 with an empty id list rather than "
+            "erroring); still_pending="
+            f"{repeat['still_pending']!r}, matches_expectation="
+            f"{repeat['matches_expectation']!r}. A no-op whose id is ALSO "
+            "still pending needs a second account (a reject refused for "
+            "permissions) and is not constructible here; the assertion "
+            "below is what would catch it. Full verification: "
+            f"{repeat!r}"
+        )
+        if repeat["still_pending"]:
+            # The round-5 HIGH, live: the text says the reject landed and
+            # the pending set says it did not. The pending set wins.
+            assert repeat["matches_expectation"] is False, repeat
+            assert any("pending set" in note for note in repeat["notes"]), repeat
 
 
 def test_accept_nonexistent_suggestion_id(preview_ready, mcp, ga_auth, scratch_doc):

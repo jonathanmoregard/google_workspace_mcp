@@ -471,6 +471,27 @@ class TestReportResilience:
         assert "POSITIVE_CLASSES" in payload["summary"]["aggregate_error"]
         assert "markdown" not in paths
 
+    def test_the_cli_survives_the_report_it_could_not_render(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`main` printed paths['markdown'] unconditionally, so the very run
+        that needed the recovery path -- aggregation crashed, no markdown --
+        died with a KeyError before naming the JSON that DID survive."""
+        import llmux.runner.analyze as analyze
+
+        def boom(*_args, **_kwargs):
+            raise ImportError("cannot import name 'POSITIVE_CLASSES'")
+
+        monkeypatch.setattr(analyze, "aggregate", boom)
+        monkeypatch.setattr(analyze, "reanalyze", lambda _dir: [good_run()])
+        runs_dir = tmp_path / "20260731-000003" / "runs"
+        runs_dir.mkdir(parents=True)
+
+        assert analyze.main([str(runs_dir)]) == 0
+        out = capsys.readouterr().out
+        assert "report: NOT WRITTEN" in out
+        assert "json:   " in out
+
 
 class TestHarnessErrorVsAnalysisError:
     """A crash in the labeller is not a reason to void a measurement.

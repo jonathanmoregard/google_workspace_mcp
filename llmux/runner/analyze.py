@@ -833,7 +833,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{inconclusive} run(s) INCONCLUSIVE, excluded from that rate "
             "(not a capability result)"
         )
-    print(f"report: {paths['markdown']}")
+    # write_report omits "markdown" when aggregation failed (its whole point
+    # is that the expensive artifact survives the cheap one going wrong), so
+    # subscripting it here made the recovery path itself crash -- taking the
+    # JSON path down with it, on exactly the run that needed reporting most.
+    markdown = paths.get("markdown")
+    print(f"report: {markdown}" if markdown else (
+        "report: NOT WRITTEN -- aggregation failed, so there was nothing to "
+        "render. The per-run records are intact; see report_problems in the "
+        "JSON below."
+    ))
     print(f"json:   {paths['json']}")
     return 0
 

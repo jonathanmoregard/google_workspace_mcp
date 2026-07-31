@@ -351,6 +351,13 @@ def _write_run_record(run_dir: Path, result: RunResult) -> None:
                 "model": result.model,
                 "pass": bool(result.passed),
                 "score": float(result.grade.score),
+                # Keep the one field analyze.reanalyze cannot work without,
+                # so even a half-written record stays rebuildable.
+                "scenario_path": (
+                    str(result.scenario_path) if result.scenario_path else None
+                ),
+                "timed_out": bool(result.timed_out),
+                "harness_error": result.harness_error,
                 "record_error": f"{type(exc).__name__}: {exc}",
             },
             indent=2,

@@ -490,6 +490,7 @@ def reanalyze(runs_dir: Path) -> list[Any]:
 
     runs_dir = Path(runs_dir)
     results: list[Any] = []
+    skipped: list[str] = []
     for run_dir in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
         record_path = run_dir / "run.json"
         if not record_path.is_file():
@@ -497,9 +498,13 @@ def reanalyze(runs_dir: Path) -> list[Any]:
         record = json.loads(record_path.read_text(encoding="utf-8"))
         scenario_path = record.get("scenario_path")
         if not scenario_path:
-            raise ValueError(
-                f"{record_path} predates scenario_path recording; rerun the batch"
+            # This is the recovery path; it must not be the thing that
+            # breaks. One unrebuildable run costs a warning, not the batch.
+            skipped.append(
+                f"{record_path}: no scenario_path (predates its recording, or "
+                "the record was written by the crash fallback)"
             )
+            continue
         scenario = load_scenario(Path(scenario_path))
         transcript = parse_transcript_file(run_dir / "transcript.jsonl")
         report = None
@@ -535,6 +540,8 @@ def reanalyze(runs_dir: Path) -> list[Any]:
                 contamination=detect_contamination(transcript),
             )
         )
+    for problem in skipped:
+        print(f"skipped {problem}")
     return results
 
 

@@ -1,0 +1,12 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "ix-doc-vision",
+      "title": "Vision Note",
+      "text": "Vision\nThe brave new plan ships in March.\nWe will hire two engineers.\n",
+      "suggestions": [],
+      "comments": []
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "adversarial-noop-suggestions",
+  "difficulty": 5,
+  "steps": 6,
+  "tags": [
+    "multi-author",
+    "no-op",
+    "decoy",
+    "comments",
+    "anchor",
+    "trap"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 4,
+  "tier": "adversarial",
+  "document_id": "mockdoc-a2-noop",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

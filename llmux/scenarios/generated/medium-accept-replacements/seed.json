@@ -1,0 +1,40 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-m5-replacements",
+      "title": "Roadmap",
+      "text": "Roadmap for Q3\nQ3 targets are unchanged.\nThe draft plan ships Monday.\nOwners: Ana and Ben.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 0,
+          "end": 14,
+          "text": "Roadmap for Q4",
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 29,
+          "end": 39,
+          "text": "Q4 targets",
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 69,
+          "end": 79,
+          "text": "final plan",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 115,
+          "end": 123,
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

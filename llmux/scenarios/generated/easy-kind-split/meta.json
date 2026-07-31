@@ -1,0 +1,21 @@
+{
+  "id": "easy-kind-split",
+  "difficulty": 2,
+  "steps": 4,
+  "tags": [
+    "accept",
+    "reject",
+    "predicate",
+    "single-author"
+  ],
+  "authors": [
+    "alice"
+  ],
+  "n_suggestions": 4,
+  "tier": "easy",
+  "document_id": "mockdoc-e3-kind-split",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

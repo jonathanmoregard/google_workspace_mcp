@@ -1,0 +1,22 @@
+{
+  "id": "ix-thread-gone",
+  "difficulty": "medium",
+  "steps": 3,
+  "tags": ["comments", "threads", "concurrency", "interference"],
+  "authors": ["erin"],
+  "n_suggestions": 0,
+  "interferences": [
+    {
+      "name": "erin-deletes-her-thread",
+      "kind": "resolve_thread",
+      "editor": "erin",
+      "document_id": "ix-doc-update",
+      "trigger": {
+        "when": "after",
+        "tool": ["list_document_comments", "get_doc_review_view"],
+        "nth": 1
+      },
+      "params": {"comment_id": "comment.1", "action": "delete"}
+    }
+  ]
+}

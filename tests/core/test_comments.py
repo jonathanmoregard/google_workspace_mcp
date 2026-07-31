@@ -9,8 +9,12 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from core.comments import (
-    _read_comments_impl,
+    MANAGE_COMMENT_ANNOTATIONS,
     _create_comment_impl,
+    _delete_comment_impl,
+    _manage_comment_dispatch,
+    _read_comments_impl,
+    _update_comment_impl,
     create_comment_tools,
 )
 
@@ -316,3 +320,128 @@ class TestCommentsEdgeCases:
 
         call_kwargs = mock_service.comments.return_value.list.call_args.kwargs
         assert call_kwargs["pageSize"] == 100
+
+
+class TestManageCommentUpdateDelete:
+    """The update and delete actions on the manage_{app}_comment factory tools."""
+
+    @pytest.mark.asyncio
+    async def test_update_comment_calls_drive_update(self):
+        """update goes through Drive v3 comments.update with explicit fields."""
+        mock_service = Mock()
+        mock_service.comments.return_value.update.return_value.execute = Mock(
+            return_value={
+                "id": "c1",
+                "content": "Revised text",
+                "author": {"displayName": "Alice"},
+                "createdTime": "2025-01-15T10:00:00Z",
+                "modifiedTime": "2025-01-16T09:00:00Z",
+            }
+        )
+
+        result = await _update_comment_impl(
+            mock_service, "document", "doc123", "c1", "Revised text"
+        )
+
+        call_kwargs = mock_service.comments.return_value.update.call_args.kwargs
+        assert call_kwargs["fileId"] == "doc123"
+        assert call_kwargs["commentId"] == "c1"
+        assert call_kwargs["body"] == {"content": "Revised text"}
+        assert call_kwargs["fields"] == "id,content,author,createdTime,modifiedTime"
+        assert "Comment updated successfully" in result
+        assert "Revised text" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_comment_calls_drive_delete(self):
+        """delete goes through Drive v3 comments.delete (empty response)."""
+        mock_service = Mock()
+        mock_service.comments.return_value.delete.return_value.execute = Mock(
+            return_value=""
+        )
+
+        result = await _delete_comment_impl(mock_service, "document", "doc123", "c1")
+
+        call_kwargs = mock_service.comments.return_value.delete.call_args.kwargs
+        assert call_kwargs == {"fileId": "doc123", "commentId": "c1"}
+        assert result == "Comment c1 deleted from document doc123."
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_update_and_normalizes_action(self):
+        """Dispatch lowercases/strips the action string before routing."""
+        mock_service = Mock()
+        mock_service.comments.return_value.update.return_value.execute = Mock(
+            return_value={"id": "c1", "modifiedTime": "2025-01-16T09:00:00Z"}
+        )
+
+        await _manage_comment_dispatch(
+            mock_service,
+            "document",
+            "doc1",
+            " Update ",
+            comment_content="New text",
+            comment_id="c1",
+        )
+
+        mock_service.comments.return_value.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_delete(self):
+        mock_service = Mock()
+        mock_service.comments.return_value.delete.return_value.execute = Mock(
+            return_value=""
+        )
+
+        await _manage_comment_dispatch(
+            mock_service, "document", "doc1", "delete", comment_id="c1"
+        )
+
+        mock_service.comments.return_value.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_requires_comment_id_and_content(self):
+        mock_service = Mock()
+        with pytest.raises(
+            ValueError, match="comment_id and comment_content are required"
+        ):
+            await _manage_comment_dispatch(
+                mock_service, "document", "doc1", "update", comment_content="text"
+            )
+        with pytest.raises(
+            ValueError, match="comment_id and comment_content are required"
+        ):
+            await _manage_comment_dispatch(
+                mock_service, "document", "doc1", "update", comment_id="c1"
+            )
+        mock_service.comments.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_requires_comment_id(self):
+        mock_service = Mock()
+        with pytest.raises(ValueError, match="comment_id is required for delete"):
+            await _manage_comment_dispatch(mock_service, "document", "doc1", "delete")
+        mock_service.comments.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_action_lists_all_five_actions(self):
+        mock_service = Mock()
+        with pytest.raises(ValueError) as excinfo:
+            await _manage_comment_dispatch(mock_service, "document", "doc1", "bogus")
+        message = str(excinfo.value)
+        for action in ("'create'", "'reply'", "'resolve'", "'update'", "'delete'"):
+            assert action in message
+
+    def test_manage_annotations_are_destructive(self):
+        """delete/update can destroy or alter existing comments."""
+        assert MANAGE_COMMENT_ANNOTATIONS.destructiveHint is True
+
+    def test_all_variants_document_update_and_delete(self):
+        """All three manage_comment variants advertise the new actions."""
+        for app, param in [
+            ("document", "document_id"),
+            ("spreadsheet", "spreadsheet_id"),
+            ("presentation", "presentation_id"),
+        ]:
+            tools = create_comment_tools(app, param)
+            doc = inspect.getdoc(tools["manage_comment"]) or ""
+            assert "- update: Update a comment's text." in doc, app
+            assert "- delete: Permanently delete a comment and its replies." in doc, app

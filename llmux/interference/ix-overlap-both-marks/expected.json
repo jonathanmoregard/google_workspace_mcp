@@ -1,0 +1,11 @@
+{
+  "document_id": "ix-doc-vision",
+  "original_text": "Vision\nThe brave new plan ships in March.\nWe will hire two engineers.\n",
+  "pending_suggestions": 1,
+  "accept": [],
+  "reject": [],
+  "interference": {
+    "frank-suggests-cutting-the-line": "after the agent's first read, frank suggests deleting the whole sentence that contains the agent's target word"
+  },
+  "notes": "Two authors' marks meet on the same characters, and SPEC §2's conjunctive/disjunctive rules make the result quietly strange. Frank's deletion covers the character to the left of 'brave', so a replacement typed there inherits frank's deletion mark (§5.1) and is born underlined AND struck (§4's both-marks row). Consequences, all real and none of them visible on the card: (1) §3 puts such a character in NEITHER extreme projection, so accept-everything and reject-everything both destroy it, and the wording survives in exactly one of the four corners - reject frank, accept the agent (§11.2 L5); (2) accepting the agent's card ALONE leaves 'bold' still struck through, because frank's mark stays; (3) worst of all, frank's own card is rewritten by the agent's edit. §8 makes the label a pure function of the rendering, so frank's card stops reading Delete: \"The brave new plan ships in March.\" and starts reading Delete: \"The boldbrave new plan ships in March.\" - it now claims to delete text frank never wrote, and frank is not told. The agent's own card meanwhile reads as an ordinary Replace: \"brave\" with \"bold\" and gives no hint of any of this. So the scenario does not forbid stacking: it requires that if you stack, you say so on the other author's thread, because the tool surface will not."
+}

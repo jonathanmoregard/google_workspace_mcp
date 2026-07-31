@@ -1,0 +1,44 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-m2-legacy",
+      "title": "Exporter notes",
+      "text": "The legacy exporter still runs nightly.\nWe keep the legacy schema for now.\nThe new exporter is faster.\n",
+      "suggestions": [
+        {
+          "op": "delete",
+          "start": 4,
+          "end": 11,
+          "author": "alice"
+        },
+        {
+          "op": "replace",
+          "start": 52,
+          "end": 65,
+          "text": "current schema",
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 38,
+          "text": " at 02:00",
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 124,
+          "text": " than the legacy one",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 19,
+          "end": 25,
+          "author": "carol"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

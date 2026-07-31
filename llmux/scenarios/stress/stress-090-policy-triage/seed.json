@@ -1,0 +1,645 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-stress-090-synthesis-screening",
+      "title": "Policy brief: screening requirements for synthetic DNA",
+      "text": "Policy brief: screening requirements for synthetic DNA\nPrepared for a policy audience. Approximately 8 pages in the printed version.\nSummary\nCommercial providers of synthetic DNA can, at modest cost, screen incoming orders against a list of sequences associated with dangerous pathogens and toxins, and can screen the customers placing those orders. Screening is currently voluntary and coverage is incomplete. We recommend that screening be made a condition of federal funding, that a public reference database of hazardous sequences be maintained by a designated agency, and that benchtop synthesis devices be brought within the same regime within three years. The compliance cost per order is small. Enforcement is the weakest part of this proposal.\nBackground\nSynthetic DNA is now a routine laboratory input. A researcher specifies a sequence, a provider manufactures it, and the physical material arrives in the post within days. Prices have fallen by more than two orders of magnitude since 2005, and the market has grown accordingly. This has been enormously beneficial for biomedical research, and we want to be clear at the outset that the policy question is how to preserve that benefit while closing a narrow and specific gap.\nThe gap is that the same capability that lets a laboratory order a gene lets someone order the genome of a dangerous pathogen. Several agents of serious concern have published sequences and are small enough to assemble from commercially available fragments. The barrier is no longer access to the sequence; it is the tacit knowledge required to turn a sequence into a functioning organism, and that barrier has been eroding.\nAn international consortium of providers has operated a voluntary screening protocol since 2009. Participating firms check orders against a database of sequences of concern, verify the identity and institutional affiliation of customers, and refer anomalies to law enforcement. By the consortium's own account this has caught a small number of genuinely concerning orders. The authors have no financial interest in any company named in this brief.\nThe gap in current practice\nThree gaps matter.\nFirst, participation is voluntary and self-reported. There is no audit, no penalty for non-participation, and no reliable public figure for what share of global volume is screened. Providers who screen bear a cost that providers who do not screen avoid, which is exactly the wrong incentive gradient.\nSecond, the screening threshold is length-based. Most protocols screen orders above 200 base pairs. A determined actor can order fragments below the screening threshold and assemble them. This has been demonstrated in the open literature more than once, and no serious participant in the debate disputes it.\nThird, the regime does not cover devices. Benchtop synthesisers change the picture substantially. A device sitting in a private laboratory, synthesising sequences to order with no external party in the loop, is outside the reach of any provider-side control. Manufacturers have begun to build screening into the firmware, which is encouraging, and entirely voluntary.\nThere is a fourth gap that is harder to write policy about. Screening compares an ordered sequence against a list, and a list is a description of the past. Sequences that are functionally equivalent to a listed agent but differ enough to evade a similarity threshold are not a hypothetical problem, and the tools for generating them have improved quickly. Any screening standard written today needs a mechanism for updating its matching criteria, not only its list, and none of the current voluntary protocols has one that we would call adequate.\nWe flag this without a recommendation attached, because the honest position is that the technical community has not agreed on what a robust matching criterion looks like, and legislating a specific one now would freeze the weakest available answer into statute.\nRecommendations\n1. Make screening a funding condition. Any research funded by a federal agency should be required to procure synthetic nucleic acids only from providers that attest to a recognised screening standard. This uses an existing lever, requires no new legislation, and would cover a large fraction of legitimate demand within one budget cycle.\n2. Designate a custodian for the reference database. The list of hazardous sequences needs an owner with the authority to update it, the technical capacity to curate it, and a clear process for handling the genuinely difficult question of what to publish. We suggest this sit with a civilian agency, not an intelligence one, because provider cooperation depends on it not looking like surveillance.\n3. Fund the screening infrastructure directly. Screening algorithms, the curated database, and the customer verification service are public goods, and asking each provider to build them separately is both wasteful and a barrier to entry for small firms.\n4. Extend the regime to benchtop devices within three years. New devices should ship with screening enabled by default and should require a signed update to disable it. Retrofitting the installed base is harder and will need a separate instrument.\n5. Build an audit function. Attestation without verification is a paperwork exercise. A modest programme of test orders, run by a designated body against participating providers, would establish whether the controls actually operate.\n6. Protect the people who report. Screening only works if the staff who notice an anomalous order are willing to escalate it, and at present a provider employee who raises a concern about a paying customer has no protection at all. A narrow whistleblower provision covering synthesis orders would cost nothing and would meaningfully change the incentives inside firms.\nThe first three recommendations are, in our judgement, achievable within the current legal framework and the current political appetite. Recommendation 4 will require either new authority or a voluntary commitment from a small number of manufacturers, and recommendation 5 will require money that nobody has yet allocated. We list them together because a regime with attestation and no audit is worse than no regime at all, in the specific sense that it creates a false assurance that displaces other controls.\nCosts and objections\nThe most common objection is that screening will not stop a sophisticated state actor. This is correct and not to the point. The regime is aimed at raising the floor, and the floor is where the marginal risk sits, because the number of actors with modest resources is very large and growing.\nA second objection is commercial. Providers argue, with some justification, that a patchwork of national requirements would impose real costs and would push orders towards jurisdictions with weaker rules. This is a genuine problem and it is the reason recommendation 2 emphasises international alignment.\nA third objection concerns research friction. Any screening system produces false positives, and a researcher whose legitimate order is delayed by a week has been taxed by the policy. Current false positive rates are reported at under 2 percent, and most flagged orders clear within one working day. We think this is an acceptable cost, though we would want it monitored rather than assumed.\nFinally, there is a genuine information hazard question about the reference database itself. A public list of hazardous sequences is a shopping list. The consortium's current approach, in which the list is shared with verified providers rather than published, seems right to us, and it does make independent evaluation of screening quality much harder.\nA related objection, raised most often by academic researchers, is that a funding condition effectively deputises universities as enforcement agents for a security policy they had no part in setting. We take this seriously. The mitigation we prefer is to place the obligation on procurement rather than on individual investigators, so that compliance is handled by an administrative office rather than by a graduate student ordering a plasmid at eleven at night.\nThere is also a question of who bears the cost of false negatives. Under the current arrangement, a provider who screens and misses something faces reputational and possibly legal exposure, while a provider who does not screen at all faces neither. Any regime that raises the standard of care without also clarifying liability will push cautious firms out of the market and leave the incautious ones in it, which is the opposite of what anybody wants.\nImplementation timeline\nMonths 0 to 6: designate the custodian agency, publish the draft standard, and open a comment period. An earlier draft of this brief was circulated for comment in November.\nMonths 6 to 18: funding condition takes effect for new grants. The audit programme begins with volunteer participants.\nMonths 18 to 36: device requirements enter into force for newly manufactured benchtop synthesisers. International negotiation on mutual recognition concludes or is abandoned.\nAnnex: definitions\nSequence of concern: a nucleic acid sequence whose possession or synthesis is judged to present a meaningful risk of misuse, as listed in the reference database.\nScreening: the comparison of an ordered sequence against the reference database, together with verification of the customer's identity and institutional affiliation. Both halves are required; a provider that checks sequences but not customers is not screening in the sense used here.\nBenchtop synthesiser: a device capable of synthesising nucleic acids on site, without an order being placed with an external gene synthesis provider. Footnotes have been kept deliberately sparse.\n",
+      "suggestions": [
+        {
+          "op": "replace",
+          "start": 6528,
+          "end": 6541,
+          "text": "added risk",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 5956,
+          "end": 5968,
+          "text": "is likely to require",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 4349,
+          "text": ", though we are not confident in this figure",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 1113,
+          "end": 1125,
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2559,
+          "end": 2646,
+          "text": "Fragment-level ordering defeats length-based screening entirely, and the assembly step it requires is now within reach of a competent graduate student.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 187,
+          "end": 193,
+          "text": "small",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 9091,
+          "end": 9100,
+          "text": "program",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 2803,
+          "end": 2922,
+          "text": "Fragment assembly has been demonstrated in the open literature at least three times since 2018, and we are not aware of any serious participant in the debate who disputes that it works.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 5466,
+          "end": 5473,
+          "text": "need",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 9604,
+          "text": " probably",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 9135,
+          "end": 9206,
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 6369,
+          "text": " probably",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 4890,
+          "end": 4900,
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 4531,
+          "end": 4539,
+          "text": "needs",
+          "author": "nadia"
+        },
+        {
+          "op": "replace",
+          "start": 10005,
+          "end": 10016,
+          "text": "synthesizer",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 1051,
+          "end": 1081,
+          "text": "has enormously benefited",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 5588,
+          "text": " in our view",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 6880,
+          "end": 6916,
+          "text": "We think this is correct but beside the point",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 9526,
+          "text": " (Epoch AI, 2024)",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 4765,
+          "text": "Even so, the",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 9277,
+          "text": " in our view",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 3964,
+          "end": 3974,
+          "text": ". None",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 8300,
+          "end": 8311,
+          "text": "in effect",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4053,
+          "end": 4109,
+          "text": "We do not attach a recommendation, because ",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 4654,
+          "end": 4673,
+          "text": "much of",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6251,
+          "end": 6263,
+          "text": "measurably",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 7521,
+          "text": " (Epoch AI, 2024)",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 10092,
+          "text": "By contrast, both",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 7631,
+          "end": 7638,
+          "text": ". A",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 3174,
+          "end": 3229,
+          "text": "Benchtop synthesisers move the control point from the provider to the device, which is a different regulatory problem and needs a different instrument.",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 6768,
+          "end": 6775,
+          "text": "need",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 355,
+          "text": "Even so, screening",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 3649,
+          "end": 3658,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1096,
+          "text": " arguably",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 1814,
+          "text": " (source: our 2024 practitioner interviews)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 2642,
+          "end": 2656,
+          "text": "200 base pairs (bp)",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 1914,
+          "end": 1934,
+          "text": "hazardous sequences",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 4718,
+          "text": " arguably",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 8028,
+          "end": 8043,
+          "text": "sit at",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 8037,
+          "text": " on balance",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 5494,
+          "text": "By contrast, screening",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 6902,
+          "end": 6918,
+          "text": "is likely to require",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 5492,
+          "text": ", though the underlying estimate is uncertain",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 8217,
+          "text": ", though the underlying estimate is uncertain",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 6298,
+          "text": ", though the underlying estimate is uncertain",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 7414,
+          "text": " in our view",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6878,
+          "end": 6885,
+          "text": "need",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 9468,
+          "end": 9475,
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 7323,
+          "end": 7336,
+          "text": "may not stop",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 386,
+          "end": 395,
+          "text": "now",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 7922,
+          "end": 7932,
+          "text": "emphasizes",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 4673,
+          "text": " (Mellers et al., 2014)",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 1614,
+          "end": 1629,
+          "text": "hands-on know-how",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 2145,
+          "end": 2155,
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 3462,
+          "end": 3474,
+          "text": "synthesizers",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 8754,
+          "end": 8771,
+          "text": "is right",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 8522,
+          "end": 8540,
+          "text": "risk of publishing harmful detail",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 6030,
+          "text": " we think",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 302,
+          "end": 311,
+          "text": ". Can",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 4903,
+          "text": "By contrast, this",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 8745,
+          "end": 8752,
+          "text": " that ",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 5904,
+          "text": " (see the references at the end)",
+          "author": "sam"
+        },
+        {
+          "op": "delete",
+          "start": 11059,
+          "end": 11105,
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 6748,
+          "text": " in our view",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 7903,
+          "text": " on balance",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 1052,
+          "text": " we think",
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 10037,
+          "text": ", on the best public numbers we could find",
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 8913,
+          "end": 8921,
+          "text": ". It",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 10580,
+          "end": 10609,
+          "text": "presents",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 694,
+          "text": "That said, the",
+          "author": "sam"
+        },
+        {
+          "op": "insert",
+          "index": 4755,
+          "text": "By contrast, any",
+          "author": "priya"
+        },
+        {
+          "op": "delete",
+          "start": 7331,
+          "end": 7338,
+          "author": "marcus"
+        },
+        {
+          "op": "insert",
+          "index": 7840,
+          "text": " in our view",
+          "author": "nadia"
+        },
+        {
+          "op": "insert",
+          "index": 2218,
+          "text": " in our view",
+          "author": "marcus"
+        },
+        {
+          "op": "delete",
+          "start": 6417,
+          "end": 6426,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 2929,
+          "text": " arguably",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 6924,
+          "end": 6933,
+          "text": "judgment",
+          "author": "dana"
+        },
+        {
+          "op": "delete",
+          "start": 7824,
+          "end": 7829,
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 5796,
+          "end": 5808,
+          "text": ". Asking",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 1752,
+          "text": " arguably",
+          "author": "dana"
+        },
+        {
+          "op": "replace",
+          "start": 1082,
+          "end": 1093,
+          "text": "as a result",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 6740,
+          "end": 6747,
+          "author": "sam"
+        },
+        {
+          "op": "replace",
+          "start": 4952,
+          "end": 4962,
+          "text": "recognized",
+          "author": "dana"
+        },
+        {
+          "op": "insert",
+          "index": 2774,
+          "text": ", though we are not confident in this figure",
+          "author": "marcus"
+        },
+        {
+          "op": "replace",
+          "start": 1012,
+          "end": 1035,
+          "text": "100-fold",
+          "author": "priya"
+        },
+        {
+          "op": "replace",
+          "start": 4641,
+          "end": 4647,
+          "text": "well-supported",
+          "author": "nadia"
+        },
+        {
+          "op": "delete",
+          "start": 11346,
+          "end": 11359,
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 701,
+          "text": " approximately",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 6266,
+          "text": " reportedly",
+          "author": "priya"
+        },
+        {
+          "op": "insert",
+          "index": 8672,
+          "text": " roughly",
+          "author": "priya"
+        }
+      ],
+      "comments": [
+        {
+          "content": "This reads as more confident than the evidence behind it. Can we soften?",
+          "quote": "This has been enormously beneficial for biomedical research, and we want to be clear at the outset that the policy question is how to preserve that benefit while closing a narrow and specific gap.",
+          "author": "marcus"
+        },
+        {
+          "content": "Is this still true as of this year? The figure looks like it is from the old draft.",
+          "quote": "The barrier is no longer access to the sequence; it is the tacit knowledge required to turn a sequence into a functioning organism, and that barrier has been eroding.",
+          "author": "dana"
+        },
+        {
+          "content": "Who is the audience for this paragraph? It feels aimed at a different reader.",
+          "quote": "An international consortium of providers has operated a voluntary screening protocol since 2009.",
+          "author": "sam"
+        },
+        {
+          "content": "Can we cut this? It repeats the point made two paragraphs above.",
+          "quote": "A device sitting in a private laboratory, synthesising sequences to order with no external party in the loop, is outside the reach of any provider-side control.",
+          "author": "priya"
+        },
+        {
+          "content": "I would like a number here rather than a qualitative claim.",
+          "quote": "A narrow whistleblower provision covering synthesis orders would cost nothing and would meaningfully change the incentives inside firms.",
+          "author": "priya"
+        },
+        {
+          "content": "Flagging for legal review before this goes live.",
+          "quote": "The regime is aimed at raising the floor, and the floor is where the marginal risk sits, because the number of actors with modest resources is very large and growing.",
+          "author": "sam"
+        },
+        {
+          "content": "This is the strongest claim in the piece and it has no citation.",
+          "quote": "Any regime that raises the standard of care without also clarifying liability will push cautious firms out of the market and leave the incautious ones in it, which is the opposite of what anybody wants.",
+          "author": "marcus"
+        },
+        {
+          "content": "Should this be a callout box rather than body text?",
+          "quote": "Months 6 to 18: funding condition takes effect for new grants.",
+          "author": "sam"
+        },
+        {
+          "content": "Terminology: we use two different words for this across the piece.",
+          "quote": "International negotiation on mutual recognition concludes or is abandoned.",
+          "author": "priya"
+        },
+        {
+          "content": "I disagree with this framing but I do not want to block on it.",
+          "quote": "Sequence of concern: a nucleic acid sequence whose possession or synthesis is judged to present a meaningful risk of misuse, as listed in the reference database.",
+          "author": "marcus"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "document_id": "mockdoc-m2-legacy",
+  "final_text": "The legacy exporter runs nightly at 02:00.\nWe keep the legacy schema for now.\nThe new exporter is faster than the legacy one.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.1": "rejected",
+    "sug.carol.2": "accepted",
+    "sug.carol.1": "accepted",
+    "sug.bob.2": "rejected",
+    "sug.bob.3": "accepted"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "The legacy exporter runs nightly at 02:00.\nWe keep the legacy schema for now.\nThe new exporter is faster than the legacy one.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "The legacy exporter runs nightly at 02:00.\nWe keep the legacy schema for now.\nThe new exporter is faster than the legacy one.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_present",
+      "text": "legacy exporter"
+    },
+    {
+      "check": "text_present",
+      "text": "legacy schema"
+    },
+    {
+      "check": "text_present",
+      "text": "at 02:00"
+    },
+    {
+      "check": "text_absent",
+      "text": "still runs"
+    }
+  ]
+}

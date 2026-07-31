@@ -1,0 +1,8 @@
+{
+  "document_id": "fx-doc-comment",
+  "final_text": "Q3 revenue grew 40% year over year.\nWe expect similar growth in Q4.\n",
+  "pending_suggestions": 0,
+  "comments": 1,
+  "anchor_quote_contains": "40%",
+  "notes": "An anchored comment (create_anchored_doc_comment) is required; an unanchored Drive comment has no quote and does not satisfy the brief."
+}

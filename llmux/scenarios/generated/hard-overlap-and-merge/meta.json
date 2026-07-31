@@ -1,0 +1,24 @@
+{
+  "id": "hard-overlap-and-merge",
+  "difficulty": 4,
+  "steps": 8,
+  "tags": [
+    "multi-author",
+    "overlap",
+    "merge",
+    "decoy",
+    "predicate"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 8,
+  "tier": "hard",
+  "document_id": "mockdoc-h2-overlap",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

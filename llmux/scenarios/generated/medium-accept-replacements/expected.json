@@ -1,0 +1,47 @@
+{
+  "document_id": "mockdoc-m5-replacements",
+  "final_text": "Roadmap for Q4\nQ4 targets are unchanged.\nThe final plan ships Monday.\nOwners: Ana and Ben.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.2": "accepted",
+    "sug.alice.4": "accepted",
+    "sug.bob.2": "accepted",
+    "sug.bob.3": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Roadmap for Q4\nQ4 targets are unchanged.\nThe final plan ships Monday.\nOwners: Ana and Ben.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Roadmap for Q4\nQ4 targets are unchanged.\nThe final plan ships Monday.\nOwners: Ana and Ben.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_present",
+      "text": "Roadmap for Q4"
+    },
+    {
+      "check": "text_present",
+      "text": "Q4 targets"
+    },
+    {
+      "check": "text_present",
+      "text": "Ana and Ben"
+    },
+    {
+      "check": "text_absent",
+      "text": "draft plan"
+    }
+  ]
+}

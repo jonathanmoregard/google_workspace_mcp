@@ -1,0 +1,31 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-m4-anchor",
+      "title": "Launch checklist",
+      "text": "Launch checklist 🎉\nThe revenue forecast needs a second pass.\nOps sign-off is pending.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 55,
+          "text": "quarterly ",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 83,
+          "end": 94,
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 18,
+          "text": " v2",
+          "author": "carol"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

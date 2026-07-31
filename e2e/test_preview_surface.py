@@ -1,0 +1,2042 @@
+"""Developer Preview e2e scenarios (marker: e2e_preview).
+
+Tests gated on ``preview_ready`` skip - with the capabilities probe's
+classification evidence in the skip message - until the credentials' GCP
+project is enrolled in the Workspace Developer Preview. Several tests
+double as empirical probes that RECORD real payload/error shapes into
+e2e/last_run.md, resolving unknowns the plan flagged:
+
+- the response-union extraction paths R3 guessed for the native tools
+  (``replies[0].insertComment.commentThread`` and
+  ``replies[0].addCommentReply.post``) - surfaced through the tools'
+  ``comment_id`` / ``post_id`` / ``author`` JSON fields
+- whether Docs preview thread ids interoperate with the Drive GA comment
+  surface (list/update/delete/resolve)
+- how many suggestion ids a SUGGEST replacement (delete+insert) yields
+- the exact grammar of ``SuggestionThread.summaryText`` for each edit kind
+  (the mock's §8 ``label()`` must match it - prod is the oracle)
+- real error message shapes feeding preview_status.classify_preview_error
+- whether the post-write verification read is immediately consistent (the
+  write tools echo it inline, so a lagging read would echo nothing)
+- whether prod really garbage-collects a suggestion whose last marked
+  character an accept removes (SPEC §7/§11.1 I2 - ASSUMED until
+  ``test_accept_can_garbage_collect_another_suggestion`` ran), and whether
+  it merges adjacent same-author suggestions (SPEC §6, also assumed)
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from e2e.mcp_session import tool_json, tool_text
+from e2e.run_report import REPORT
+from e2e.util import poll_until
+
+pytestmark = pytest.mark.e2e_preview
+
+BASE_TEXT = "The quick brown fox jumps over the lazy dog."
+
+
+@pytest.fixture
+def base_doc(make_scratch_doc) -> str:
+    """Scratch doc pre-seeded with BASE_TEXT (index 1 = 'T')."""
+    return make_scratch_doc("-preview", content=BASE_TEXT)
+
+
+def _suggest_insert(mcp, email: str, doc_id: str, text: str, *, index: int) -> dict:
+    return tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": index,
+                "text": text,
+            },
+        )
+    )
+
+
+def _list_suggestions(mcp, email: str, doc_id: str, **extra) -> dict:
+    """The listing, at ``fields='full'`` unless a test says otherwise.
+
+    The tool's own default is ``summary`` -- these tests are about the
+    per-suggestion analysis (pre/post text, replies, author objects), which
+    is what ``full`` carries. The default and the narrowing parameters have
+    their own tests.
+    """
+    args = {"user_google_email": email, "document_id": doc_id, "fields": "full"}
+    args.update(extra)
+    return tool_json(mcp.call_tool("list_document_suggestions", args))
+
+
+def _wait_for_suggestions(mcp, email: str, doc_id: str, minimum: int = 1) -> dict:
+    def _check():
+        listing = _list_suggestions(mcp, email, doc_id)
+        return listing if listing["suggestion_count"] >= minimum else None
+
+    return poll_until(
+        _check, timeout=30, description=f"at least {minimum} suggestion(s) listed"
+    )
+
+
+def _resolution_verification(result: dict) -> dict:
+    """The verification block, plus the one invariant every resolution owes.
+
+    ``still_pending`` is the STRUCTURAL evidence about a resolution: an
+    accepted or rejected suggestion is gone from the document's pending set,
+    so an id still in it is a write that did not take effect. A positive
+    ``matches_expectation`` beside it is the round-5 HIGH -- and the text
+    cannot catch it, because base text is identical whether or not a REJECT
+    landed (a suggested insertion is stripped from it either way, a
+    suggested deletion kept either way).
+
+    Round 6 widened the invariant from "never both true" to its contrapositive
+    form: a positive verdict requires the pending set to have been OBSERVED
+    and the id to have been absent from it. ``still_pending`` is now
+    three-valued -- null when the post-write read could not see the space the
+    card lives in -- and a null there must NOT come back as a confident
+    ``matches_expectation``, which is the exact shape a blind read used to
+    produce. Stated this way, the check also covers a future fourth value.
+
+    Every resolution this suite makes goes through here, so if prod ever
+    produces the bad pair -- the API is documented to answer a resolution with
+    HTTP 200 and no effect -- the suite fails instead of passing on the
+    positive half.
+    """
+    verification = result["verification"]
+    if verification.get("matches_expectation") is True:
+        assert verification.get("still_pending") is False, verification
+    if verification.get("still_pending") is None:
+        # Null is not a quiet null: it names its reason and says so in words.
+        assert verification.get("matches_expectation") is None, verification
+        assert verification.get("still_pending_unavailable"), verification
+    return verification
+
+
+def _create_anchored_comment(
+    mcp, email: str, doc_id: str, content: str, start: int, end: int
+) -> dict:
+    """create_anchored_doc_comment + record-reality assertions on the
+    guessed InsertCommentResponse extraction path."""
+    created = tool_json(
+        mcp.call_tool(
+            "create_anchored_doc_comment",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "content": content,
+                "start_index": start,
+                "end_index": end,
+            },
+        )
+    )
+    REPORT.note(
+        "create_anchored_doc_comment extraction "
+        "(replies[0].insertComment.commentThread): "
+        f"comment_id={created['comment_id']!r}, "
+        f"post_id={created['post_id']!r}, "
+        f"author={created['author']!r}, "
+        f"anchor_id={created['anchor_id']!r}, "
+        f"quoted_text={created['quoted_text']!r}, "
+        f"comment_update_state={created['comment_update_state']!r}"
+    )
+    assert created["comment_id"], (
+        "comment_id is null: the InsertCommentResponse union member differs "
+        "from the 'insertComment.commentThread' path - fix the "
+        f"extraction in gdocs_preview/write_tools.py. Full response: {created}"
+    )
+    # Requirement: every comment object carries an id AND an author.
+    assert created["post_id"], created
+    assert created["author"] and created["author"]["display_name"], created
+    assert created["author"]["me"] is True, created
+    return created
+
+
+# ---------------------------------------------------------------------------
+# Happy paths
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_edit_creates_listable_suggestion(
+    preview_ready, mcp, ga_auth, base_doc
+):
+    """suggest_doc_edit insertion -> list_document_suggestions pre/post +
+    a REAL author, end to end."""
+    response = _suggest_insert(mcp, ga_auth.email, base_doc, "very ", index=5)
+    assert response["mode"] == "insertion"
+    assert response["requests_applied"] == 1
+    REPORT.note(
+        "suggest_doc_edit(insertion) created_suggestion_ids="
+        f"{response['created_suggestion_ids']!r} (empty means the API "
+        "omitted the ids in suggestionResponses - recorded reality)"
+    )
+
+    # The write must be self-verifying: the echo is what stops an agent
+    # having to spend a turn on list_document_suggestions (write_tools.py).
+    verification = response["verification"]
+    REPORT.note(f"suggest_doc_edit verification block: {verification!r}")
+    assert verification["source"] == "post_write_read", verification
+    assert verification["read_source"] == "preview_threads", verification
+    (echo,) = verification["created_suggestions"]
+    assert echo["type"] == "insertion", echo
+    assert "very" in echo["post_text"] and "very" not in echo["pre_text"], echo
+    assert echo["start_index"] is not None and echo["end_index"] is not None, echo
+    assert echo["summary_text"], echo
+
+    listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
+    record = listing["suggestions"][0]
+    assert record["suggestion_id"]
+    assert record["type"] == "insertion"
+    assert "very" in record["post_text"]
+    assert "very" not in record["pre_text"]
+    if response["created_suggestion_ids"]:
+        assert record["suggestion_id"] in response["created_suggestion_ids"]
+
+    # The thread-bearing read (tabs + commentsViewMode) must be the one used,
+    # and it must yield the real author of the suggestion we just made.
+    REPORT.note(
+        f"list_document_suggestions read_source={listing['read_source']!r}, "
+        f"tabs={listing['tabs']!r}, author={record['author']!r}, "
+        f"status={record['status']!r}, summary_text={record['summary_text']!r}"
+    )
+    assert listing["read_source"] == "preview_threads", (
+        "the preview (tabs + threads) read degraded to the GA read: "
+        f"{listing.get('degraded_reason')!r}"
+    )
+    assert record["author_source"] == "suggestion_thread"
+    author = record["author"]
+    assert author, f"author is null on an enrolled run: {record}"
+    assert author["display_name"], author
+    assert author["me"] is True, author
+    assert (author["user"] or "").startswith("users/"), author
+    assert record["status"] == "OPEN"
+    assert record["create_time"]
+    assert record["summary_text"], record
+    # Every tab carries a real id in the preview read.
+    assert record["tab_id"], record
+    assert listing["tabs"] and listing["tabs"][0]["tab_id"] == record["tab_id"]
+
+
+def test_summary_text_grammar_matches_the_mock_labels(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """RECORD + pin Google's ``SuggestionThread.summaryText`` grammar.
+
+    The mock's SPEC §8 ``label()`` claims the same grammar; prod is the
+    oracle, so a divergence here means mockdocs/model.py must change.
+    Verified 2026-07-30: typographic quotes, and
+    ``Replace: "<struck>" with "<added>"`` for a replacement.
+    """
+    from mockdocs.model import MockDoc
+
+    doc_id = make_scratch_doc("-summary", content="Hello brave world.")
+    email = ga_auth.email
+
+    # Replacement at the HIGHER index first so the pending suggestions do not
+    # merge: "brave" is [7, 12), "Hello" is [1, 6).
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+                "text": "bold",
+            },
+        )
+    )
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    summaries = [r["summary_text"] for r in listing["suggestions"]]
+    REPORT.note(f"SuggestionThread.summaryText (replacement): {summaries!r}")
+    assert summaries and summaries[0] == "Replace: “brave” with “bold”", summaries
+
+    # The mock's label() must produce the identical string.
+    mock_doc = MockDoc(text="Hello brave world.")
+    mock_sid = mock_doc.replace(6, 11, "bold", "alice")
+    assert mock_doc.label(mock_sid)["text"] == summaries[0], (
+        "mockdocs label() diverged from prod summaryText - prod is the oracle"
+    )
+
+    # Pure deletion and pure insertion, on their own documents.
+    delete_doc = make_scratch_doc("-summary-del", content="Hello brave world.")
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": delete_doc,
+                "start_index": 7,
+                "end_index": 12,
+            },
+        )
+    )
+    delete_summary = _wait_for_suggestions(mcp, email, delete_doc)["suggestions"][0][
+        "summary_text"
+    ]
+    REPORT.note(f"SuggestionThread.summaryText (deletion): {delete_summary!r}")
+    assert delete_summary == "Delete: “brave”"
+
+    insert_doc = make_scratch_doc("-summary-add", content="Hello world.")
+    _suggest_insert(mcp, email, insert_doc, "Say ", index=1)
+    insert_summary = _wait_for_suggestions(mcp, email, insert_doc)["suggestions"][0][
+        "summary_text"
+    ]
+    REPORT.note(f"SuggestionThread.summaryText (insertion): {insert_summary!r}")
+    assert insert_summary == "Add: “Say”"
+
+
+def test_fields_filters_and_pagination_against_the_real_api(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """The narrowing parameters, against prod rather than the mock.
+
+    The reduction they exist for was measured on mockdocs, whose records are
+    modelled on the preview shapes but are not byte-identical to them. What
+    prod has to confirm is not the ratio but the semantics: that summary
+    keeps the thread-derived fields (author, status, summaryText) it claims
+    to, that the author filter matches the display names Google actually
+    returns, that an index-range filter agrees with the indexes prod
+    reports, and that a page token issued by one call is honoured by the
+    next against a live document.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-page", content="Alpha beta gamma delta epsilon.")
+
+    # Three non-adjacent suggestions, highest index first so they cannot
+    # merge into each other (SPEC §6, confirmed against prod). Index 1 is the
+    # first character: "Alpha" is [1, 6), "gamma" [12, 17), "epsilon" [24, 31).
+    for start, end, text in ((24, 31, "OMEGA"), (12, 17, "GAMMA"), (1, 6, "ALPHA")):
+        tool_json(
+            mcp.call_tool(
+                "suggest_doc_edit",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "start_index": start,
+                    "end_index": end,
+                    "text": text,
+                },
+            )
+        )
+    _wait_for_suggestions(mcp, email, doc_id, minimum=3)
+    # No `fields` argument here: this call is the tool's own default.
+    listing = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    total = listing["suggestion_count"]
+    assert total >= 3, listing
+
+    # -- summary is the default, and keeps the thread-derived fields -------
+    assert listing["fields"] == "summary"
+    assert listing["read_source"] == "preview_threads", listing.get("degraded_reason")
+    assert listing["matched_count"] == total
+    assert listing["returned_count"] == total
+    assert listing["page"]["has_more"] is False
+    record = listing["suggestions"][0]
+    REPORT.note(f"list_document_suggestions fields='summary' record: {record!r}")
+    assert set(record) == {
+        "suggestion_id",
+        "type",
+        "author",
+        "summary_text",
+        "segment",
+        "segment_id",
+        "tab_id",
+        "start_index",
+        "end_index",
+        "status",
+    }, record
+    assert isinstance(record["author"], str) and record["author"], record
+    assert record["status"] == "OPEN", record
+    assert record["summary_text"], record
+    assert record["start_index"] is not None and record["end_index"] is not None
+    # The address, not decoration: prod indexes are per (tabId, segmentId).
+    assert record["segment"] == "body", record
+    assert record["segment_id"] is None, record
+    assert record["tab_id"], record
+
+    # -- full still carries everything summary drops ----------------------
+    full = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "fields": "full"},
+        )
+    )
+    full_record = next(
+        r for r in full["suggestions"] if r["suggestion_id"] == record["suggestion_id"]
+    )
+    assert full_record["author"]["display_name"] == record["author"], (
+        "summary flattened the author to something other than the display "
+        f"name prod returned: {full_record['author']!r} vs {record['author']!r}"
+    )
+    assert full_record["summary_text"] == record["summary_text"]
+    assert full_record["status"] == record["status"]
+    assert full_record["pre_text"] is not None
+    assert full_record["author_source"] == "suggestion_thread"
+
+    # -- author filter, using the display name PROD reported ---------------
+    mine = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "author": record["author"],
+            },
+        )
+    )
+    assert mine["matched_count"] == total, mine["filters"]
+    assert mine["suggestion_count"] == total
+
+    absent = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "author": "Nobody At All",
+            },
+        )
+    )
+    assert absent["matched_count"] == 0
+    assert record["author"] in absent["filters"]["authors_present"]
+
+    # -- index range, against the indexes prod itself reported -------------
+    target = sorted(listing["suggestions"], key=lambda r: r["start_index"])[0]
+    ranged = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": target["start_index"],
+                "end_index": target["end_index"],
+            },
+        )
+    )
+    REPORT.note(
+        f"index-range filter [{target['start_index']}, {target['end_index']}) "
+        f"matched {ranged['matched_count']} of {ranged['suggestion_count']}"
+    )
+    assert target["suggestion_id"] in [
+        r["suggestion_id"] for r in ranged["suggestions"]
+    ], ranged
+    assert ranged["matched_count"] < total, (
+        "an index range covering one suggestion matched all of them"
+    )
+
+    # -- pagination round trip against a live document ---------------------
+    seen: list[str] = []
+    token = None
+    for _ in range(total + 2):
+        page = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "page_size": 1,
+                    **({"page_token": token} if token else {}),
+                },
+            )
+        )
+        assert page["suggestion_count"] == total
+        assert page["returned_count"] <= 1
+        seen.extend(r["suggestion_id"] for r in page["suggestions"])
+        token = page["page"]["next_page_token"]
+        if not token:
+            break
+    assert len(seen) == total, seen
+    assert len(set(seen)) == total, f"pagination repeated a suggestion: {seen}"
+    assert set(seen) == {r["suggestion_id"] for r in listing["suggestions"]}
+
+    # -- a token from another query is refused, not reinterpreted ----------
+    first = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "page_size": 1},
+        )
+    )
+    refused = mcp.call_tool_raw(
+        "list_document_suggestions",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "page_size": 1,
+            "fields": "full",
+            "page_token": first["page"]["next_page_token"],
+        },
+    )
+    assert refused.is_error, tool_text(refused)[:400]
+    assert "different query" in tool_text(refused), tool_text(refused)[:400]
+
+
+def test_a_header_suggestion_is_addressable_from_the_summary_listing(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """A summary card outside the body must say so, and be writable back.
+
+    Prod numbers each ``(tabId, segmentId)`` pair from its own start, so a
+    header suggestion's ``start_index`` collides with a body suggestion's.
+    ``suggest_doc_edit`` defaults to the body of the default tab: if the
+    default listing did not carry ``segment_id``, an agent reading a header
+    card would aim its index at the body of a customer document with nothing
+    warning it. This is that loop, closed against prod: create a header,
+    suggest into it, list at the default ``fields='summary'``, and write back
+    using only what the card says.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-segment", content="Body line one.")
+
+    # Returns prose, not JSON -- the header only has to exist.
+    created_header = tool_text(
+        mcp.call_tool(
+            "update_doc_headers_footers",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "section_type": "header",
+                "content": "Header line one.",
+            },
+        )
+    )
+    assert "Error" not in created_header, created_header
+
+    def _header_paragraph():
+        view = tool_json(
+            mcp.call_tool(
+                "get_doc_review_view",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "fields": "paragraphs",
+                },
+            )
+        )
+        return next((p for p in view["paragraphs"] if p["segment"] == "header"), None)
+
+    header = poll_until(
+        _header_paragraph, timeout=30, description="the header segment to appear"
+    )
+    REPORT.note(
+        f"header segment from get_doc_review_view: segment_id="
+        f"{header['segment_id']!r}, tab_id={header['tab_id']!r}, "
+        f"[{header['start_index']}, {header['end_index']})"
+    )
+    assert header["segment_id"], header
+    # RECORD: prod serializes proto3, which omits default values, so a header
+    # segment's first paragraph arrives with NO startIndex at all -- observed
+    # 2026-07-31 as {"endIndex": 13, "paragraph": ...}. A header numbered from
+    # 0 is therefore the one place that absence is meaningful, and reading it
+    # as "unindexed" made those suggestions unaddressable.
+    assert header["start_index"] == 0, (
+        "a header segment is numbered from its own start; index 0 must "
+        f"survive the read rather than arrive as null: {header}"
+    )
+
+    # One suggestion in the body and one in the header, so the listing has to
+    # tell two cards apart that prod numbers in different coordinate spaces.
+    _suggest_insert(mcp, email, doc_id, "very ", index=1)
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": header["start_index"],
+                "text": "DRAFT ",
+                "segment_id": header["segment_id"],
+                **({"tab_id": header["tab_id"]} if header["tab_id"] else {}),
+            },
+        )
+    )
+
+    def _both():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        segments = {r["segment"] for r in listing["suggestions"]}
+        return listing if {"body", "header"} <= segments else None
+
+    listing = poll_until(_both, timeout=30, description="a body card and a header card")
+    assert listing["fields"] == "summary"
+    body_card = next(r for r in listing["suggestions"] if r["segment"] == "body")
+    header_card = next(r for r in listing["suggestions"] if r["segment"] == "header")
+    REPORT.note(f"summary cards by segment: body={body_card!r} header={header_card!r}")
+    assert body_card["segment_id"] is None, body_card
+    assert header_card["segment_id"] == header["segment_id"], header_card
+
+    # The card is a complete address: everything suggest_doc_edit needs to
+    # aim at the same place comes out of the summary record alone.
+    echo = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": header_card["start_index"],
+                "text": "X",
+                "segment_id": header_card["segment_id"],
+                **({"tab_id": header_card["tab_id"]} if header_card["tab_id"] else {}),
+            },
+        )
+    )
+    assert echo["created_suggestion_ids"] or echo["verification"], echo
+
+    # And the write's own echo is a complete address too -- it is the only
+    # record the agent has of the suggestion it just made, and the next thing
+    # it does with those indexes is hand them to create_anchored_doc_comment,
+    # which defaults to the BODY.
+    verification = echo["verification"]
+    REPORT.note(f"header-segment write echo: {verification!r}")
+    echoed = verification.get("created_suggestions") or verification.get(
+        "suggestions_at_edit_range"
+    )
+    assert echoed, verification
+    for entry in echoed:
+        assert entry["segment"] == "header", entry
+        assert entry["segment_id"] == header_card["segment_id"], entry
+        assert entry["start_index"] is not None, entry
+
+    after = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    header_after = [r for r in after["suggestions"] if r["segment"] == "header"]
+    body_after = [r for r in after["suggestions"] if r["segment"] == "body"]
+    REPORT.note(
+        f"after writing back from the summary card: {len(header_after)} header "
+        f"card(s), {len(body_after)} body card(s)"
+    )
+    assert len(body_after) == 1, (
+        f"writing back the header card's own indexes landed in the body: {body_after!r}"
+    )
+
+
+def test_a_multi_tab_document_never_answers_across_tabs(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """The (tab, segment) half of the address, against a REAL two-tab doc.
+
+    Docs numbers each tab from its own start, so the same local index names
+    a different character in each one. Everything below was unit-tested
+    against fixtures; prod is the oracle for whether its tab ids, its
+    per-tab indexes and its `addDocumentTab` request behave the way those
+    fixtures assume. Multi-tab documents ARE creatable through the API
+    (manage_doc_tab action="create" -> addDocumentTab), so this needs no
+    hand-made document.
+
+    Four claims:
+      1. an index range with no tab_id is REFUSED, not answered from an
+         arbitrary tab;
+      2. naming the tab answers it, and only about that tab;
+      3. a write echo carries the tab it wrote to;
+      4. an accept is verified against the tab it happened in -- both tabs
+         hold the same anchor text here, so a whole-document search would
+         match the wrong one and call it a pass.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-tabs", content="Shared anchor alpha here.")
+
+    created = tool_json(
+        mcp.call_tool(
+            "manage_doc_tab",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "create",
+                "title": "Second tab",
+                "index": 1,
+            },
+        )
+    )
+    REPORT.note(f"manage_doc_tab(create) -> {created!r}")
+    assert created["success"], created
+
+    def _two_tabs():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return listing if len(listing.get("tabs") or []) >= 2 else None
+
+    listing = poll_until(_two_tabs, timeout=30, description="a second tab to appear")
+    tab_ids = [t["tab_id"] for t in listing["tabs"]]
+    REPORT.note(f"two-tab document tabs: {listing['tabs']!r}")
+    assert len(tab_ids) == 2 and all(tab_ids), listing["tabs"]
+    first_tab, second_tab = tab_ids
+
+    # Same words in both tabs, so nothing can be told apart by text alone.
+    populated = tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 1,
+                "text": "Shared anchor bravo here.",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    assert "Error" not in populated, populated
+
+    # One suggestion per tab, at the SAME local index range.
+    for tab in (second_tab, first_tab):
+        tool_json(
+            mcp.call_tool(
+                "suggest_doc_edit",
+                {
+                    "user_google_email": email,
+                    "document_id": doc_id,
+                    "start_index": 1,
+                    "end_index": 7,
+                    "text": "EDITED",
+                    "tab_id": tab,
+                },
+            )
+        )
+
+    def _one_per_tab():
+        current = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        found = {r["tab_id"] for r in current["suggestions"]}
+        return current if {first_tab, second_tab} <= found else None
+
+    listing = poll_until(
+        _one_per_tab, timeout=30, description="a suggestion in each tab"
+    )
+    REPORT.note(
+        "per-tab summary cards: "
+        + repr(
+            [
+                (r["suggestion_id"], r["tab_id"], r["start_index"])
+                for r in listing["suggestions"]
+            ]
+        )
+    )
+
+    # 1. An index range with no tab_id is refused rather than guessed.
+    refused = mcp.call_tool_raw(
+        "list_document_suggestions",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "start_index": 0,
+            "end_index": 500,
+        },
+    )
+    assert refused.is_error, tool_text(refused)[:400]
+    assert "needs a tab_id" in tool_text(refused), tool_text(refused)[:400]
+
+    # 2. Naming the tab answers it, about that tab only.
+    scoped = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 0,
+                "end_index": 500,
+                "tab_id": second_tab,
+            },
+        )
+    )
+    assert scoped["matched_count"] >= 1, scoped
+    assert {r["tab_id"] for r in scoped["suggestions"]} == {second_tab}, scoped
+    assert scoped["filters"]["range_scope"]["tab_id"] == second_tab
+
+    # A mistyped tab id says which tabs exist, the way author/status do.
+    typo = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {"user_google_email": email, "document_id": doc_id, "tab_id": "t.nope"},
+        )
+    )
+    assert typo["matched_count"] == 0
+    assert sorted(typo["filters"]["tabs_present"]) == sorted(tab_ids), typo["filters"]
+
+    # 3. The write echo says which tab it wrote to.
+    second_card = next(r for r in listing["suggestions"] if r["tab_id"] == second_tab)
+    echo_call = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": second_card["start_index"],
+                "text": "X",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    verification = echo_call["verification"]
+    REPORT.note(f"multi-tab suggest_doc_edit verification: {verification!r}")
+    echoes = verification.get("created_suggestions") or verification.get(
+        "suggestions_at_edit_range"
+    )
+    assert echoes, verification
+    for echo in echoes:
+        assert echo["tab_id"] == second_tab, echo
+        assert echo["segment"] == "body", echo
+
+    # 4. An accept is verified in the tab it happened in. Both tabs read
+    # "Shared anchor ..." so a whole-document search finds the wrong one.
+    after = tool_json(
+        mcp.call_tool(
+            "list_document_suggestions",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "full",
+                "tab_id": second_tab,
+            },
+        )
+    )
+    target = after["suggestions"][0]
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": target["suggestion_id"],
+            },
+        )
+    )
+    resolution = accepted["verification"]
+    REPORT.note(f"multi-tab accept verification: {resolution!r}")
+    assert resolution["resolved_suggestion"]["tab_id"] == second_tab, resolution
+    if resolution["resulting_text"] is not None:
+        assert "bravo" in resolution["resulting_text"], (
+            "the accept in tab 2 was verified against text from another tab: "
+            f"{resolution['resulting_text']!r}"
+        )
+        assert "alpha" not in resolution["resulting_text"], resolution
+
+
+def test_review_view_fields_and_window_against_the_real_api(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """get_doc_review_view's field modes and index window, against prod.
+
+    The claim the default rests on is that the paragraph map's ``text``
+    values concatenate to exactly ``body_text``. That is a property of the
+    renderer, but it is only worth anything if prod's paragraph indexes line
+    up with it -- so the window is taken off prod's own map and checked
+    against prod's own text.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-view", content="First line.\nSecond line.\nThird line.")
+
+    full = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {"user_google_email": email, "document_id": doc_id, "fields": "full"},
+        )
+    )
+    body_paragraphs = [p for p in full["paragraphs"] if p["segment"] == "body"]
+    assert "".join(p["text"] for p in body_paragraphs) == full["body_text"], (
+        "the paragraph map and body_text disagree against prod, which is the "
+        "assumption the default field mode rests on"
+    )
+
+    default = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {"user_google_email": email, "document_id": doc_id},
+        )
+    )
+    assert default["fields"] == "text"
+    assert default["body_text"] == full["body_text"]
+    assert "paragraphs" not in default
+    assert "paragraphs" in default["omitted_fields"]
+    assert len(json.dumps(default)) < len(json.dumps(full))
+
+    paragraphs_only = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "paragraphs",
+            },
+        )
+    )
+    assert "body_text" not in paragraphs_only
+    assert (
+        "".join(
+            p["text"] for p in paragraphs_only["paragraphs"] if p["segment"] == "body"
+        )
+        == full["body_text"]
+    )
+
+    # A window taken off prod's own paragraph map returns that paragraph.
+    target = body_paragraphs[1]
+    windowed = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "fields": "full",
+                "start_index": target["start_index"],
+                "end_index": target["end_index"],
+            },
+        )
+    )
+    REPORT.note(
+        f"get_doc_review_view window [{target['start_index']}, "
+        f"{target['end_index']}) -> {windowed['returned_paragraph_count']} of "
+        f"{windowed['paragraph_count']} paragraph(s)"
+    )
+    assert windowed["paragraph_count"] == len(full["paragraphs"])
+    assert windowed["returned_paragraph_count"] == 1
+    assert windowed["body_text"] == target["text"]
+    assert windowed["paragraphs"][0]["start_index"] == target["start_index"]
+
+
+def test_review_view_exposes_comment_threads_with_authors(
+    preview_ready, mcp, ga_auth, base_doc
+):
+    """get_doc_review_view must surface the Docs-side comment threads with
+    an id and an author on every thread AND every reply."""
+    args = {"user_google_email": ga_auth.email, "document_id": base_doc}
+    created = _create_anchored_comment(
+        mcp, ga_auth.email, base_doc, "Who wrote this?", 1, 6
+    )
+    reply = tool_json(
+        mcp.call_tool(
+            "reply_to_doc_thread",
+            {**args, "reply_content": "I did.", "comment_id": created["comment_id"]},
+        )
+    )
+
+    def _thread_visible():
+        view = tool_json(mcp.call_tool("get_doc_review_view", dict(args)))
+        for comment in view.get("comments", []):
+            if comment["comment_id"] == created["comment_id"] and comment["replies"]:
+                return view, comment
+        return None
+
+    view, comment = poll_until(
+        _thread_visible,
+        timeout=30,
+        description="anchored comment + reply in get_doc_review_view",
+    )
+    REPORT.note(
+        f"get_doc_review_view read_source={view['read_source']!r}, "
+        f"comment author={comment['author']!r}, "
+        f"reply author={comment['replies'][0]['author']!r}, "
+        f"anchor_id={comment['anchor_id']!r}, status={comment['status']!r}"
+    )
+    assert view["read_source"] == "preview_threads", view.get("degraded_reason")
+    assert comment["author"] and comment["author"]["display_name"]
+    assert comment["post_id"]
+    assert comment["anchor_id"]
+    assert comment["quoted_text"] == "The q"
+    assert comment["status"] == "OPEN"
+    (thread_reply,) = comment["replies"]
+    assert thread_reply["post_id"] == reply["post_id"]
+    assert thread_reply["author"] and thread_reply["author"]["display_name"]
+
+
+def test_suggest_replacement_records_id_count(preview_ready, mcp, ga_auth, base_doc):
+    """Replacement = deleteContentRange + insertText in one SUGGEST batch.
+
+    Design unknown (2026-07-14 note, D3): one or two suggestion ids?
+    RECORD the reality.
+    """
+    # "quick" occupies [5, 10) in BASE_TEXT.
+    response = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": ga_auth.email,
+                "document_id": base_doc,
+                "start_index": 5,
+                "end_index": 10,
+                "text": "sluggish",
+            },
+        )
+    )
+    assert response["mode"] == "replacement"
+    assert response["requests_applied"] == 2
+    REPORT.note(
+        "suggest_doc_edit(replacement) created_suggestion_ids="
+        f"{response['created_suggestion_ids']!r} "
+        "(design unknown D3: 1 vs 2 ids for delete+insert)"
+    )
+
+    listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
+    joined_post = " ".join(r["post_text"] for r in listing["suggestions"])
+    assert "sluggish" in joined_post
+    REPORT.note(
+        "replacement summary_text(s): "
+        f"{[r['summary_text'] for r in listing['suggestions']]!r}"
+    )
+
+
+def test_anchored_comment_thread_lifecycle(preview_ready, mcp, ga_auth, base_doc):
+    """create_anchored_doc_comment -> Drive list -> reply_to_doc_thread ->
+    Drive-GA update -> Drive-GA delete.
+
+    UI expectation (manual, documented): the comment appears in the Docs
+    editor anchored to characters 1-6 ("The q") with the quoted text
+    highlighted, exactly like a human-created comment. update/delete run
+    through manage_document_comment (Drive GA) - empirically verifying
+    Docs-thread/Drive comment id interop; outcomes are RECORDED.
+    """
+    args = {"user_google_email": ga_auth.email, "document_id": base_doc}
+    created = _create_anchored_comment(
+        mcp, ga_auth.email, base_doc, "Anchored e2e comment", 1, 6
+    )
+    comment_id = created["comment_id"]
+    assert created["quoted_text"] == "The q"
+
+    # Cross-surface check: does the preview thread show up in the Drive
+    # comment listing, and do the ids line up? Record the answer.
+    def _in_drive_listing():
+        listing = tool_text(mcp.call_tool("list_document_comments", dict(args)))
+        return listing if comment_id in listing else None
+
+    try:
+        poll_until(
+            _in_drive_listing, timeout=20, description="preview thread in Drive listing"
+        )
+        id_interop = True
+        REPORT.note(
+            f"preview thread {comment_id!r} IS visible via Drive "
+            "list_document_comments (id-space overlap: True)"
+        )
+    except TimeoutError:
+        id_interop = False
+        REPORT.note(
+            f"preview thread {comment_id!r} NOT visible via Drive "
+            "list_document_comments within 20s (id-space overlap: False)"
+        )
+
+    # Reply on the comment thread (preview surface).
+    reply = tool_json(
+        mcp.call_tool(
+            "reply_to_doc_thread",
+            {**args, "reply_content": "e2e thread reply", "comment_id": comment_id},
+        )
+    )
+    assert reply["thread_type"] == "comment"
+    assert reply["comment_id"] == comment_id
+    REPORT.note(
+        "reply_to_doc_thread extraction (replies[0].addCommentReply.post): "
+        f"post_id={reply['post_id']!r}, author={reply['author']!r}, "
+        f"comment_update_state={reply['comment_update_state']!r}"
+    )
+    assert reply["post_id"], (
+        "post_id is null: the AddCommentReplyResponse union member differs "
+        "from the 'addCommentReply.post' path - fix the extraction "
+        f"in gdocs_preview/write_tools.py. Full response: {reply}"
+    )
+    assert reply["author"] and reply["author"]["display_name"], reply
+
+    # Update, then delete, through the Drive GA factory tool (id interop).
+    update_result = mcp.call_tool_raw(
+        "manage_document_comment",
+        {
+            **args,
+            "action": "update",
+            "comment_id": comment_id,
+            "comment_content": "Anchored e2e comment (updated)",
+        },
+    )
+    REPORT.note(
+        "Drive comments.update on preview thread id: "
+        + (
+            "ERROR: " + tool_text(update_result)[:200]
+            if update_result.is_error
+            else "ok"
+        )
+    )
+    delete_result = mcp.call_tool_raw(
+        "manage_document_comment",
+        {**args, "action": "delete", "comment_id": comment_id},
+    )
+    REPORT.note(
+        "Drive comments.delete on preview thread id: "
+        + (
+            "ERROR: " + tool_text(delete_result)[:200]
+            if delete_result.is_error
+            else "ok"
+        )
+    )
+    if id_interop:
+        # Ids line up across surfaces - GA update/delete must work on them.
+        assert not update_result.is_error, tool_text(update_result)
+        assert not delete_result.is_error, tool_text(delete_result)
+
+
+def test_reply_to_suggestion_thread(preview_ready, mcp, ga_auth, base_doc):
+    """reply_to_doc_thread on a suggestion thread (suggestion_id union arm)."""
+    _suggest_insert(mcp, ga_auth.email, base_doc, "very ", index=5)
+    listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
+    suggestion_id = listing["suggestions"][0]["suggestion_id"]
+
+    reply = tool_json(
+        mcp.call_tool(
+            "reply_to_doc_thread",
+            {
+                "user_google_email": ga_auth.email,
+                "document_id": base_doc,
+                "reply_content": "e2e suggestion-thread reply",
+                "suggestion_id": suggestion_id,
+            },
+        )
+    )
+    assert reply["thread_type"] == "suggestion"
+    assert reply["suggestion_id"] == suggestion_id
+    REPORT.note(
+        "reply on suggestion thread: "
+        f"post_id={reply['post_id']!r}, author={reply['author']!r}, "
+        f"comment_update_state={reply['comment_update_state']!r}"
+    )
+    assert reply["post_id"], (
+        "post_id is null on a suggestion-thread reply - either the "
+        "AddCommentReplyResponse union member differs from the expected "
+        f"path or suggestion replies omit the post. Full response: {reply}"
+    )
+    assert reply["author"] and reply["author"]["display_name"], reply
+
+    # The reply must come back on the suggestion thread, with its author.
+    def _reply_listed():
+        record = _list_suggestions(mcp, ga_auth.email, base_doc)["suggestions"][0]
+        return record if record["replies"] else None
+
+    record = poll_until(
+        _reply_listed, timeout=30, description="suggestion-thread reply listed"
+    )
+    (listed,) = record["replies"]
+    REPORT.note(f"list_document_suggestions suggestion-thread reply: {listed!r}")
+    assert listed["post_id"] == reply["post_id"]
+    assert listed["content"] == "e2e suggestion-thread reply"
+    assert listed["author"] and listed["author"]["display_name"]
+
+
+def test_accept_and_reject_collapse_pre_post(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Accept one suggestion, reject another; verify via the
+    suggestionResponses-derived id lists and a re-read (pre/post collapse
+    correctly)."""
+    doc_id = make_scratch_doc("-accept-reject", content="Alpha Omega.")
+    email = ga_auth.email
+    # Suggest at the HIGHER index first: pending suggestions occupy index
+    # space in SUGGESTIONS_INLINE coordinates, so inserting left-to-right
+    # would land inside (and merge into) the earlier suggestion.
+    # "Alpha Omega." -> index 12 is before ".", index 6 is after "Alpha".
+    _suggest_insert(mcp, email, doc_id, " REJECTED-TOKEN", index=12)
+    _suggest_insert(mcp, email, doc_id, " ACCEPTED-TOKEN", index=6)
+
+    listing = _wait_for_suggestions(mcp, email, doc_id, minimum=2)
+    by_token = {}
+    for record in listing["suggestions"]:
+        for token in ("ACCEPTED-TOKEN", "REJECTED-TOKEN"):
+            if token in record["post_text"] and token not in record["pre_text"]:
+                by_token[token] = record["suggestion_id"]
+    assert set(by_token) == {"ACCEPTED-TOKEN", "REJECTED-TOKEN"}, listing
+
+    accept = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": by_token["ACCEPTED-TOKEN"],
+            },
+        )
+    )
+    REPORT.note(
+        "manage_document_suggestion(accept) accepted_suggestion_ids="
+        f"{accept['accepted_suggestion_ids']!r}, "
+        f"verification={accept['verification']!r}"
+    )
+    if accept["accepted_suggestion_ids"]:
+        assert by_token["ACCEPTED-TOKEN"] in accept["accepted_suggestion_ids"]
+    # The accept verifies itself: the target is gone and the text it
+    # promised is what the range now reads.
+    accept_verification = _resolution_verification(accept)
+    assert accept_verification["source"] == "post_write_read"
+    assert accept_verification["still_pending"] is False, accept_verification
+    assert "ACCEPTED-TOKEN" in accept_verification["expected_text"]
+    assert accept_verification["matches_expectation"] is True, accept_verification
+    # Only the sibling suggestion is left, and nothing was collaterally lost.
+    assert accept_verification["pending_suggestion_ids"] == [
+        by_token["REJECTED-TOKEN"]
+    ], accept_verification
+    assert "also_removed_suggestion_ids" not in accept_verification
+
+    reject = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "reject",
+                "suggestion_id": by_token["REJECTED-TOKEN"],
+            },
+        )
+    )
+    REPORT.note(
+        "manage_document_suggestion(reject) rejected_suggestion_ids="
+        f"{reject['rejected_suggestion_ids']!r}, "
+        f"verification={reject['verification']!r}"
+    )
+    if reject["rejected_suggestion_ids"]:
+        assert by_token["REJECTED-TOKEN"] in reject["rejected_suggestion_ids"]
+    reject_verification = _resolution_verification(reject)
+    assert reject_verification["still_pending"] is False, reject_verification
+    # Rejecting an insertion expects the ORIGINAL text back, i.e. the token
+    # must be gone from the range.
+    assert reject_verification["expected_text"] == "", reject_verification
+    assert reject_verification["matches_expectation"] is True, reject_verification
+    assert reject_verification["pending_suggestion_count"] == 0, reject_verification
+
+    def _collapsed():
+        read = tool_json(
+            mcp.call_tool(
+                "get_doc_review_view",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return read if read["suggestion_ids"] == [] else None
+
+    read = poll_until(
+        _collapsed, timeout=30, description="suggestions collapsed after accept/reject"
+    )
+    assert "ACCEPTED-TOKEN" in read["body_text"]
+    assert "REJECTED-TOKEN" not in read["body_text"]
+
+
+def test_accepting_a_deletion_that_spans_a_style_boundary(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """A suggestion prod splits across TWO runs, accepted, against prod.
+
+    Prod chunks a ``textRun`` at every style boundary, so a deletion spanning
+    a bold/regular seam arrives as two deletion-marked runs and the reviewer
+    view renders it ``{-brave-}{- new-}`` -- the base string "brave new" is
+    nowhere in that. The post-write verification used to search the RENDERED
+    text for it and read "not found" as "the accept removed it", so an accept
+    that had not landed reported ``matches_expectation: true`` on the one
+    destructive path these tools have. Nothing in the mock could build the
+    payload (its runs coalesced by mark set alone), so prod is the only
+    oracle this case ever had.
+
+    Both directions are checked here: the accept that lands must say True,
+    and the same split card REJECTED must say True about the text coming
+    back -- which is the mirror comparison, and the one a marker inside the
+    range used to turn into a false alarm.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-split", content="Hello brave new world.")
+
+    # Bold "brave" only -> a style seam between "brave" and " new".
+    styled = tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+                "bold": True,
+            },
+        )
+    )
+    assert "Error" not in styled, styled
+
+    # Suggest deleting "brave new" -- [7, 16), straight across the seam.
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 16,
+            },
+        )
+    )
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+    assert card["pre_text"] == "brave new", card
+    assert card["post_text"] == "", card
+
+    # RECORD: is the deletion really two runs in prod's payload? The reviewer
+    # view is where the split becomes visible, and it is the string the old
+    # check searched.
+    view = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view", {"user_google_email": email, "document_id": doc_id}
+        )
+    )
+    REPORT.note(
+        "style-split deletion, reviewer view: "
+        f"{view['body_text']!r} (marked spans for one suggestion id)"
+    )
+    assert "{-brave-}" in view["body_text"], (
+        "prod did not split the run at the style boundary, so this test no "
+        f"longer exercises the multi-run case: {view['body_text']!r}"
+    )
+    assert "brave new" not in view["body_text"], (
+        "the rendered text contains the base string, so the split did not "
+        f"happen: {view['body_text']!r}"
+    )
+
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": card["suggestion_id"],
+            },
+        )
+    )
+    verification = _resolution_verification(accepted)
+    REPORT.note(f"style-split accept verification: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    assert verification["matches_expectation"] is True, verification
+    assert "resulting_text_unavailable" not in verification, verification
+    assert "brave" not in verification["resulting_text"], verification
+
+    # The mirror: a split card REJECTED expects the struck text back.
+    reject_doc = make_scratch_doc("-split-reject", content="Hello brave new world.")
+    tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "start_index": 7,
+                "end_index": 12,
+                "bold": True,
+            },
+        )
+    )
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "start_index": 7,
+                "end_index": 16,
+            },
+        )
+    )
+    reject_card = _wait_for_suggestions(mcp, email, reject_doc)["suggestions"][0]
+    rejected = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "action": "reject",
+                "suggestion_id": reject_card["suggestion_id"],
+            },
+        )
+    )
+    reject_verification = _resolution_verification(rejected)
+    REPORT.note(f"style-split reject verification: {reject_verification!r}")
+    assert reject_verification["still_pending"] is False, reject_verification
+    assert reject_verification["expected_text"] == "brave new", reject_verification
+    assert reject_verification["matches_expectation"] is True, reject_verification
+
+
+def test_accepting_next_to_another_pending_card_is_verified_not_diagnosed(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Two pending cards ~11 characters apart; accept one, against prod.
+
+    The surviving card's pending insertion falls inside the accepted card's
+    40-character ``context_before`` window. That window is BASE text and
+    carries no markers, but the post-write check used to look for it in the
+    RENDERED text, where the neighbour reads ``{+INSERTED-B +}``: the anchor
+    was not found, and the tool reported ``anchor_not_found`` with a note
+    asserting "the likeliest cause is a concurrent edit by another editor"
+    about a document nobody else had touched.
+
+    Constructible with one account, unlike the overlapping case: prod's
+    same-author merge needs the ranges to abut, and these do not (confirmed
+    by ``test_accept_can_garbage_collect_another_suggestion``, which relies on
+    the opposite).
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-neighbour", content="one two three four.")
+
+    # Highest index first, so the pending insertion cannot shift the range
+    # the deletion was computed against. "three" is [9, 14).
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 9,
+                "end_index": 14,
+            },
+        )
+    )
+    _suggest_insert(mcp, email, doc_id, "INSERTED-B ", index=5)
+
+    listing = _wait_for_suggestions(mcp, email, doc_id, minimum=2)
+    REPORT.note(
+        "two cards ~11 chars apart: "
+        + repr(
+            [
+                (r["suggestion_id"], r["type"], r["pre_text"], r["context_before"])
+                for r in listing["suggestions"]
+            ]
+        )
+    )
+    deletion = next(r for r in listing["suggestions"] if r["type"] == "deletion")
+    insertion = next(r for r in listing["suggestions"] if r["type"] == "insertion")
+    # The anchor is base text, so the neighbour's pending insertion is NOT in
+    # it -- which is exactly the disagreement with the rendered string.
+    assert deletion["context_before"] == "one two ", deletion
+    assert "INSERTED-B" not in deletion["context_before"], deletion
+
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": deletion["suggestion_id"],
+            },
+        )
+    )
+    verification = _resolution_verification(accepted)
+    REPORT.note(f"accept beside a pending neighbour: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    assert verification["matches_expectation"] is True, verification
+    assert "resulting_text_unavailable" not in verification, verification
+    assert "notes" not in verification, verification
+    # The neighbour is untouched and still pending.
+    assert verification["pending_suggestion_ids"] == [insertion["suggestion_id"]], (
+        verification
+    )
+
+
+def test_a_header_entry_carries_the_tab_it_lives_in(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """``get_doc_review_view``'s header entries must be whole addresses.
+
+    Prod MINTS segment ids document-wide but RESOLVES them per tab: a
+    request naming another tab's header id is rejected with "Segment with ID
+    ... was not found". The entries used to be a ``segment_id -> text`` map
+    with no tab anywhere, so an agent reading a header on a multi-tab
+    document had exactly the id that does not work and nothing to fix it
+    with. RECORD what prod does with both.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-tabheader", content="First tab body.")
+
+    created = tool_json(
+        mcp.call_tool(
+            "manage_doc_tab",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "create",
+                "title": "Second tab",
+                "index": 1,
+            },
+        )
+    )
+    assert created["success"], created
+
+    def _two_tabs():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return listing if len(listing.get("tabs") or []) >= 2 else None
+
+    tabs = poll_until(_two_tabs, timeout=30, description="a second tab")["tabs"]
+    tab_ids = [t["tab_id"] for t in tabs]
+
+    header = tool_text(
+        mcp.call_tool(
+            "update_doc_headers_footers",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "section_type": "header",
+                "content": "Header of the first tab.",
+            },
+        )
+    )
+    assert "Error" not in header, header
+
+    def _header_entry():
+        view = tool_json(
+            mcp.call_tool(
+                "get_doc_review_view",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return view if view.get("headers") else None
+
+    view = poll_until(_header_entry, timeout=30, description="a header entry")
+    (entry,) = view["headers"]
+    REPORT.note(f"get_doc_review_view header entry on a two-tab document: {entry!r}")
+    assert entry["segment"] == "header", entry
+    assert entry["segment_id"], entry
+    assert entry["tab_id"] in tab_ids, entry
+    assert entry["text"].startswith("Header of the first tab"), entry
+
+    # The entry is a complete address: writing back with exactly what it says
+    # lands, and the write's own echo agrees about where.
+    echo = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": entry["start_index"],
+                "text": "DRAFT ",
+                "segment_id": entry["segment_id"],
+                "tab_id": entry["tab_id"],
+            },
+        )
+    )
+    echoed = echo["verification"].get("created_suggestions") or echo[
+        "verification"
+    ].get("suggestions_at_edit_range")
+    assert echoed, echo["verification"]
+    for record in echoed:
+        assert record["segment_id"] == entry["segment_id"], record
+        assert record["tab_id"] == entry["tab_id"], record
+
+    # And prod's own refusal, RECORDED: the same segment id WITHOUT its tab.
+    wrong = mcp.call_tool_raw(
+        "suggest_doc_edit",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "start_index": entry["start_index"],
+            "text": "X",
+            "segment_id": entry["segment_id"],
+            "tab_id": [t for t in tab_ids if t != entry["tab_id"]][0],
+        },
+    )
+    REPORT.note(
+        "a header segment id addressed in the WRONG tab: "
+        + ("ERROR: " + tool_text(wrong)[:220] if wrong.is_error else "accepted (!)")
+    )
+    assert wrong.is_error, (
+        "prod accepted a segment id in a tab it does not belong to; the "
+        "per-tab resolution this entry's tab_id exists for does not hold: "
+        + tool_text(wrong)[:300]
+    )
+
+
+def test_accept_can_garbage_collect_another_suggestion(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Does prod really GC a suggestion an accept empties out? RECORD it.
+
+    SPEC §7 + §11.1 I2 say a suggestion whose last marked character
+    disappears must leave the registry, and the mock implements exactly
+    that -- but until this test ran, prod agreeing was an ASSUMPTION, and
+    the whole collateral-removal report in manage_document_suggestion
+    rests on it.
+
+    Construction (single account, so §6 same-author merge is the risk):
+    strike "brave", then suggest an insertion INSIDE the struck run.
+    Accepting the deletion deletes the struck characters, and the
+    insertion has nowhere left to live. Two outcomes are legitimate and
+    both are recorded:
+
+    - prod merged the two into one suggestion (§6) -> the construction is
+      unreachable for one author; the GC rule stays unconfirmed and the
+      test records that instead of failing;
+    - prod kept them apart -> accepting the deletion must remove the
+      insertion too, AND our tool must have said so in
+      ``verification.also_removed_suggestion_ids``.
+    """
+    doc_id = make_scratch_doc("-gc", content="Hello brave world.")
+    email = ga_auth.email
+
+    # "brave" is [7, 12) in "Hello brave world.".
+    deletion = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+            },
+        )
+    )
+    assert deletion["mode"] == "deletion"
+    # Index 9 sits between "br" and "ave", i.e. inside the struck run. A
+    # pending deletion keeps its characters in the SUGGESTIONS_INLINE
+    # coordinate space, so the index needs no shifting.
+    inside = _suggest_insert(mcp, email, doc_id, "XY", index=9)
+    REPORT.note(
+        "GC construction: deletion ids="
+        f"{deletion['created_suggestion_ids']!r}, insertion-inside-it ids="
+        f"{inside['created_suggestion_ids']!r}"
+    )
+
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    ids = [r["suggestion_id"] for r in listing["suggestions"]]
+    summaries = [r["summary_text"] for r in listing["suggestions"]]
+    REPORT.note(
+        f"after both edits prod reports {len(ids)} suggestion(s): "
+        f"{ids!r} / {summaries!r} -- SPEC §6 same-author merge is "
+        f"{'CONFIRMED' if len(ids) == 1 else 'NOT observed'} for two "
+        "overlapping same-author edits made in separate batches"
+    )
+
+    if len(ids) < 2:
+        REPORT.note(
+            "prod collapsed the two edits into one suggestion, so a "
+            "single-account collateral-GC construction is unreachable: "
+            "SPEC §11.1 I2 remains ASSUMED against prod (the mock "
+            "implements it and the unit tests cover our reporting of it)."
+        )
+        # A merged edit gets NO created id from the API, so the echo must
+        # fall back to the suggestion now covering the edited range -- the
+        # write must never come back with nothing to verify against.
+        assert inside["created_suggestion_ids"] == [], inside
+        merged = inside["verification"]
+        REPORT.note(f"merged-edit verification block: {merged!r}")
+        assert merged["created_suggestions"] == [], merged
+        (echo,) = merged["suggestions_at_edit_range"]
+        assert echo["suggestion_id"] == ids[0], (echo, ids)
+        # The merged card means "replace 'brave' with 'XY'" -- which is what
+        # the echo has to say, since the agent asked for neither.
+        assert echo["pre_text"] == "brave", echo
+        assert echo["post_text"] == "XY", echo
+        assert "merges into it" in merged["notes"][0]
+        return
+
+    deletion_id = next(
+        r["suggestion_id"] for r in listing["suggestions"] if not r["post_text"]
+    )
+    other_ids = [sid for sid in ids if sid != deletion_id]
+
+    accept = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": deletion_id,
+            },
+        )
+    )
+    verification = accept["verification"]
+    survivors = verification["pending_suggestion_ids"]
+    collateral = verification.get("also_removed_suggestion_ids", [])
+    REPORT.note(
+        f"accepting the deletion {deletion_id!r} left {survivors!r} pending; "
+        f"the tool reported also_removed={collateral!r}. SPEC §11.1 I2 "
+        f"(accept GCs a suggestion it empties) is "
+        f"{'CONFIRMED against prod' if collateral else 'NOT observed'}."
+    )
+
+    gone = [sid for sid in other_ids if sid not in survivors]
+    # Whatever prod did, the tool must have REPORTED it: every id that
+    # disappeared alongside our accept has to be named, or the agent is
+    # back to discovering it as an unexplained error later.
+    assert sorted(collateral) == sorted(gone), (
+        "collateral detection disagrees with the post-write listing: "
+        f"reported {collateral!r}, actually gone {gone!r}"
+    )
+    if collateral:
+        (note,) = verification["notes"]
+        assert deletion_id in note and collateral[0] in note, note
+
+
+# ---------------------------------------------------------------------------
+# Sad paths - each records the REAL error shape for the probe classifier
+# ---------------------------------------------------------------------------
+
+
+def _record_and_classify(label: str, error_text: str) -> None:
+    """Record a real preview error shape + assert classifier agreement.
+
+    All these errors come from semantically-invalid PREVIEW requests made
+    by ENROLLED credentials, so the classifier must call them 'available'
+    (a 400 whose message is NOT an unknown-field parse failure). If this
+    fails, reality diverged from the chunk-3 patterns - fix
+    gdocs_preview/preview_status.py, which is in scope for the e2e chunk.
+    """
+    from gdocs_preview.preview_status import classify_preview_error
+
+    status = 400 if "400" in error_text else None
+    REPORT.record_error_shape(label, status, error_text)
+    if status == 400:
+        availability, reason = classify_preview_error(status, error_text)
+        assert availability == "available", (
+            f"{label}: enrolled semantic-400 misclassified as {availability!r} "
+            f"({reason}); real message: {error_text[:300]!r}"
+        )
+
+
+def test_double_accept_same_suggestion(preview_ready, mcp, ga_auth, base_doc):
+    _suggest_insert(mcp, ga_auth.email, base_doc, " DOUBLE-ACCEPT", index=5)
+    listing = _wait_for_suggestions(mcp, ga_auth.email, base_doc)
+    suggestion_id = listing["suggestions"][0]["suggestion_id"]
+    args = {
+        "user_google_email": ga_auth.email,
+        "document_id": base_doc,
+        "action": "accept",
+        "suggestion_id": suggestion_id,
+    }
+    tool_json(mcp.call_tool("manage_document_suggestion", dict(args)))
+
+    second = mcp.call_tool_raw("manage_document_suggestion", dict(args))
+    text = tool_text(second)
+    if second.is_error:
+        _record_and_classify("double-accept same suggestion", text)
+        # The id is gone because WE removed it, and the error must say so
+        # rather than leaving "does not exist" to look like a typo.
+        assert "You accepted it yourself" in text, text
+        assert "list_document_suggestions" in text, text
+    else:
+        # Preview docs: thread/suggestion updates may no-op with a
+        # commentUpdateState instead of erroring.
+        response = tool_json(second)
+        REPORT.record_error_shape(
+            "double-accept same suggestion (non-error)",
+            200,
+            f"accepted_suggestion_ids={response['accepted_suggestion_ids']!r}, "
+            f"comment_update_state={response.get('comment_update_state')!r}",
+        )
+        assert response["suggestion_id"] == suggestion_id
+
+
+def test_a_reject_that_takes_no_effect_is_never_reported_as_a_match(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Is the API's HTTP-200-no-op resolution reachable, and what does it say?
+
+    A REJECT is invisible in base text: the suggestion's insertion is
+    stripped from base text whether or not it was rejected, its deletion
+    kept either way, so the post-write text check reads what the card
+    promised in BOTH worlds and only the pending set separates them. The
+    verdict is therefore derived from the pending set first
+    (``write_tools._ResolutionVerdict``), and this asks prod whether the
+    branch that derivation exists for is reachable at all -- the mock cannot
+    answer it, because a 200-no-op is an API behaviour, not an analysis one.
+
+    Both outcomes are RECORDED. The assertions are the invariant, which must
+    hold whichever branch prod takes: a reject that left the id pending is
+    never a match, and a reject that removed it is verified by the text as
+    before.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-noop-reject", content="Alpha Omega.")
+    _suggest_insert(mcp, email, doc_id, " NOOP-REJECT", index=6)
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+    args = {
+        "user_google_email": email,
+        "document_id": doc_id,
+        "action": "reject",
+        "suggestion_id": card["suggestion_id"],
+    }
+
+    first = tool_json(mcp.call_tool("manage_document_suggestion", dict(args)))
+    verification = _resolution_verification(first)
+    REPORT.note(f"reject that landed, verification: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    # The reject really is the case the text cannot decide: the range reads
+    # the same string it would have read had nothing happened.
+    assert verification["expected_text"] == "", verification
+    assert verification["matches_expectation"] is True, verification
+
+    # Now the same reject again -- the documented no-op path.
+    second = mcp.call_tool_raw("manage_document_suggestion", dict(args))
+    text = tool_text(second)
+    if second.is_error:
+        REPORT.record_error_shape(
+            "reject an already-rejected suggestion", 0, text[:400]
+        )
+        # Not reachable as a 200 here: prod refuses the id outright, and the
+        # refusal names our own earlier write rather than reading as a typo.
+        assert "You rejected it yourself" in text, text
+    else:
+        response = tool_json(second)
+        repeat = _resolution_verification(response)
+        REPORT.record_error_shape(
+            "reject an already-rejected suggestion (non-error)",
+            200,
+            f"rejected_suggestion_ids={response['rejected_suggestion_ids']!r}, "
+            f"comment_update_state={response.get('comment_update_state')!r}, "
+            f"still_pending={repeat['still_pending']!r}, "
+            f"matches_expectation={repeat['matches_expectation']!r}",
+        )
+        REPORT.note(
+            "the HTTP-200 no-op resolution IS reachable against prod (a "
+            "repeat reject answers 200 with an empty id list rather than "
+            "erroring); still_pending="
+            f"{repeat['still_pending']!r}, matches_expectation="
+            f"{repeat['matches_expectation']!r}. A no-op whose id is ALSO "
+            "still pending needs a second account (a reject refused for "
+            "permissions) and is not constructible here; the assertion "
+            "below is what would catch it. Full verification: "
+            f"{repeat!r}"
+        )
+        if repeat["still_pending"]:
+            # The round-5 HIGH, live: the text says the reject landed and
+            # the pending set says it did not. The pending set wins.
+            assert repeat["matches_expectation"] is False, repeat
+            assert any("pending set" in note for note in repeat["notes"]), repeat
+
+
+def test_a_degraded_post_write_read_never_reports_a_landing(
+    preview_ready, mcp, ga_auth, degraded_read_mcp, make_scratch_doc
+):
+    """Round 6 HIGH 1+2, against prod: a read that cannot see the tab.
+
+    The degradation is REAL, not simulated. The two reads this service makes
+    run on different HTTP stacks -- the thread-bearing preview read is a raw
+    ``google.auth.transport.requests.AuthorizedSession`` (requests), the
+    fallback is ``documents.get`` through googleapiclient (httplib2) -- and
+    only the first honours ``REQUESTS_CA_BUNDLE``. Pointing it at a CA file
+    with no certificates in it is a production misconfiguration (a corporate
+    TLS bundle deployed wrong), it involves no product code that knows tests
+    exist, and it breaks exactly the read whose failure this fix is about:
+    the server answers ``read_source: "ga_documents_get"`` with one unnamed
+    body and no tab ids, exactly as an unenrolled or lapsed project would.
+
+    What the old code did here, on the DESTRUCTIVE path: reported
+    ``still_pending: false`` -- absence from a read that never looked -- and
+    pointed the agent at that field as "the evidence about whether the
+    resolution itself took effect".
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-degraded", content="Alpha Omega.")
+    _suggest_insert(mcp, email, doc_id, " DEGRADED", index=6)
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+
+    # The degraded server has its own process and therefore its own ledger:
+    # it has never listed this id, which is itself one of the two ways the
+    # post-write read ends up unable to answer.
+    resolved = tool_json(
+        degraded_read_mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": card["suggestion_id"],
+            },
+        )
+    )
+    verification = _resolution_verification(resolved)
+    REPORT.note(f"degraded-read accept verification: {verification!r}")
+
+    assert verification["read_source"] == "ga_documents_get", (
+        "the preview read did NOT degrade, so this test did not exercise a "
+        "blind post-write read. REQUESTS_CA_BUNDLE no longer selects the raw "
+        f"authorized request: {verification!r}"
+    )
+    # The whole finding, live: absence from a read that could not look is not
+    # a landing, and the response says so instead of claiming one.
+    assert verification["still_pending"] is None, verification
+    assert verification["still_pending_unavailable"] in (
+        "segment_not_in_read",
+        "read_incomplete",
+    ), verification
+    assert verification["matches_expectation"] is None, verification
+    note = next(n for n in verification["notes"] if "UNKNOWN" in n)
+    assert "not evidence" in note, note
+    assert "list_document_suggestions" in note, note
+    # And no note tells the agent to trust the field that is now null.
+    for note in verification["notes"]:
+        assert "`still_pending` is the evidence" not in note, note
+
+    # The accept itself landed -- verification never fails a real mutation --
+    # and the fully-sighted session is where that is confirmed.
+    after = _list_suggestions(mcp, email, doc_id)
+    assert after["read_source"] == "preview_threads", after.get("degraded_reason")
+    assert after["suggestion_count"] == 0, after
+    REPORT.note(
+        "the degraded-read accept DID land (the enrolled session lists 0 "
+        "pending suggestions afterwards) -- the tool declined to claim it, "
+        "which is the point: it had no evidence either way."
+    )
+
+
+def test_accept_nonexistent_suggestion_id(preview_ready, mcp, ga_auth, scratch_doc):
+    """Feeds the probe classifier the enrolled semantic-400 shape.
+
+    The design note documents that a nonexistent id may surface as a 400
+    error OR as an HTTP 200 no-op - both branches are recorded.
+    """
+    result = mcp.call_tool_raw(
+        "manage_document_suggestion",
+        {
+            "user_google_email": ga_auth.email,
+            "document_id": scratch_doc,
+            "action": "accept",
+            "suggestion_id": "e2e-nonexistent-suggestion-id",
+        },
+    )
+    text = tool_text(result)
+    if result.is_error:
+        assert "400" in text or "404" in text, text
+        _record_and_classify("accept nonexistent suggestion id", text)
+    else:
+        response = tool_json(result)
+        REPORT.record_error_shape(
+            "accept nonexistent suggestion id (non-error)",
+            200,
+            f"accepted_suggestion_ids={response['accepted_suggestion_ids']!r}, "
+            f"comment_update_state={response.get('comment_update_state')!r}",
+        )
+        assert response["accepted_suggestion_ids"] == []
+
+
+def test_reply_to_resolved_thread(preview_ready, mcp, ga_auth, base_doc):
+    args = {"user_google_email": ga_auth.email, "document_id": base_doc}
+    created = _create_anchored_comment(mcp, ga_auth.email, base_doc, "resolve me", 1, 4)
+    comment_id = created["comment_id"]
+
+    # Resolve through the Drive surface (GA path a human reviewer uses).
+    resolve = mcp.call_tool_raw(
+        "manage_document_comment",
+        {**args, "action": "resolve", "comment_id": comment_id},
+    )
+    REPORT.note(
+        "resolve preview thread via manage_document_comment(action=resolve): "
+        + ("ERROR: " + tool_text(resolve)[:200] if resolve.is_error else "ok")
+    )
+    if resolve.is_error:
+        pytest.skip(
+            "preview thread id could not be resolved through the Drive GA "
+            "surface - interop outcome recorded in the run report."
+        )
+
+    after = mcp.call_tool_raw(
+        "reply_to_doc_thread",
+        {**args, "reply_content": "reply after resolve", "comment_id": comment_id},
+    )
+    text = tool_text(after)
+    if after.is_error:
+        _record_and_classify("reply to resolved thread", text)
+    else:
+        response = tool_json(after)
+        REPORT.record_error_shape(
+            "reply to resolved thread (non-error)",
+            200,
+            f"post_id={response['post_id']!r}, "
+            f"comment_update_state={response['comment_update_state']!r}",
+        )
+
+
+def test_reply_to_deleted_thread(preview_ready, mcp, ga_auth, base_doc):
+    args = {"user_google_email": ga_auth.email, "document_id": base_doc}
+    created = _create_anchored_comment(mcp, ga_auth.email, base_doc, "delete me", 1, 4)
+    comment_id = created["comment_id"]
+
+    delete = mcp.call_tool_raw(
+        "manage_document_comment",
+        {**args, "action": "delete", "comment_id": comment_id},
+    )
+    REPORT.note(
+        "delete preview thread via manage_document_comment(action=delete): "
+        + ("ERROR: " + tool_text(delete)[:200] if delete.is_error else "ok")
+    )
+    if delete.is_error:
+        pytest.skip(
+            "preview thread id could not be deleted through the Drive GA "
+            "surface - interop outcome recorded in the run report."
+        )
+
+    after = mcp.call_tool_raw(
+        "reply_to_doc_thread",
+        {**args, "reply_content": "reply after delete", "comment_id": comment_id},
+    )
+    text = tool_text(after)
+    if after.is_error:
+        _record_and_classify("reply to deleted thread", text)
+    else:
+        response = tool_json(after)
+        REPORT.record_error_shape(
+            "reply to deleted thread (non-error)",
+            200,
+            f"post_id={response['post_id']!r}, "
+            f"comment_update_state={response['comment_update_state']!r}",
+        )
+        # A deleted thread must not silently accept new posts.
+        assert response["comment_update_state"], response
+
+
+# NOTE: the old generated-surface probe for a SUGGEST-incompatible request
+# type (createNamedRange + writeMode=SUGGEST via the raw batchUpdate tool)
+# is DROPPED: suggest_doc_edit only ever emits insertText and
+# deleteContentRange - both SUGGEST-compatible - so the shape is
+# unreachable through the native surface
+# (docs/plans/2026-07-14-native-integration.md section 5). Likewise the raw
+# partial-failure batch probe (insertComment + bogus deleteComment): no raw
+# batchUpdate tool remains, and single-request commentUpdateState
+# enforcement lives in the write tools' shared helper (unit-tested).
+
+
+def test_suggest_doc_edit_validation_sad_paths(mcp, ga_auth, scratch_doc):
+    """Blackbox UserInputError shapes of the native suggest tool.
+
+    Deliberately NOT gated on preview_ready: validation rejects before
+    any API call, so these must hold for any token, enrolled or not.
+    """
+    args = {"user_google_email": ga_auth.email, "document_id": scratch_doc}
+
+    error_text = mcp.expect_tool_error("suggest_doc_edit", {**args, "start_index": 5})
+    assert (
+        "Provide text (insertion), end_index (deletion), or both (replacement)."
+        in error_text
+    )
+
+    error_text = mcp.expect_tool_error(
+        "suggest_doc_edit", {**args, "start_index": 5, "end_index": 5, "text": "x"}
+    )
+    assert "must be greater than start_index" in error_text
+
+    error_text = mcp.expect_tool_error(
+        "suggest_doc_edit", {**args, "start_index": 0, "text": "x"}
+    )
+    assert "start_index must be >= 1" in error_text

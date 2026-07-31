@@ -1,0 +1,22 @@
+{
+  "id": "ix-vanished-id",
+  "difficulty": "medium",
+  "steps": 4,
+  "tags": ["suggestions", "accept", "reject", "concurrency", "interference"],
+  "authors": ["bob", "carol"],
+  "n_suggestions": 2,
+  "interferences": [
+    {
+      "name": "bob-accepts-own-fix",
+      "kind": "resolve_under_agent",
+      "editor": "bob",
+      "document_id": "ix-doc-launch",
+      "trigger": {
+        "when": "after",
+        "tool": ["list_document_suggestions", "get_doc_review_view"],
+        "nth": 1
+      },
+      "params": {"suggestion_id": "sug.bob.2", "action": "accept"}
+    }
+  ]
+}

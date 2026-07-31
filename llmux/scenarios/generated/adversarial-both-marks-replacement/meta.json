@@ -1,0 +1,23 @@
+{
+  "id": "adversarial-both-marks-replacement",
+  "difficulty": 5,
+  "steps": 2,
+  "tags": [
+    "both-marks",
+    "merge",
+    "replacement",
+    "trap",
+    "multi-author"
+  ],
+  "authors": [
+    "alice",
+    "bob"
+  ],
+  "n_suggestions": 2,
+  "tier": "adversarial",
+  "document_id": "mockdoc-a3-both-marks",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

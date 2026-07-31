@@ -1,0 +1,25 @@
+{
+  "id": "hard-utf16-emoji-anchors",
+  "difficulty": 4,
+  "steps": 11,
+  "tags": [
+    "multi-author",
+    "utf16",
+    "emoji",
+    "combining",
+    "comments",
+    "anchor"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 9,
+  "tier": "hard",
+  "document_id": "mockdoc-h3-utf16",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

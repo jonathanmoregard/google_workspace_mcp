@@ -1,0 +1,983 @@
+{
+  "document_id": "mockdoc-stress-120-forecasting-evidence",
+  "final_text": "Does forecasting research actually improve decisions?\nA summary of the evidence, written for people deciding whether to fund or work on it.\nSummary\nThe evidence that structured forecasting improves the accuracy of predictions is probably strong. The evidence that it improves the quality of decisions is much weaker. The, and the gap between those two claims is where most of the disagreement in this field lives. We reviewed 34 studies, 4 large tournaments, and interviewed 11 practitioners inside government and philanthropy, on the best public numbers we could find. We conclude the accuracy findings are real and replicated, that the decision-quality findings rest on a handful of case studies, and that the main bottleneck is arguably institutional rather than methodological.\nThis piece is aimed at people choosing between research agendas, not at forecasters looking to improve their scores.\nThe claim we are evaluating\nThe strong version of the claim goes something like this: organisations make consequential decisions under uncertainty, they nowcurrently do so using unquantified expert judgment, that judgement is poorly calibrated, and replacing it with aggregated probabilistic forecasts would produce better outcomes. Each of the four steps is doing real work, and it is important to remember that the last one is the only one anybody cares about.\nWe separate the claim into three testable pieces:\n1. Trained forecasters are we think more accurate than untrained ones on resolvable questions (source: our 2024 practitioner interviews).\n2. Aggregation methods improve accuracy beyond what any individual achieves (Mellers et al., 2014).\n3. Organisations that adopt these methods make measurably better decisions (Mellers et al., 2014).\nThe first two are well supported. The third is not. In our view it is the one worth working on.\nWhat the tournament evidence shows\nThe forecasting tournaments run between 2011 and 2015 remain the cleanest evidence available (source: our 2024 practitioner interviews). That said, aggregatingAggregating and extremising a group of trained forecasters beat the intelligence community's classified baseline by a wide margin. Individual accuracy also improved with a short course in probability training, typically an hour of material, which is a cheap intervention for the effect reported.\nThis is one of the most robust findings in the judgement literature. By contrast, itResearchers have replicated it in at least three latersubsequent tournaments, including two run outside the United States and one restricted to epidemiological questions during 2020, though the underlying estimate is uncertain.\nA few details are worth stating precisely, because they are often misquoted:\nThe improvement from probability trainingcalibration training is roughly 10% in Brier score terms, not 10 percentage points of accuracy (see the references at the end).\nThe expert forecaster effect is partly selection and partly training, and the published decompositions disagree about the split.\nTeam effects are large and are usually reported as if they were individual effects.\nThe effect sizes reported in the literature are large. Forecasting tournaments select for a particular kind of question. This matters more than it might appear. We return to it below.\nThere is we think a further result that gets less attention and that we think is more useful to funders. Accuracy improvements from aggregation are largely independent of accuracy improvements from training, which means the two interventions stack. An organization that does neither can get most of the available benefit by doing the cheaper one first, and the cheaper one is almost always aggregation, because it needs no behavior change from the people being aggregated.\nThe counterpoint, raised by several of the practitioners we interviewed, is that aggregation without training produces confident-looking numbers that nobody in the organization understands well enough to argue with. Whether that is better or worse than unquantified judgmentjudgement is genuinely unclear to us. We, and we could not find a study that addresses it.\nWhat happens inside organisations\nThis is where the evidence thins out dramatically. We identified nine organizationsorganisations that have probably run an internal forecasting program for at least two years: three government agencies, four philanthropic funders, and two firms. Of those, only two have attempted any evaluation of whether the forecasts changed a decision, and neither evaluation was blinded.\nThe practitioners we interviewed were probably consistent about the ways this goes wrongfailure modes. Forecasts arrive after the decision has in effecteffectively been made. That said, theThe questions that get asked are the ones that are easy to resolve rather than the ones that are essentialload-bearing. By contrast, seniorSenior staff treat a probability as a hedge rather than as information. SeveralA number of respondents said the main value they had observed was cultural: teams that forecast argue more precisely, even when nobody looks at the numbers afterwards.\nThat cultural claim is plausible and almost unevidenced. A longer version of this section appeared in our 2023 annual review.\nThe two organisations that did try an evaluation are on balance worth describing, because their designs illustrate how hard this is. Even so, theThe first compared decisions made in quarters when the forecasting team was active against quarters when it was on balance not, and found no detectable difference, which the authors attribute to the questions being unrelated to the decisions actually taken. Even so, theThe second surveyed decision-makers about whether a forecast had changed their view. Found that 60% said yes, which tells us about recall and self-image rather than about decisions.\nWe want to be careful not to overclaim in the other direction. Absence of evidence here is genuinely weak evidence of absence, because the studies that would detect an effect have mostly not been run, and running them needs an organisation willing to randomize something it cares about. Very few organisations are willing to do that, and the ones that are tend to be unusual in ways that limit what you can generalise from them.\nA rough quantitative model\nTo make the comparison concrete we built a simple model of the value of an internal program. Even so, theThe inputs are crude and we encourage readers to substitute their own.\nAnnual cost of a programme, 5 staff, fully loaded: $750,000\nDecisions informed per year: 40\nBudget governed by those decisions: $400 million\nImprovement in expected value per decision, central estimate: 1.5%\nImplied annual value created: $6 million$6M\nWe estimate that a well-run internal forecasting programme costs about 0.2 percent of the budget it informs. By contrast, theThe central estimate for value created is therefore roughly eight times the cost. The confidence interval spans zero, because the improvement-per-decision term is arguably not measured anywhere. We are in effect assuming the conclusion.\nThe honest summary of this model is that it tells you what you would need to believe, not what is true. We include it because several funders asked for a number. A, and a transparent bad number is more useful than a private one.\nLimitations of this evidence\nPublication bias is a serious concern here. The field is small, the researchers are often the same people who run the tournaments, and negative results about a method you developed are hard to publish and harder to fund.\nQuestion selection is the deeper problem. Tournament questions resolve within twelve months, have unambiguous resolution criteria, and concern events that a well-read generalist can reason about. The decisions that matter most to the organisations we studied have none of those properties. Whether a research programme will pay off over fifteen years is not a question a tournament can score.\nFinally, almost all of this work measures accuracy against outcomes rather than decision quality against counterfactuals. A perfectly calibrated forecast attached to a decision nobody revisits creates no value at all.\nA fourth limitation is that we have very little evidence about persistence. Nearly every programme we looked at was under five years old, and the two that are older have both been through a period of reduced activity. Whether an internal forecasting function survives a change of leadership, a budget cut, or a high-profile miss is an empirical question with essentially no data behind it, and it bears directly on how a funder should discount future value.\nWe should also note our own position. Two of the authors have previously received funding from an organisation that runs forecasting tournaments, and one has served as a paid question writer. We do not think this has changed our conclusions, which is exactly what someone in our position would say, so we mention it and let readers apply their own discount.\nWhat would change our mind\nWe would raise our estimate if we saw a preregistered trial in that comparable teams made comparable decisions with and without forecast input. The, and the forecast-informed teams did measurably better on an outcome specified in advance.\nWe would lower it if a serious replication effort found the tournament effects shrink under stricter question selection, or if the two organisations now attempting internal evaluations report null results.\nWe would also update on cheaper evidence than that. If someone published a careful account of a decision that was demonstrably changed by a forecast, with the difference-makingcounterfactual documented at the time rather than reconstructed afterwards, we would treat it as a meaningful data point even though it is a single case. The reason is that the theory currently has arguably no worked example at all, and one worked example moves you a surprising distance when the prior is that far from zero.\nConversely, we would become considerably more pessimistic if the pattern reported by our interviewees turns out to be universal: that questions are selected for resolvability rather than importance, and that this is not a start-up problem but a stable equilibrium, because the people choosing questions are rewarded for a clean scoreboard rather than a useful one.\nWe think the case for funding more of this work is strong. The full dataset is available on request.\nReferences\nTetlock and Gardner, Superforecasting, 2015, on the best public numbers we could find. The popular treatment; the underlying papers are more careful than the book.\nMellers et al., Psychological Science, 2014. The main tournament result, including the training effect.\nKarvetski et al., Decision Analysis, 2021 (source: our 2024 practitioner interviews). Aggregation methods compared on a common dataset.\nOur own interview notes, anonymized, 2024, and the spread across sources is wide. We are grateful to several reviewers for comments on an earlier draft.\n",
+  "surviving_suggestion_ids": [
+    "sug.dana.10",
+    "sug.dana.12",
+    "sug.dana.14",
+    "sug.dana.19",
+    "sug.dana.2",
+    "sug.dana.21",
+    "sug.dana.22",
+    "sug.dana.24",
+    "sug.dana.25",
+    "sug.dana.29",
+    "sug.dana.6",
+    "sug.dana.7",
+    "sug.marcus.1",
+    "sug.marcus.12",
+    "sug.marcus.15",
+    "sug.marcus.17",
+    "sug.marcus.19",
+    "sug.marcus.20",
+    "sug.marcus.22",
+    "sug.marcus.29",
+    "sug.marcus.3",
+    "sug.marcus.31",
+    "sug.marcus.36",
+    "sug.marcus.37",
+    "sug.marcus.38",
+    "sug.marcus.40",
+    "sug.marcus.5",
+    "sug.nadia.1",
+    "sug.nadia.10",
+    "sug.nadia.12",
+    "sug.nadia.15",
+    "sug.nadia.16",
+    "sug.nadia.2",
+    "sug.nadia.6"
+  ],
+  "resolved": {
+    "sug.dana.8": "rejected",
+    "sug.sam.19": "accepted",
+    "sug.priya.55": "accepted",
+    "sug.priya.53": "accepted",
+    "sug.priya.44": "accepted",
+    "sug.dana.16": "accepted",
+    "sug.sam.3": "accepted",
+    "sug.sam.9": "accepted",
+    "sug.sam.6": "accepted",
+    "sug.priya.64": "accepted",
+    "sug.sam.11": "accepted",
+    "sug.sam.10": "accepted",
+    "sug.marcus.28": "rejected",
+    "sug.priya.41": "accepted",
+    "sug.marcus.24": "rejected",
+    "sug.priya.22": "rejected",
+    "sug.priya.15": "accepted",
+    "sug.sam.17": "accepted",
+    "sug.sam.4": "accepted",
+    "sug.priya.35": "accepted",
+    "sug.sam.2": "accepted",
+    "sug.sam.21": "accepted",
+    "sug.priya.66": "accepted",
+    "sug.marcus.9": "rejected",
+    "sug.priya.40": "rejected",
+    "sug.marcus.26": "rejected",
+    "sug.priya.57": "accepted",
+    "sug.priya.43": "accepted",
+    "sug.priya.3": "accepted",
+    "sug.priya.26": "accepted",
+    "sug.priya.17": "accepted",
+    "sug.priya.28": "accepted",
+    "sug.priya.62": "accepted",
+    "sug.priya.38": "accepted",
+    "sug.priya.13": "accepted",
+    "sug.marcus.16": "rejected",
+    "sug.sam.13": "rejected",
+    "sug.priya.31": "accepted",
+    "sug.priya.54": "accepted",
+    "sug.sam.12": "accepted",
+    "sug.priya.61": "accepted",
+    "sug.priya.37": "accepted",
+    "sug.dana.23": "rejected",
+    "sug.priya.7": "accepted",
+    "sug.priya.11": "accepted",
+    "sug.priya.19": "accepted",
+    "sug.priya.45": "accepted",
+    "sug.sam.15": "accepted",
+    "sug.priya.51": "accepted",
+    "sug.marcus.7": "rejected",
+    "sug.sam.5": "rejected",
+    "sug.priya.24": "accepted",
+    "sug.priya.59": "accepted",
+    "sug.marcus.14": "rejected",
+    "sug.nadia.4": "rejected",
+    "sug.nadia.7": "rejected",
+    "sug.marcus.11": "rejected",
+    "sug.priya.33": "rejected",
+    "sug.priya.39": "rejected",
+    "sug.nadia.13": "rejected",
+    "sug.priya.1": "rejected",
+    "sug.nadia.8": "rejected",
+    "sug.marcus.39": "rejected",
+    "sug.priya.47": "rejected",
+    "sug.dana.27": "rejected",
+    "sug.marcus.35": "rejected",
+    "sug.priya.21": "rejected",
+    "sug.priya.49": "rejected",
+    "sug.priya.29": "accepted",
+    "sug.sam.8": "accepted",
+    "sug.sam.20": "accepted",
+    "sug.dana.17": "accepted",
+    "sug.priya.9": "accepted",
+    "sug.nadia.5": "rejected",
+    "sug.dana.4": "rejected",
+    "sug.marcus.34": "rejected",
+    "sug.priya.14": "rejected",
+    "sug.dana.5": "rejected",
+    "sug.sam.18": "rejected",
+    "sug.priya.12": "accepted",
+    "sug.priya.5": "accepted",
+    "sug.nadia.3": "rejected",
+    "sug.dana.15": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Does forecasting research actually improve decisions?\nA summary of the evidence, written for people deciding whether to fund or work on it.\nSummary\nThe evidence that structured forecasting improves the accuracy of predictions is strong. The evidence that it improves the quality of decisions is much weaker, and the gap between those two claims is where most of the disagreement in this field lives. We reviewed 34 studies, 4 large tournaments, and interviewed 11 practitioners inside government and philanthropy, on the best public numbers we could find. We conclude the accuracy findings are real and replicated, that the decision-quality findings rest on a handful of case studies, and that the main bottleneck is institutional rather than methodological.\nThis piece is aimed at people choosing between research agendas, not at forecasters looking to improve their scores.\nThe claim we are evaluating\nThe strong version of the claim goes something like this: organisations make consequential decisions under uncertainty, they currently do so using unquantified expert judgment, that judgement is poorly calibrated, and replacing it with aggregated probabilistic forecasts would produce better outcomes. Each of the four steps is doing real work, and it is important to remember that the last one is the only one anybody cares about.\nWe separate the claim into three testable pieces:\n1. Trained forecasters are more accurate than untrained ones on resolvable questions (source: our 2024 practitioner interviews).\n2. Aggregation methods improve accuracy beyond what any individual achieves (Mellers et al., 2014).\n3. Organisations that adopt these methods make measurably better decisions (Mellers et al., 2014).\nThe first two are well supported. The third is not. In our view it is the one worth working on.\nWhat the tournament evidence shows\nThe forecasting tournaments run between 2011 and 2015 remain the cleanest evidence available (source: our 2024 practitioner interviews). That said, aggregatingAggregating and extremising a group of trained forecasters beat the intelligence community's classified baseline by a wide margin. Individual accuracy also improved with a short course in probability training, typically an hour of material, which is a cheap intervention for the effect reported.\nThis is one of the most robust findings in the judgement literature. By contrast, itResearchers have replicated it in at least three subsequent tournaments, including two run outside the United States and one restricted to epidemiological questions during 2020, though the underlying estimate is uncertain.\nA few details are worth stating precisely, because they are often misquoted:\nThe improvement from calibration training is roughly 10% in Brier score terms, not 10 percentage points of accuracy (see the references at the end).\nThe expert forecaster effect is partly selection and partly training, and the published decompositions disagree about the split.\nTeam effects are large and are usually reported as if they were individual effects.\nThe effect sizes reported in the literature are large. Forecasting tournaments select for a particular kind of question. This matters more than it might appear. We return to it below.\nThere is a further result that gets less attention and that we think is more useful to funders. Accuracy improvements from aggregation are largely independent of accuracy improvements from training, which means the two interventions stack. An organization that does neither can get most of the available benefit by doing the cheaper one first, and the cheaper one is almost always aggregation, because it needs no behavior change from the people being aggregated.\nThe counterpoint, raised by several of the practitioners we interviewed, is that aggregation without training produces confident-looking numbers that nobody in the organization understands well enough to argue with. Whether that is better or worse than unquantified judgement is genuinely unclear to us, and we could not find a study that addresses it.\nWhat happens inside organisations\nThis is where the evidence thins out dramatically. We identified nine organisations that have run an internal forecasting program for at least two years: three government agencies, four philanthropic funders, and two firms. Of those, only two have attempted any evaluation of whether the forecasts changed a decision, and neither evaluation was blinded.\nThe practitioners we interviewed were consistent about the failure modes. Forecasts arrive after the decision has effectively been made. The questions that get asked are the ones that are easy to resolve rather than the ones that are load-bearing. By contrast, seniorSenior staff treat a probability as a hedge rather than as information. A number of respondents said the main value they had observed was cultural: teams that forecast argue more precisely, even when nobody looks at the numbers afterwards.\nThat cultural claim is plausible and almost unevidenced. A longer version of this section appeared in our 2023 annual review.\nThe two organisations that did try an evaluation are worth describing, because their designs illustrate how hard this is. Even so, theThe first compared decisions made in quarters when the forecasting team was active against quarters when it was not, and found no detectable difference, which the authors attribute to the questions being unrelated to the decisions actually taken. Even so, theThe second surveyed decision-makers about whether a forecast had changed their view. Found that 60% said yes, which tells us about recall and self-image rather than about decisions.\nWe want to be careful not to overclaim in the other direction. Absence of evidence here is genuinely weak evidence of absence, because the studies that would detect an effect have mostly not been run, and running them needs an organisation willing to randomize something it cares about. Very few organisations are willing to do that, and the ones that are tend to be unusual in ways that limit what you can generalise from them.\nA rough quantitative model\nTo make the comparison concrete we built a simple model of the value of an internal program. The inputs are crude and we encourage readers to substitute their own.\nAnnual cost of a programme, 5 staff, fully loaded: $750,000\nDecisions informed per year: 40\nBudget governed by those decisions: $400 million\nImprovement in expected value per decision, central estimate: 1.5%\nImplied annual value created: $6M\nWe estimate that a well-run internal forecasting programme costs about 0.2 percent of the budget it informs. The central estimate for value created is therefore roughly eight times the cost. The confidence interval spans zero, because the improvement-per-decision term is not measured anywhere. We are in effect assuming the conclusion.\nThe honest summary of this model is that it tells you what you would need to believe, not what is true. We include it because several funders asked for a number, and a transparent bad number is more useful than a private one.\nLimitations of this evidence\nPublication bias is a serious concern here. The field is small, the researchers are often the same people who run the tournaments, and negative results about a method you developed are hard to publish and harder to fund.\nQuestion selection is the deeper problem. Tournament questions resolve within twelve months, have unambiguous resolution criteria, and concern events that a well-read generalist can reason about. The decisions that matter most to the organisations we studied have none of those properties. Whether a research programme will pay off over fifteen years is not a question a tournament can score.\nFinally, almost all of this work measures accuracy against outcomes rather than decision quality against counterfactuals. A perfectly calibrated forecast attached to a decision nobody revisits creates no value at all.\nA fourth limitation is that we have very little evidence about persistence. Nearly every programme we looked at was under five years old, and the two that are older have both been through a period of reduced activity. Whether an internal forecasting function survives a change of leadership, a budget cut, or a high-profile miss is an empirical question with essentially no data behind it, and it bears directly on how a funder should discount future value.\nWe should also note our own position. Two of the authors have previously received funding from an organisation that runs forecasting tournaments, and one has served as a paid question writer. We do not think this has changed our conclusions, which is exactly what someone in our position would say, so we mention it and let readers apply their own discount.\nWhat would change our mind\nWe would raise our estimate if we saw a preregistered trial in that comparable teams made comparable decisions with and without forecast input, and the forecast-informed teams did measurably better on an outcome specified in advance.\nWe would lower it if a serious replication effort found the tournament effects shrink under stricter question selection, or if the two organisations now attempting internal evaluations report null results.\nWe would also update on cheaper evidence than that. If someone published a careful account of a decision that was demonstrably changed by a forecast, with the counterfactual documented at the time rather than reconstructed afterwards, we would treat it as a meaningful data point even though it is a single case. The reason is that the theory currently has no worked example at all, and one worked example moves you a surprising distance when the prior is that far from zero.\nConversely, we would become considerably more pessimistic if the pattern reported by our interviewees turns out to be universal: that questions are selected for resolvability rather than importance, and that this is not a start-up problem but a stable equilibrium, because the people choosing questions are rewarded for a clean scoreboard rather than a useful one.\nWe think the case for funding more of this work is strong. The full dataset is available on request.\nReferences\nTetlock and Gardner, Superforecasting, 2015. The popular treatment; the underlying papers are more careful than the book.\nMellers et al., Psychological Science, 2014. The main tournament result, including the training effect.\nKarvetski et al., Decision Analysis, 2021 (source: our 2024 practitioner interviews). Aggregation methods compared on a common dataset.\nOur own interview notes, anonymized, 2024. We are grateful to several reviewers for comments on an earlier draft.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Does forecasting research actually improve decisions?\nA summary of the evidence, written for people deciding whether to fund or work on it.\nSummary\nThe evidence that structured forecasting improves the accuracy of predictions is probably strong. The evidence that it improves the quality of decisions is much weaker. The gap between those two claims is where most of the disagreement in this field lives. We reviewed 34 studies, 4 large tournaments, and interviewed 11 practitioners inside government and philanthropy, on the best public numbers we could find. We conclude the accuracy findings are real and replicated, that the decision-quality findings rest on a handful of case studies, and that the main bottleneck is arguably institutional rather than methodological.\nThis piece is aimed at people choosing between research agendas, not at forecasters looking to improve their scores.\nThe claim we are evaluating\nThe strong version of the claim goes something like this: organisations make consequential decisions under uncertainty, they now do so using unquantified expert judgment, that judgement is poorly calibrated, and replacing it with aggregated probabilistic forecasts would produce better outcomes. Each of the four steps is doing real work, and it is important to remember that the last one is the only one anybody cares about.\nWe separate the claim into three testable pieces:\n1. Trained forecasters are we think more accurate than untrained ones on resolvable questions (source: our 2024 practitioner interviews).\n2. Aggregation methods improve accuracy beyond what any individual achieves (Mellers et al., 2014).\n3. Organisations that adopt these methods make measurably better decisions (Mellers et al., 2014).\nThe first two are well supported. The third is not. In our view it is the one worth working on.\nWhat the tournament evidence shows\nThe forecasting tournaments run between 2011 and 2015 remain the cleanest evidence available (source: our 2024 practitioner interviews). That said, aggregatingAggregating and extremising a group of trained forecasters beat the intelligence community's classified baseline by a wide margin. Individual accuracy also improved with a short course in probability training, typically an hour of material, which is a cheap intervention for the effect reported.\nThis is one of the most robust findings in the judgement literature. By contrast, itResearchers have replicated it in at least three later tournaments, including two run outside the United States and one restricted to epidemiological questions during 2020, though the underlying estimate is uncertain.\nA few details are worth stating precisely, because they are often misquoted:\nThe improvement from probability training is roughly 10% in Brier score terms, not 10 percentage points of accuracy (see the references at the end).\nThe expert forecaster effect is partly selection and partly training, and the published decompositions disagree about the split.\nTeam effects are large and are usually reported as if they were individual effects.\nThe effect sizes reported in the literature are large. Forecasting tournaments select for a particular kind of question. This matters more than it might appear. We return to it below.\nThere is we think a further result that gets less attention and that we think is more useful to funders. Accuracy improvements from aggregation are largely independent of accuracy improvements from training, which means the two interventions stack. An organization that does neither can get most of the available benefit by doing the cheaper one first, and the cheaper one is almost always aggregation, because it needs no behavior change from the people being aggregated.\nThe counterpoint, raised by several of the practitioners we interviewed, is that aggregation without training produces confident-looking numbers that nobody in the organization understands well enough to argue with. Whether that is better or worse than unquantified judgment is unclear to us. We could not find a study that addresses it.\nWhat happens inside organisations\nThis is where the evidence thins out dramatically. We identified nine organizations that have probably run an internal forecasting program for at least two years: three government agencies, four philanthropic funders, and two firms. Of those, only two have attempted any evaluation of whether the forecasts changed a decision, and neither evaluation was blinded.\nThe practitioners we interviewed were probably consistent about the ways this goes wrong. Forecasts arrive after the decision has in effect been made. That said, theThe questions that get asked are the ones that are easy to resolve rather than the ones that are essential. By contrast, seniorSenior staff treat a probability as a hedge rather than as information. Several respondents said the main value they had observed was cultural: teams that forecast argue more precisely, even when nobody looks at the numbers afterwards.\nThat cultural claim is plausible and almost unevidenced. A longer version of this section appeared in our 2023 annual review.\nThe two organisations that did try an evaluation are on balance worth describing, because their designs illustrate how hard this is. Even so, theThe first compared decisions made in quarters when the forecasting team was active against quarters when it was on balance not, and found no detectable difference, which the authors attribute to the questions being unrelated to the decisions taken. Even so, theThe second surveyed decision-makers about whether a forecast had changed their view. Found that 60% said yes, which tells us about recall and self-image rather than about decisions.\nWe want to be careful not to overclaim in the other direction. Absence of evidence here is weak evidence of absence, because the studies that would detect an effect have mostly not been run, and running them needs an organisation willing to randomize something it cares about. Very few organisations are willing to do that, and the ones that are tend to be unusual in ways that limit what you can generalise from them.\nA rough quantitative model\nTo make the comparison concrete we built a simple model of the value of an internal program. Even so, theThe inputs are crude and we encourage readers to substitute their own.\nAnnual cost of a programme, 5 staff, fully loaded: $750,000\nDecisions informed per year: 40\nBudget governed by those decisions: $400 million\nImprovement in expected value per decision, central estimate: 1.5%\nImplied annual value created: $6 million\nWe estimate that a well-run internal forecasting programme costs about 0.2 percent of the budget it informs. By contrast, theThe central estimate for value created is therefore roughly eight times the cost. The confidence interval spans zero, because the improvement-per-decision term is arguably not measured anywhere. We are in effect assuming the conclusion.\nThe honest summary of this model is that it tells you what you would need to believe, not what is true. We include it because several funders asked for a number. A transparent bad number is more useful than a private one.\nLimitations of this evidence\nPublication bias is a serious concern here. The field is small, the researchers are often the same people who run the tournaments, and negative results about a method you developed are hard to publish and harder to fund.\nQuestion selection is the deeper problem. Tournament questions resolve within twelve months, have unambiguous resolution criteria, and concern events that a well-read generalist can reason about. The decisions that matter most to the organisations we studied have none of those properties. Whether a research programme will pay off over fifteen years is not a question a tournament can score.\nFinally, almost all of this work measures accuracy against outcomes rather than decision quality against counterfactuals. A perfectly calibrated forecast attached to a decision nobody revisits creates no value at all.\nA fourth limitation is that we have very little evidence about persistence. Nearly every programme we looked at was under five years old, and the two that are older have both been through a period of reduced activity. Whether an internal forecasting function survives a change of leadership, a budget cut, or a high-profile miss is an empirical question with essentially no data behind it, and it bears directly on how a funder should discount future value.\nWe should also note our own position. Two of the authors have previously received funding from an organisation that runs forecasting tournaments, and one has served as a paid question writer. We do not think this has changed our conclusions, which is exactly what someone in our position would say, so we mention it and let readers apply their own discount.\nWhat would change our mind\nWe would raise our estimate if we saw a preregistered trial in that comparable teams made comparable decisions with and without forecast input. The forecast-informed teams did measurably better on an outcome specified in advance.\nWe would lower it if a serious replication effort found the tournament effects shrink under stricter question selection, or if the two organisations now attempting internal evaluations report null results.\nWe would also update on cheaper evidence than that. If someone published a careful account of a decision that was demonstrably changed by a forecast, with the difference-making documented at the time rather than reconstructed afterwards, we would treat it as a meaningful data point even though it is a single case. The reason is that the theory currently has arguably no worked example at all, and one worked example moves you a surprising distance when the prior is that far from zero.\nConversely, we would become more pessimistic if the pattern reported by our interviewees turns out to be universal: that questions are selected for resolvability rather than importance, and that this is not a start-up problem but a stable equilibrium, because the people choosing questions are rewarded for a clean scoreboard rather than a useful one.\nWe think the case for funding more of this work is strong. The full dataset is available on request.\nReferences\nTetlock and Gardner, Superforecasting, 2015, on the best public numbers we could find. The popular treatment; the underlying papers are more careful than the book.\nMellers et al., Psychological Science, 2014. The main tournament result, including the training effect.\nKarvetski et al., Decision Analysis, 2021 (source: our 2024 practitioner interviews). Aggregation methods compared on a common dataset.\nOur own interview notes, anonymized, 2024, and the spread across sources is wide. We are grateful to several reviewers for comments on an earlier draft.\n"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.12"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.14"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.19"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.2"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.21"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.22"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.24"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.25"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.29"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.6"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.dana.7"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.1"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.12"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.17"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.19"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.20"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.22"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.29"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.3"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.31"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.36"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.37"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.38"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.40"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.marcus.5"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.1"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.10"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.12"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.15"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.16"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.2"
+    },
+    {
+      "check": "suggestion_pending",
+      "suggestion_id": "sug.nadia.6"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.10",
+      "decision": "pending",
+      "text": "mentjudge"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.12",
+      "decision": "pending",
+      "text": " input. The, and the for"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.14",
+      "decision": "pending",
+      "text": "probability trainingcalibration"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.15",
+      "decision": "reject",
+      "text": "e are gratef"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.16",
+      "decision": "accept",
+      "text": "ybody cares "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.17",
+      "decision": "accept",
+      "text": "und the tour"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.19",
+      "decision": "pending",
+      "text": "in effecteffectively"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.2",
+      "decision": "pending",
+      "text": "essentialload-bearing"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.21",
+      "decision": "pending",
+      "text": "difference-makingcounterfactual"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.22",
+      "decision": "pending",
+      "text": ", 2015, on the best public numbers we could find. The "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.23",
+      "decision": "reject",
+      "text": "We want to be careful not to overclaim in the other direction. "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.24",
+      "decision": "pending",
+      "text": "rm is arguably not m"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.25",
+      "decision": "pending",
+      "text": "gram. Even so, theThe in"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.27",
+      "decision": "reject",
+      "text": "ind it, and it bear"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.29",
+      "decision": "pending",
+      "text": " million$6M"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.4",
+      "decision": "reject",
+      "text": "at all, and one wor"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.5",
+      "decision": "reject",
+      "text": "t is availab"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.6",
+      "decision": "pending",
+      "text": "at said, the"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.7",
+      "decision": "pending",
+      "text": "By contrast, the"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.dana.8",
+      "decision": "reject",
+      "text": "ives. We rev"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.1",
+      "decision": "pending",
+      "text": ", and the spread across sources is wide"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.11",
+      "decision": "reject",
+      "text": "ithin twelve month"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.12",
+      "decision": "pending",
+      "text": "re is genuinely weak "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.14",
+      "decision": "reject",
+      "text": "on.\nThe honest summary of this model is that it tells"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.15",
+      "decision": "pending",
+      "text": " have probably run a"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.16",
+      "decision": "reject",
+      "text": " A longer version of this section appeared in our 2023 annual review"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.17",
+      "decision": "pending",
+      "text": "t was on balance not, "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.19",
+      "decision": "pending",
+      "text": "zationsorganis"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.20",
+      "decision": "pending",
+      "text": "ns is probably stron"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.22",
+      "decision": "pending",
+      "text": "weaker. The, and the gap"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.24",
+      "decision": "reject",
+      "text": "ed.\nThis is one of the most robust findings in the judgement literature. By c"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.26",
+      "decision": "reject",
+      "text": "arge. Forecasting tournaments select for a particular kind of question. Th"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.28",
+      "decision": "reject",
+      "text": "gatingAggregating and extremising a group of trained forecasters beat the intelligence community's classified baseline by a wide margin. Indi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.29",
+      "decision": "pending",
+      "text": "s are we think more "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.3",
+      "decision": "pending",
+      "text": "SeveralA number of"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.31",
+      "decision": "pending",
+      "text": "latersubsequent"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.34",
+      "decision": "reject",
+      "text": " one.\nWe think the case for funding more of this work is strong. The full dataset is available on request.\nRefe"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.35",
+      "decision": "reject",
+      "text": "hould discou"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.36",
+      "decision": "pending",
+      "text": " were probably consi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.37",
+      "decision": "pending",
+      "text": "sions actually taken"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.38",
+      "decision": "pending",
+      "text": "ck is arguably insti"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.39",
+      "decision": "reject",
+      "text": " have both b"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.40",
+      "decision": "pending",
+      "text": "y has arguably no wo"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.5",
+      "decision": "pending",
+      "text": "ways this goes wrongfailure modes"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.7",
+      "decision": "reject",
+      "text": "on$6M\nWe estimate that a well-run internal forecasting programme costs about 0.2 percent of the budget it informs. By c"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.marcus.9",
+      "decision": "reject",
+      "text": "ects.\nThe effect sizes reported in the literature are large. Fore"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.1",
+      "decision": "pending",
+      "text": "nt is genuinely uncle"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.10",
+      "decision": "pending",
+      "text": ". A, and a"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.12",
+      "decision": "pending",
+      "text": ". We, and w"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.13",
+      "decision": "reject",
+      "text": "t can score."
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.15",
+      "decision": "pending",
+      "text": "nowcurrently"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.16",
+      "decision": "pending",
+      "text": "re is we think a fur"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.2",
+      "decision": "pending",
+      "text": "considerably"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.3",
+      "decision": "reject",
+      "text": " We are grateful to several reviewers for comments on an earlier draft"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.4",
+      "decision": "reject",
+      "text": "el is that i"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.5",
+      "decision": "reject",
+      "text": "xample at all, and "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.6",
+      "decision": "pending",
+      "text": "n are on balance wort"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.7",
+      "decision": "reject",
+      "text": "on is the de"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.nadia.8",
+      "decision": "reject",
+      "text": " have very littl"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.1",
+      "decision": "reject",
+      "text": " value at all.\nA fo"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.11",
+      "decision": "accept",
+      "text": "andomize some"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.12",
+      "decision": "accept",
+      "text": ", 2021 (source: our 2024 practitioner interviews). Aggr"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.13",
+      "decision": "accept",
+      "text": "lmost unevid"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.14",
+      "decision": "reject",
+      "text": "rk is strong"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.15",
+      "decision": "accept",
+      "text": "By contrast, it"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.17",
+      "decision": "accept",
+      "text": " in the organization understa"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.19",
+      "decision": "accept",
+      "text": "rogram. Even"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.21",
+      "decision": "reject",
+      "text": " have previously recei"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.22",
+      "decision": "reject",
+      "text": "is is one of"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.24",
+      "decision": "accept",
+      "text": "e cost. The con"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.26",
+      "decision": "accept",
+      "text": "ehavior chan"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.28",
+      "decision": "accept",
+      "text": "rogram for a"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.29",
+      "decision": "accept",
+      "text": "would raise "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.3",
+      "decision": "accept",
+      "text": "se it needs no b"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.31",
+      "decision": "accept",
+      "text": "t did try an ev"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.33",
+      "decision": "reject",
+      "text": "search programme will pay off "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.35",
+      "decision": "accept",
+      "text": "y are often misqu"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.37",
+      "decision": "accept",
+      "text": "hat 60% said "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.38",
+      "decision": "accept",
+      "text": "aid the main"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.39",
+      "decision": "reject",
+      "text": "rs is not a "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.40",
+      "decision": "reject",
+      "text": "e are large."
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.41",
+      "decision": "accept",
+      "text": " is a cheap "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.43",
+      "decision": "accept",
+      "text": "ack. An organization that doe"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.44",
+      "decision": "accept",
+      "text": "would produc"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.45",
+      "decision": "accept",
+      "text": "s are crude "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.47",
+      "decision": "reject",
+      "text": " with essentially no da"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.49",
+      "decision": "reject",
+      "text": "aments, and one has"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.5",
+      "decision": "accept",
+      "text": "nonymized, 20"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.51",
+      "decision": "accept",
+      "text": "e: 1.5%\nImpli"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.53",
+      "decision": "accept",
+      "text": "t judgment, "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.54",
+      "decision": "accept",
+      "text": "s is. Even so, theThe fi"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.55",
+      "decision": "accept",
+      "text": "ude the accu"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.57",
+      "decision": "accept",
+      "text": "appear. We retu"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.59",
+      "decision": "accept",
+      "text": "e are in effect assum"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.61",
+      "decision": "accept",
+      "text": "r view. Found t"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.62",
+      "decision": "accept",
+      "text": "By contrast, senior"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.64",
+      "decision": "accept",
+      "text": "is not. In our "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.66",
+      "decision": "accept",
+      "text": "the end).\nThe expert forecaster eff"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.7",
+      "decision": "accept",
+      "text": " them needs an o"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.priya.9",
+      "decision": "accept",
+      "text": "tions now attem"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.10",
+      "decision": "accept",
+      "text": "That said, aggregating"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.11",
+      "decision": "accept",
+      "text": "ilable (source: our 2024 practitioner interviews). That"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.12",
+      "decision": "accept",
+      "text": "aken. Even so, theThe se"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.13",
+      "decision": "reject",
+      "text": "review.\nThe "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.15",
+      "decision": "accept",
+      "text": ": $400 million\nImpro"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.17",
+      "decision": "accept",
+      "text": "st, itResearchers have replicated it in at"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.18",
+      "decision": "reject",
+      "text": ", 2014. The "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.19",
+      "decision": "accept",
+      "text": "thropy, on the best public numbers we could find. We c"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.2",
+      "decision": "accept",
+      "text": "hly 10% in Br"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.20",
+      "decision": "accept",
+      "text": "would lower "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.21",
+      "decision": "accept",
+      "text": " (see the references at the end)"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.3",
+      "decision": "accept",
+      "text": "stions (source: our 2024 practitioner interviews).\n2. A"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.4",
+      "decision": "accept",
+      "text": ", though the underlying estimate is uncertain"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.5",
+      "decision": "reject",
+      "text": "nforms. By c"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.6",
+      "decision": "accept",
+      "text": "isions (Mellers et al., 2014).\nThe "
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.8",
+      "decision": "accept",
+      "text": "al in that compa"
+    },
+    {
+      "check": "decision_witness",
+      "suggestion_id": "sug.sam.9",
+      "decision": "accept",
+      "text": "hieves (Mellers et al., 2014).\n3. O"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 34
+    }
+  ]
+}

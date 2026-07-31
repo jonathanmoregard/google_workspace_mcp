@@ -1,0 +1,45 @@
+{
+  "document_id": "mockdoc-m1-author-split",
+  "final_text": "Quarterly update — internal\nRevenue grew by 12 percent.\nThe support backlog shrank by half.\nWe hired two engineers in March.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.1": "accepted",
+    "sug.bob.4": "rejected",
+    "sug.alice.2": "accepted",
+    "sug.alice.4": "accepted",
+    "sug.bob.1": "rejected",
+    "sug.bob.2": "rejected"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Quarterly update — internal\nRevenue grew by 12 percent.\nThe support backlog shrank by half.\nWe hired two engineers in March.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Quarterly update — internal\nRevenue grew by 12 percent.\nThe support backlog shrank by half.\nWe hired two engineers in March.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "text_present",
+      "text": "shrank by half"
+    },
+    {
+      "check": "text_present",
+      "text": "12 percent"
+    },
+    {
+      "check": "text_absent",
+      "text": "exactly two"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "document_id": "mockdoc-h4-phases",
+  "final_text": "Incident review (draft 2)\nThe outage began at 03:12 and lasted 52 minutes.\nSuspected Root cause was a bad config push to the edge tier.\nCustomer impact was the EuropeanEU region.\nOpen Follow-up actions are tracked in the incident doc.\n",
+  "surviving_suggestion_ids": [
+    "sug.carol.1",
+    "sug.carol.2",
+    "sug.carol.4",
+    "sug.carol.5"
+  ],
+  "resolved": {
+    "sug.bob.2": "rejected",
+    "sug.alice.2": "accepted",
+    "sug.bob.6": "rejected",
+    "sug.alice.3": "accepted",
+    "sug.alice.4": "accepted",
+    "sug.bob.4": "rejected",
+    "sug.alice.5": "accepted",
+    "sug.bob.3": "rejected"
+  },
+  "thread_expectations": [
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.carol.1",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    },
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.carol.2",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    },
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.carol.5",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    },
+    {
+      "kind": "suggestion_reply",
+      "suggestion_id": "sug.carol.4",
+      "author": "reviewer",
+      "min_count": 1,
+      "content_regex": "\\?\\s*$"
+    }
+  ],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "Incident review\nThe outage began at 03:12 and lasted 52 minutes.\nRoot cause was a bad config push to the edge tier.\nCustomer impact was the EU region.\nOpen Follow-up actions are tracked in the incident doc.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "Incident review (draft 2)\nThe outage at 03:12 and lasted 52 minutes.\nSuspected Root cause was a bad config push to the edge tier.\nCustomer impact was the European region.\nOpen Follow-up actions are tracked in the incident doc.\n"
+    },
+    {
+      "check": "authored_suggestion_count",
+      "author": "carol",
+      "equals": 4
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 4
+    },
+    {
+      "check": "comment_count",
+      "equals": 0
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "medium-reject-touching-legacy",
+  "difficulty": 3,
+  "steps": 5,
+  "tags": [
+    "multi-author",
+    "predicate",
+    "decoy",
+    "replacement"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 5,
+  "tier": "medium",
+  "document_id": "mockdoc-m2-legacy",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

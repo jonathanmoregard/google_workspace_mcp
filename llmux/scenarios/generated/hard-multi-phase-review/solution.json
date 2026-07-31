@@ -1,0 +1,86 @@
+[
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.carol.1",
+      "reply_content": "What is the source for this change?"
+    }
+  },
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.carol.2",
+      "reply_content": "What is the source for this change?"
+    }
+  },
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.carol.5",
+      "reply_content": "What is the source for this change?"
+    }
+  },
+  {
+    "tool": "reply_to_doc_thread",
+    "args": {
+      "suggestion_id": "sug.carol.4",
+      "reply_content": "What is the source for this change?"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.2"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.6"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.3"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.4"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "accept",
+      "suggestion_id": "sug.alice.5"
+    }
+  },
+  {
+    "tool": "manage_document_suggestion",
+    "args": {
+      "action": "reject",
+      "suggestion_id": "sug.bob.3"
+    }
+  }
+]

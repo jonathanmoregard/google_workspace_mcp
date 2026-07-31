@@ -1,0 +1,60 @@
+{
+  "document_id": "mockdoc-a2-noop",
+  "final_text": "please review the attached summary before Friday, and share feedback.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.carol.2": "rejected",
+    "sug.alice.2": "rejected",
+    "sug.alice.4": "accepted",
+    "sug.bob.2": "accepted"
+  },
+  "thread_expectations": [
+    {
+      "kind": "comment_thread",
+      "quote": "review",
+      "content_contains": "No-op",
+      "min_count": 1
+    },
+    {
+      "kind": "comment_thread",
+      "quote": "summary",
+      "content_contains": "No-op",
+      "min_count": 1
+    }
+  ],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "please review the attached summary before Friday, and share feedback.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "please review the attached summary before Friday, and share feedback.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "comment_count",
+      "equals": 2
+    },
+    {
+      "check": "text_present",
+      "text": "Friday,"
+    },
+    {
+      "check": "text_present",
+      "text": "please review"
+    },
+    {
+      "check": "text_present",
+      "text": "attached summary"
+    }
+  ]
+}

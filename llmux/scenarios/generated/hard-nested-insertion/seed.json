@@ -1,0 +1,62 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-h1-nested",
+      "title": "Status",
+      "text": "Status: green.\nThe pipeline is stable.\nNext steps follow.\n",
+      "suggestions": [
+        {
+          "op": "insert",
+          "index": 14,
+          "text": " We are ahead of schedule.",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 22,
+          "text": "comfortably ",
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 75,
+          "text": " under load",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 65,
+          "end": 75,
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 98,
+          "text": " (owner: Ana)",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 111,
+          "end": 118,
+          "author": "carol"
+        },
+        {
+          "op": "replace",
+          "start": 8,
+          "end": 13,
+          "text": "amber",
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 58,
+          "text": "Right now, ",
+          "author": "bob"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

@@ -257,6 +257,67 @@ class TestAdvancedPublicToolWiring:
         assert request["text"] == "Header text"
 
     @pytest.mark.asyncio
+    async def test_formatting_an_insertion_is_currently_unreachable(self, service):
+        """Pins WHY modify_doc_text's insert-then-format branch cannot run.
+
+        That branch recomputes the index-0 remap, and its copy of the remap
+        was missing the segment_id/tab_id guard its two siblings have (index
+        0 is the section break only in the body of the default tab; a
+        header/footer/footnote is numbered from its own start). The guard is
+        now consistent, but no behavioural test can reach it: formatting
+        REQUIRES an end_index, and an end_index greater than start_index puts
+        the call in the replacement branch instead. Both refusals are pinned
+        here, so if either is ever relaxed the dead branch is already right
+        rather than newly wrong.
+        """
+        no_end = await _unwrap(docs_tools.modify_doc_text)(
+            service=service,
+            user_google_email="user@example.com",
+            document_id="c" * 25,
+            start_index=0,
+            text="Hi",
+            segment_id="kix.header",
+            bold=True,
+        )
+        assert "'end_index' is required when applying formatting" in no_end
+
+        degenerate = await _unwrap(docs_tools.modify_doc_text)(
+            service=service,
+            user_google_email="user@example.com",
+            document_id="d" * 25,
+            start_index=5,
+            end_index=5,
+            text="Hi",
+            bold=True,
+        )
+        assert "must be greater than start_index" in degenerate
+
+    @pytest.mark.asyncio
+    async def test_formatting_a_replacement_in_a_segment_does_not_remap_zero(
+        self, service
+    ):
+        """The reachable half of the same rule: index 0 in a header stays 0."""
+        await _unwrap(docs_tools.modify_doc_text)(
+            service=service,
+            user_google_email="user@example.com",
+            document_id="e" * 25,
+            start_index=0,
+            end_index=4,
+            text="Hi",
+            segment_id="kix.header",
+            bold=True,
+        )
+
+        requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"][
+            "requests"
+        ]
+        formatting = next(
+            r["updateTextStyle"] for r in requests if "updateTextStyle" in r
+        )
+        assert formatting["range"]["startIndex"] == 0
+        assert formatting["range"]["segmentId"] == "kix.header"
+
+    @pytest.mark.asyncio
     async def test_update_paragraph_style_allows_zero_start_at_body_beginning(
         self, service
     ):

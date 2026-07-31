@@ -1,0 +1,37 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-a1-stale-index",
+      "title": "Migration plan",
+      "text": "Section 1: Overview\nThe legacy pipeline is deprecated and will be removed.\nSection 2: Plan\nMigrate the remaining jobs by the end of the month.\n",
+      "suggestions": [
+        {
+          "op": "delete",
+          "start": 24,
+          "end": 31,
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 53,
+          "text": " (2024)",
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 60,
+          "end": 80,
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 98,
+          "text": "First, ",
+          "author": "carol"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

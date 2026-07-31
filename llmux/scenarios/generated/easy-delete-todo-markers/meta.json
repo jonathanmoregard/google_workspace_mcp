@@ -1,0 +1,22 @@
+{
+  "id": "easy-delete-todo-markers",
+  "difficulty": 2,
+  "steps": 4,
+  "tags": [
+    "accept",
+    "reject",
+    "predicate",
+    "deletion",
+    "single-author"
+  ],
+  "authors": [
+    "alice"
+  ],
+  "n_suggestions": 4,
+  "tier": "easy",
+  "document_id": "mockdoc-e4-todo",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

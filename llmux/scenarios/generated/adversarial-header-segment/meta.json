@@ -1,0 +1,23 @@
+{
+  "id": "adversarial-header-segment",
+  "difficulty": 5,
+  "steps": 3,
+  "tags": [
+    "segment",
+    "header",
+    "address",
+    "trap",
+    "multi-author"
+  ],
+  "authors": [
+    "alice",
+    "bob"
+  ],
+  "n_suggestions": 2,
+  "tier": "adversarial",
+  "document_id": "mockdoc-a4-header-segment",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

@@ -1,5 +1,7 @@
 <!-- mcp-name: io.github.taylorwilsdon/workspace-mcp -->
 
+> **Fork note.** This fork adds a `docs_preview` service — 7 tools for reviewing Google Docs comments and edit suggestions (built for the client). Setup, the tool surface, the load-bearing Docs API constraints, testing and known gaps are all in **[HANDOVER.md](HANDOVER.md)**. Read that first; the rest of this README is upstream's.
+
 <div align="center">
 
 # <span style="color:#cad8d9">Google Workspace MCP Server</span> <img src="https://github.com/user-attachments/assets/b89524e4-6e6e-49e6-ba77-00d6df0c6e5c" width="80" align="right" />

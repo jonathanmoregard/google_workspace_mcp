@@ -84,6 +84,7 @@ test = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
+    "hypothesis>=6.100.0",
 ]
 release = [
     "tomlkit>=0.13.3",
@@ -99,6 +100,7 @@ dev = [
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
+    "hypothesis>=6.100.0",
 ]
 
 [dependency-groups]
@@ -115,6 +117,7 @@ test = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
+    "hypothesis>=6.100.0",
 ]
 release = [
     "tomlkit>=0.13.3",
@@ -130,6 +133,7 @@ dev = [
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
+    "hypothesis>=6.100.0",
 ]
 
 [tool.setuptools]
@@ -144,6 +148,9 @@ addopts = "--ignore=tests/gappsscript/manual_test.py"
 pythonpath = ["."]
 markers = [
     "integration: marks tests as requiring real external services (deselect with '-m \"not integration\"')",
+    "e2e_ga: blackbox e2e against real Google APIs; needs an OAuth token (see e2e/README.md)",
+    "e2e_preview: e2e additionally needing Workspace Developer Preview enrollment (auto-detected)",
+    "llmux_smoke: real headless Claude run against the mock; spends tokens (opt in with LLMUX_SMOKE=1)",
 ]
 filterwarnings = [
     "ignore::authlib.deprecate.AuthlibDeprecationWarning",

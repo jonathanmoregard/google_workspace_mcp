@@ -131,6 +131,10 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
             ],
         ),
     ],
+    "docs_preview": [
+        ("readonly", [DOCS_READONLY_SCOPE, DRIVE_READONLY_SCOPE]),
+        ("full", [DOCS_WRITE_SCOPE, DRIVE_SCOPE, DRIVE_FILE_SCOPE]),
+    ],
 }
 
 # Actions denied at specific permission levels.

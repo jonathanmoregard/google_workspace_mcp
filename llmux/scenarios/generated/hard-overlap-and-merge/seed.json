@@ -1,0 +1,68 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-h2-overlap",
+      "title": "Overlap fixture",
+      "text": "The quick brown fox jumps over the lazy dog.\nThis paragraph contains obsolete guidance.\nKeep the final sentence intact.\n",
+      "suggestions": [
+        {
+          "op": "delete",
+          "start": 4,
+          "end": 16,
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 10,
+          "end": 20,
+          "author": "bob"
+        },
+        {
+          "op": "delete",
+          "start": 68,
+          "end": 77,
+          "author": "carol"
+        },
+        {
+          "op": "insert",
+          "index": 78,
+          "text": "stale ",
+          "author": "carol"
+        },
+        {
+          "op": "delete",
+          "start": 84,
+          "end": 92,
+          "author": "carol"
+        },
+        {
+          "op": "replace",
+          "start": 94,
+          "end": 102,
+          "text": "Preserve the",
+          "author": "bob"
+        },
+        {
+          "op": "insert",
+          "index": 43,
+          "text": " today",
+          "author": "alice"
+        },
+        {
+          "op": "delete",
+          "start": 25,
+          "end": 39,
+          "author": "alice"
+        },
+        {
+          "op": "insert",
+          "index": 142,
+          "text": " and unchanged",
+          "author": "alice"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

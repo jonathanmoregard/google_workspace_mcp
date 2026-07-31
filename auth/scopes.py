@@ -194,6 +194,18 @@ SCRIPT_SCOPES = [
     DRIVE_FILE_SCOPE,  # Required for list/delete script projects (uses Drive API)
 ]
 
+# docs_preview review service (hand-written Docs review tools incl. the
+# Developer Preview surface + Drive v3 comments/replies). Full Drive scope
+# keeps comment operations visible to collaborators (matches core/comments.py);
+# DRIVE_FILE_SCOPE mirrors the docs service for file-scoped deployments.
+DOCS_PREVIEW_SCOPES = [
+    DOCS_READONLY_SCOPE,
+    DOCS_WRITE_SCOPE,
+    DRIVE_SCOPE,
+    DRIVE_READONLY_SCOPE,
+    DRIVE_FILE_SCOPE,
+]
+
 # Tool-to-scopes mapping
 TOOL_SCOPES_MAP = {
     "gmail": GMAIL_SCOPES,
@@ -208,6 +220,7 @@ TOOL_SCOPES_MAP = {
     "contacts": CONTACTS_SCOPES,
     "search": CUSTOM_SEARCH_SCOPES,
     "appscript": SCRIPT_SCOPES,
+    "docs_preview": DOCS_PREVIEW_SCOPES,
 }
 
 # Tool-to-read-only-scopes mapping
@@ -230,6 +243,7 @@ TOOL_READONLY_SCOPES_MAP = {
         SCRIPT_METRICS_SCOPE,
         DRIVE_READONLY_SCOPE,
     ],
+    "docs_preview": [DOCS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],
 }
 
 

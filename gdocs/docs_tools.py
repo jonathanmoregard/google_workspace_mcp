@@ -652,8 +652,26 @@ async def modify_doc_text(
                 # Text was replaced - format the new text
                 format_end = start_index + len(text)
             else:
-                # Text was inserted - format the inserted text
-                actual_index = 1 if start_index == 0 else start_index
+                # Text was inserted - format the inserted text. The index-0
+                # remap must match the one the insertion itself used above,
+                # and that one is guarded by segment_id/tab_id: index 0 is
+                # the section break only in the body of the default tab. A
+                # header/footer/footnote is numbered from its own start, so 0
+                # is a real position there and remapping it to 1 would format
+                # the wrong character. Same guard as the format_start clamp
+                # a few lines down.
+                #
+                # Currently unreachable: formatting requires an end_index and
+                # validate_index_range requires end_index > start_index, which
+                # routes every such call to the replacement branch above. Kept
+                # correct rather than deleted so the three copies of this rule
+                # agree; test_formatting_an_insertion_is_currently_unreachable
+                # pins the two validations that make it dead.
+                actual_index = (
+                    1
+                    if start_index == 0 and segment_id is None and tab_id is None
+                    else start_index
+                )
                 format_start = actual_index
                 format_end = actual_index + len(text)
 

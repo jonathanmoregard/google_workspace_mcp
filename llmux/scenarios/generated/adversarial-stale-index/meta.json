@@ -1,0 +1,24 @@
+{
+  "id": "adversarial-stale-index",
+  "difficulty": 5,
+  "steps": 5,
+  "tags": [
+    "multi-author",
+    "stale-index",
+    "suggest",
+    "trap",
+    "ordering"
+  ],
+  "authors": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "n_suggestions": 4,
+  "tier": "adversarial",
+  "document_id": "mockdoc-a1-stale-index",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

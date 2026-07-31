@@ -1,0 +1,12 @@
+{
+  "me": "mockuser",
+  "documents": [
+    {
+      "document_id": "ix-doc-pilot",
+      "title": "Pilot Brief",
+      "text": "Pilot brief\nWe expect the pilot to reach 200 users by Q3.\nRisks are unchanged.\n",
+      "suggestions": [],
+      "comments": []
+    }
+  ]
+}

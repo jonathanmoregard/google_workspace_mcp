@@ -1,0 +1,21 @@
+{
+  "id": "easy-accept-all-insertions",
+  "difficulty": 1,
+  "steps": 3,
+  "tags": [
+    "accept",
+    "insertion",
+    "single-author",
+    "accept-all"
+  ],
+  "authors": [
+    "alice"
+  ],
+  "n_suggestions": 3,
+  "tier": "easy",
+  "document_id": "mockdoc-e1-accept-all",
+  "me": "reviewer",
+  "env": {
+    "MOCKDOCS_SEED": "seed.json"
+  }
+}

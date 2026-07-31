@@ -1,0 +1,42 @@
+{
+  "document_id": "mockdoc-a3-both-marks",
+  "final_text": "The popular greeting is short. The clear wording is worse.\n",
+  "surviving_suggestion_ids": [],
+  "resolved": {
+    "sug.alice.2": "rejected",
+    "sug.bob.2": "accepted"
+  },
+  "thread_expectations": [],
+  "invariant_checks": [
+    {
+      "check": "model_invariants"
+    },
+    {
+      "check": "projection_text",
+      "projection": "original",
+      "equals": "The popular greeting is short. The clear wording is worse.\n"
+    },
+    {
+      "check": "projection_text",
+      "projection": "final",
+      "equals": "The popular greeting is short. The clear wording is worse.\n"
+    },
+    {
+      "check": "suggestion_count",
+      "equals": 0
+    },
+    {
+      "check": "projection_text",
+      "projection": "display",
+      "equals": "The popular greeting is short. The clear wording is worse.\n"
+    },
+    {
+      "check": "text_absent",
+      "text": "ularar"
+    },
+    {
+      "check": "comment_count",
+      "equals": 0
+    }
+  ]
+}

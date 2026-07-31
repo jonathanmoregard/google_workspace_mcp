@@ -1,0 +1,29 @@
+{
+  "me": "reviewer",
+  "documents": [
+    {
+      "document_id": "mockdoc-a4-header-segment",
+      "title": "Quarterly plan",
+      "text": "The quarterly plan ships in March.\nRisks are unchanged.\n",
+      "headers": {
+        "kix.h1": "Confidential draft — do not circulate\n"
+      },
+      "suggestions": [
+        {
+          "op": "delete",
+          "start": 21,
+          "end": 37,
+          "author": "bob",
+          "segment_id": "kix.h1"
+        },
+        {
+          "op": "insert",
+          "index": 45,
+          "text": "still ",
+          "author": "alice"
+        }
+      ],
+      "comments": []
+    }
+  ]
+}

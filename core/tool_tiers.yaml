@@ -180,3 +180,15 @@ appscript:
     - list_script_processes
     - get_script_metrics
   complete: []
+
+docs_preview:
+  core:
+    - list_document_suggestions
+    - get_doc_review_view
+    - suggest_doc_edit
+    - manage_document_suggestion
+    - reply_to_doc_thread
+    - create_anchored_doc_comment
+  extended:
+    - check_docs_review_capabilities
+  complete: []

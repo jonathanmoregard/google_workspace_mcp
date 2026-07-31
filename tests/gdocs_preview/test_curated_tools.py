@@ -2,8 +2,11 @@
 
 Mocked Google service objects only -- no network. Covers:
   - list_document_suggestions: preview (tabs + threads) read plumbing,
-    author/status/summary passthrough, and the GA fallback
-  - get_doc_review_view: view-mode validation, rendered output, comments
+    author/status/summary passthrough, the GA fallback, and the wiring of
+    the fields/filter/pagination shaping (whose arithmetic is tested on its
+    own in test_review_page.py)
+  - get_doc_review_view: view-mode validation, rendered output, comments,
+    field modes and the index window
   - check_docs_review_capabilities: probe error-shape classification +
     process cache semantics (probe=False must never touch the API)
 """
@@ -15,7 +18,7 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from core.utils import UserInputError
-from gdocs_preview import curated_tools, preview_read, preview_status
+from gdocs_preview import curated_tools, preview_read, preview_status, review_page
 from tests.gdocs_preview import fixtures as fx
 
 EMAIL = "reviewer@example.com"
@@ -97,7 +100,12 @@ class TestListSuggestions:
         fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
-            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
         )
 
         assert result["suggestion_count"] == 1
@@ -112,7 +120,12 @@ class TestListSuggestions:
         fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
-            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
         )
 
         assert result["read_source"] == curated_tools.READ_SOURCE_PREVIEW
@@ -128,12 +141,38 @@ class TestListSuggestions:
         assert s["tab_id"] == "t.0"
 
     @pytest.mark.asyncio
+    async def test_summary_default_keeps_author_status_and_summary_text(self):
+        """The M4a fields survive the default projection -- flattened, not
+        dropped: author becomes the display name, status and summary_text
+        pass through unchanged."""
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["fields"] == "summary"
+        (s,) = result["suggestions"]
+        assert s["author"] == "Alice Reviewer"
+        assert s["status"] == "OPEN"
+        assert s["summary_text"] == "Add: “brave”"
+        assert set(s) == set(review_page.SUMMARY_FIELDS)
+        assert result["omitted_fields"] == list(review_page.SUMMARY_OMITTED_FIELDS)
+        assert "pre_text" not in s
+
+    @pytest.mark.asyncio
     async def test_multi_tab_records_carry_their_tab_id(self):
         service = _docs_get_service(fx.TABS_PAYLOAD_MULTI)
         fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
-            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
         )
 
         assert [(s["suggestion_id"], s["tab_id"]) for s in result["suggestions"]] == [
@@ -149,7 +188,12 @@ class TestListSuggestions:
         fn = _unwrap(curated_tools.list_document_suggestions)
 
         result = json.loads(
-            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
         )
 
         assert result["read_source"] == curated_tools.READ_SOURCE_GA
@@ -163,6 +207,22 @@ class TestListSuggestions:
             "documentId": "doc-fixture-1",
             "suggestionsViewMode": "SUGGESTIONS_INLINE",
         }
+
+    @pytest.mark.asyncio
+    async def test_summary_on_a_degraded_read_says_the_labels_are_missing(self):
+        """summary leans on summary_text, which only the preview read
+        supplies. On the GA fallback the notice has to say so, or the agent
+        reads a page of nulls and concludes the edits are empty."""
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert "fields='full'" in result["notice"]
+        assert "null on every record" in result["notice"]
 
     @pytest.mark.asyncio
     async def test_http_error_from_the_preview_read_also_degrades(self):
@@ -195,8 +255,128 @@ class TestReadDocument:
             includeTabsContent=True,
         )
         assert result["view_mode"] == "SUGGESTIONS_INLINE"
+        assert result["fields"] == "text"
         assert result["body_text"] == "Hello{+ brave+} world.\n"
         assert result["read_source"] == curated_tools.READ_SOURCE_PREVIEW
+        # The default drops the paragraph map, and says so.
+        assert "paragraphs" not in result
+        assert "paragraphs" in result["omitted_fields"]
+
+    @pytest.mark.asyncio
+    async def test_full_fields_restore_the_original_shape(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
+        )
+
+        assert result["body_text"] == "Hello{+ brave+} world.\n"
+        assert [p["text"] for p in result["paragraphs"]] == ["Hello{+ brave+} world.\n"]
+        assert result["suggestion_ids"] == ["suggest.ins1"]
+        assert "omitted_fields" not in result
+
+    @pytest.mark.asyncio
+    async def test_paragraphs_fields_drop_body_text_without_losing_characters(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="paragraphs",
+            )
+        )
+
+        assert "body_text" not in result
+        assert "body_text" in result["omitted_fields"]
+        body = "".join(
+            p["text"] for p in result["paragraphs"] if p["segment"] == "body"
+        )
+        assert body == "Hello{+ brave+} world.\n"
+
+    @pytest.mark.asyncio
+    async def test_index_window_narrows_paragraphs_and_body_text(self):
+        document = fx.build_doc(
+            [
+                fx.paragraph(
+                    fx.run("First paragraph"),
+                    fx.run(" plus", ins=["s.1"]),
+                    fx.run(".\n"),
+                ),
+                fx.paragraph(fx.run("Second paragraph.\n")),
+                fx.paragraph(
+                    fx.run("Third"), fx.run(" cut", dels=["s.2"]), fx.run(".\n")
+                ),
+            ]
+        )
+        service = _docs_get_service(fx.build_tabs_payload([("t.0", document)]))
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        whole = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+            )
+        )
+        first = whole["paragraphs"][0]
+        windowed = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="full",
+                start_index=first["start_index"],
+                end_index=first["end_index"],
+            )
+        )
+
+        assert windowed["paragraph_count"] == len(whole["paragraphs"])
+        assert windowed["returned_paragraph_count"] == 1
+        assert windowed["body_text"] == first["text"]
+        assert windowed["window"]["paragraphs_outside_window"] == (
+            len(whole["paragraphs"]) - 1
+        )
+        assert windowed["suggestion_ids"] == first["suggestion_ids"]
+
+    @pytest.mark.asyncio
+    async def test_include_comments_false_reports_what_it_left_out(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                include_comments=False,
+            )
+        )
+
+        assert result["comments"] == []
+        assert result["comments_omitted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_fields_rejected(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        with pytest.raises(UserInputError, match="fields"):
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                fields="everything",
+            )
 
     @pytest.mark.asyncio
     async def test_comment_threads_carry_ids_and_authors(self):

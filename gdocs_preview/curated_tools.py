@@ -25,7 +25,7 @@ from auth.scopes import DOCS_PREVIEW_SCOPES
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_status, suggestion_ledger
+from gdocs_preview import preview_status, review_page, suggestion_ledger
 from gdocs_preview.analysis import extract_suggestions_from_tabs, render_tabs
 from gdocs_preview.preview_read import (
     READ_SOURCE_GA,
@@ -33,6 +33,7 @@ from gdocs_preview.preview_read import (
     ReviewRead,
     read_for_review,
 )
+from gdocs_preview.review_page import PageTokenError
 
 __all__ = [
     "READ_SOURCE_GA",
@@ -92,51 +93,118 @@ async def list_document_suggestions(
     service: Any,
     user_google_email: str,
     document_id: str,
+    fields: str = "summary",
+    page_size: Optional[int] = None,
+    page_token: Optional[str] = None,
+    author: Optional[str] = None,
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
+    status: Optional[str] = None,
 ) -> str:
-    """List every pending edit suggestion in a document, with its author and
-    computed pre/post text.
+    """List the pending edit suggestions in a document, one record each, with
+    filtering, field selection and pagination.
 
-    Reads the document in SUGGESTIONS_INLINE view and returns one record per
-    suggestion id: type (insertion/deletion/replacement/style/mixed),
-    pre_text (base text of the affected range: all insertions stripped, all
-    deletions kept), post_text (the range with this suggestion -- and only
-    this one -- applied), ~40-char context windows computed on the base
-    text, segment location (body/header/footer/footnote incl. segment id),
-    tab id, table flag, and start/end indexes.
+    Reads the document in SUGGESTIONS_INLINE view. Indexes are UTF-16 code
+    units relative to that view, passed through from the API verbatim --
+    exactly what batchUpdate requests computed against that view expect.
 
-    Indexes are UTF-16 code units relative to the SUGGESTIONS_INLINE view,
-    passed through from the API verbatim -- exactly what batchUpdate
-    requests computed against that view expect.
+    **fields='summary' is the default, deliberately.** A review set is
+    linear in card count and a document has no cap on it; the full record is
+    ~780 characters per card, so 120 pending suggestions is ~93,000
+    characters and a real client answered that with "result exceeds maximum
+    allowed tokens" and spilled it to a file the agent could not open -- the
+    agent never saw a single suggestion id. A default response that cannot be
+    delivered is not the conservative choice. ``summary`` costs ~172
+    characters per card and keeps everything a decision needs:
+    ``suggestion_id``, ``type``, ``author`` (the display name as a plain
+    string), ``summary_text`` (Google's own label, e.g. ``Replace: "x" with
+    "y"``), ``start_index``, ``end_index`` and ``status``. What it omits is
+    listed in the response's ``omitted_fields``.
 
-    Each record also carries the suggestion thread joined on its id:
-    ``author`` (display_name/me/anonymous/user), ``status``,
-    ``create_time``, Google's own ``summary_text`` (e.g. ``Replace: "x" with
-    "y"``) and the thread's ``replies`` (each with post_id and author).
-    Threads come from the Developer Preview read; if that is unavailable the
-    tool still returns every suggestion, with ``author: null`` and
-    ``author_source: "unavailable"`` (never guessed) and ``read_source:
-    "ga_documents_get"``.
+    **fields='full'** restores every field: ``pre_text`` (base text of the
+    affected range: all insertions stripped, all deletions kept),
+    ``post_text`` (that range with this suggestion -- and only this one --
+    applied), the two ~40-char context windows computed on the base text,
+    segment location (body/header/footer/footnote incl. segment id), tab id,
+    table flag, ``create_time``, ``author`` as the full
+    display_name/me/anonymous/user object, ``author_source`` and the thread's
+    ``replies``. Use it with a small ``page_size`` when you need the
+    before/after text of specific cards.
+
+    **Nothing is ever truncated silently.** Every response reports
+    ``suggestion_count`` (pending suggestions in the whole document),
+    ``matched_count`` (after filters) and ``returned_count`` (this page), and
+    a page that is not the last one carries ``page.next_page_token`` plus a
+    ``notice_page`` saying so in words. Compare the three integers and you
+    know whether you have seen everything.
+
+    Thread-derived fields (``author``, ``status``, ``create_time``,
+    ``summary_text``, ``replies``) come from the Developer Preview read. If
+    that is unavailable the tool still returns every suggestion, with those
+    fields null, ``author_source: "unavailable"`` (never guessed) and
+    ``read_source: "ga_documents_get"``; the summary notice says so
+    explicitly, because ``summary`` mode leans on ``summary_text``.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         document_id (str): The ID of the document to analyse.
+        fields (str): "summary" (default) or "full". See above.
+        page_size (int): Records per page. Defaults to 200 for "summary" and
+            40 for "full" -- both about 31-35 KB, the largest a client
+            reliably delivers in one tool result. Capped at 500.
+        page_token (str): Resume after a previous page. Pass back the
+            ``page.next_page_token`` from the response, with the SAME
+            fields/filters; a token from a different query is refused rather
+            than silently reinterpreted.
+        author (str): Only suggestions by this author display name
+            (case-insensitive, exact -- not a substring match). When nothing
+            matches, the response lists the authors that are present.
+        start_index (int): Only suggestions whose UTF-16 range overlaps
+            [start_index, end_index], inclusive of both bounds. Either bound
+            may be given alone. This is how you review one section.
+        end_index (int): See start_index.
+        status (str): Only suggestions with this thread status, e.g. "OPEN"
+            (case-insensitive, exact).
 
     Returns:
-        str: JSON with document_id, title, suggestion_count, read_source,
-            tabs and the per-suggestion records described above.
+        str: JSON with document_id, title, suggestion_count, matched_count,
+            returned_count, fields, filters, page (page_size, offset,
+            has_more, next_page_token), read_source, tabs and the
+            per-suggestion records described above.
     """
     read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
-    result = extract_suggestions_from_tabs(read.tabs, read.threads)
-    # Feed the ledger: this listing is the "before" picture that lets a later
-    # accept/reject name the suggestions its own resolution took with it
-    # (gdocs_preview/suggestion_ledger.py).
+    analysis = extract_suggestions_from_tabs(read.tabs, read.threads)
+    # Feed the ledger the WHOLE set, never the page: it is the "before"
+    # picture that lets a later accept/reject name the suggestions its own
+    # resolution took with it (gdocs_preview/suggestion_ledger.py), and a
+    # ledger that only knew about page 2 would explain nothing about page 1.
     suggestion_ledger.observe(
-        user_google_email, document_id, result.get("suggestions") or []
+        user_google_email, document_id, analysis.get("suggestions") or []
     )
+    try:
+        result = review_page.build_listing(
+            analysis,
+            document_id=document_id,
+            read_source=read.source,
+            ga_source=READ_SOURCE_GA,
+            fields=fields,
+            page_size=page_size,
+            page_token=page_token,
+            author=author,
+            start_index=start_index,
+            end_index=end_index,
+            status=status,
+        )
+    except (PageTokenError, ValueError) as error:
+        raise UserInputError(str(error)) from error
     result["read_source"] = read.source
     result["tabs"] = read.tab_metadata
     if read.degraded_reason:
         result["degraded_reason"] = read.degraded_reason
+    # ``summary`` exists to be small, so it is serialized compactly; ``full``
+    # keeps the indented form callers already parse. Both are the same JSON.
+    if result["fields"] == review_page.FIELDS_SUMMARY:
+        return json.dumps(result, separators=(",", ":"), ensure_ascii=False)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -259,15 +327,40 @@ async def get_doc_review_view(
     user_google_email: str,
     document_id: str,
     view_mode: str = "SUGGESTIONS_INLINE",
+    fields: str = "text",
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
+    include_comments: bool = True,
 ) -> str:
     """Read a document the way a reviewer sees it: plain text with inline
-    suggestion markers, a paragraph map, and the comment threads.
+    suggestion markers, optionally a paragraph map, and the comment threads.
 
     In SUGGESTIONS_INLINE view (default), pending insertions render as
-    ``{+text+}`` and pending deletions as ``{-text-}`` (CriticMarkup
-    style); each paragraph entry lists the suggestion ids touching it.
+    ``{+text+}`` and pending deletions as ``{-text-}`` (CriticMarkup style).
     PREVIEW_SUGGESTIONS_ACCEPTED / PREVIEW_WITHOUT_SUGGESTIONS return the
     respective clean text.
+
+    **fields='text' is the default, deliberately.** The paragraph map's
+    ``text`` values concatenate to exactly ``body_text``, so returning both
+    restates a quarter of the response: measured on a 1,626-word article with
+    120 pending suggestions, the response was 54,901 characters of which the
+    paragraph map was 26,269 and ``body_text`` 13,462, and a real client
+    spilled that response to a file rather than delivering it. So the default
+    returns the readable half.
+
+    - ``fields='text'``: ``body_text`` plus header/footer/footnote texts.
+    - ``fields='paragraphs'``: the addressable half -- one entry per
+      paragraph with segment, tab id, start/end index, text, named style,
+      list flag, table flag and the suggestion ids touching it. Same
+      characters, no ``body_text``. This is what you read to locate a section
+      by index.
+    - ``fields='full'``: both, the shape this tool has always returned.
+
+    ``start_index``/``end_index`` narrow the response to the paragraphs
+    overlapping that UTF-16 range (inclusive of both bounds) -- the way to
+    read one section of a long document. ``body_text`` is then recomputed
+    from exactly the paragraphs returned, so text and map can never describe
+    different windows, and ``suggestion_ids`` lists only the ids inside it.
 
     ``comments`` carries the Docs-side comment threads: comment_id,
     anchor_id, status, quoted_text, the head post's author/content/times and
@@ -283,11 +376,19 @@ async def get_doc_review_view(
         document_id (str): The ID of the document to read.
         view_mode (str): One of SUGGESTIONS_INLINE,
             PREVIEW_SUGGESTIONS_ACCEPTED, PREVIEW_WITHOUT_SUGGESTIONS.
+        fields (str): "text" (default), "paragraphs" or "full". See above.
+        start_index (int): Only paragraphs overlapping [start_index,
+            end_index], inclusive of both bounds. Either bound may be given
+            alone.
+        end_index (int): See start_index.
+        include_comments (bool): Return the comment threads. Default True;
+            pass False when you only want the prose.
 
     Returns:
-        str: JSON with view_mode, read_source, tabs, body_text, per-paragraph
-            map (segment/tab/indexes/text/style/list/table/suggestion_ids),
-            header/footer/footnote texts, all suggestion ids, and comments.
+        str: JSON with view_mode, read_source, tabs, fields, paragraph_count,
+            returned_paragraph_count, the requested body_text and/or
+            paragraph map, suggestion_ids, window (when narrowed),
+            omitted_fields + notice (when narrowed), and comments.
     """
     if view_mode not in VIEW_MODES:
         raise UserInputError(
@@ -304,13 +405,24 @@ async def get_doc_review_view(
             document_id,
             extract_suggestions_from_tabs(read.tabs, read.threads)["suggestions"],
         )
+    try:
+        shaped = review_page.build_review_view(
+            rendered,
+            fields=fields,
+            start_index=start_index,
+            end_index=end_index,
+        )
+    except ValueError as error:
+        raise UserInputError(str(error)) from error
     result = {
         "view_mode": view_mode,
         "read_source": read.source,
         "tabs": read.tab_metadata,
-        **rendered,
-        "comments": read.comments,
+        **shaped,
+        "comments": read.comments if include_comments else [],
     }
+    if not include_comments:
+        result["comments_omitted"] = len(read.comments)
     if read.degraded_reason:
         result["degraded_reason"] = read.degraded_reason
     return json.dumps(result, indent=2, ensure_ascii=False)

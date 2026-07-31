@@ -65,10 +65,19 @@ class ContextProfile:
     review_view_chars: int
     list_records: int
     per_record_chars: float
+    #: The pre-M8 shape of each read: every field, every card, one response.
+    #: Kept alongside the defaults so the report is a before/after rather
+    #: than a claim.
+    list_full_chars: int = 0
+    review_view_full_chars: int = 0
 
     @property
     def total_read_chars(self) -> int:
         return self.brief_chars + self.list_chars + self.review_view_chars
+
+    @property
+    def total_read_full_chars(self) -> int:
+        return self.brief_chars + self.list_full_chars + self.review_view_full_chars
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -80,31 +89,50 @@ class ContextProfile:
             "list_document_suggestions_tokens_est": round(
                 self.list_chars / CHARS_PER_TOKEN
             ),
+            "list_document_suggestions_full_chars": self.list_full_chars,
+            "list_document_suggestions_full_tokens_est": round(
+                self.list_full_chars / CHARS_PER_TOKEN
+            ),
             "get_doc_review_view_chars": self.review_view_chars,
             "get_doc_review_view_tokens_est": round(
                 self.review_view_chars / CHARS_PER_TOKEN
+            ),
+            "get_doc_review_view_full_chars": self.review_view_full_chars,
+            "get_doc_review_view_full_tokens_est": round(
+                self.review_view_full_chars / CHARS_PER_TOKEN
             ),
             "records": self.list_records,
             "chars_per_record": round(self.per_record_chars, 1),
             "one_read_of_each_tokens_est": round(
                 self.total_read_chars / CHARS_PER_TOKEN
             ),
+            "one_read_of_each_full_tokens_est": round(
+                self.total_read_full_chars / CHARS_PER_TOKEN
+            ),
         }
 
 
-async def _read_outputs(backend: Any, document_id: str) -> tuple[str, str]:
+async def _read_outputs(backend: Any, document_id: str) -> dict[str, str]:
+    """Both read tools, at their defaults AND at ``fields='full'``.
+
+    The default is what an agent gets; the full shape is what the tool
+    returned before the narrowing parameters existed. Reporting both is the
+    only way the reduction claim is checkable.
+    """
     tools = tool_table()
-    listed = await tools["list_document_suggestions"](
-        service=backend.docs_service(),
-        user_google_email=ORACLE_EMAIL,
-        document_id=document_id,
-    )
-    viewed = await tools["get_doc_review_view"](
-        service=backend.docs_service(),
-        user_google_email=ORACLE_EMAIL,
-        document_id=document_id,
-    )
-    return listed, viewed
+    common = {
+        "service": backend.docs_service(),
+        "user_google_email": ORACLE_EMAIL,
+        "document_id": document_id,
+    }
+    return {
+        "list": await tools["list_document_suggestions"](**common),
+        "list_full": await tools["list_document_suggestions"](
+            **common, fields="full", page_size=1000
+        ),
+        "view": await tools["get_doc_review_view"](**common),
+        "view_full": await tools["get_doc_review_view"](**common, fields="full"),
+    }
 
 
 def context_profile(scenario_dir: Path) -> ContextProfile:
@@ -113,7 +141,8 @@ def context_profile(scenario_dir: Path) -> ContextProfile:
     meta = json.loads((scenario_dir / "meta.json").read_text(encoding="utf-8"))
     brief = (scenario_dir / "brief.md").read_text(encoding="utf-8")
     backend, _doc = seeded_backend(seed)
-    listed, viewed = asyncio.run(_read_outputs(backend, meta["document_id"]))
+    outputs = asyncio.run(_read_outputs(backend, meta["document_id"]))
+    listed = outputs["list"]
 
     # Defensive: the write/read tools are being enriched concurrently, so read
     # what is needed with .get() and never assume a key set.
@@ -124,17 +153,21 @@ def context_profile(scenario_dir: Path) -> ContextProfile:
     records = payload.get("suggestions")
     if not isinstance(records, list):
         records = payload.get("records") if isinstance(payload, dict) else None
-    count = len(records) if isinstance(records, list) else int(
-        payload.get("suggestion_count") or 0
+    count = (
+        len(records)
+        if isinstance(records, list)
+        else int(payload.get("suggestion_count") or 0)
     )
     return ContextProfile(
         scenario_id=meta.get("id", scenario_dir.name),
         n_suggestions=int(meta.get("n_suggestions") or 0),
         brief_chars=len(brief),
         list_chars=len(listed),
-        review_view_chars=len(viewed),
+        review_view_chars=len(outputs["view"]),
         list_records=count,
         per_record_chars=(len(listed) / count) if count else 0.0,
+        list_full_chars=len(outputs["list_full"]),
+        review_view_full_chars=len(outputs["view_full"]),
     )
 
 
@@ -250,19 +283,40 @@ def markdown(rows: list[dict[str, Any]]) -> str:
     lines.append("## Context cost of one read")
     lines.append("")
     lines.append(
-        "| scenario | cards | brief (chars) | `list_document_suggestions` "
-        "(chars) | est. tokens | chars/card | `get_doc_review_view` (chars) | "
-        "est. tokens | one read of each (est. tokens) |"
+        "`default` is what an agent gets today (`fields='summary'` for "
+        "`list_document_suggestions`, `fields='text'` for "
+        "`get_doc_review_view`); `full` is every field of every card in one "
+        "response, which is what both tools returned before they had "
+        "narrowing parameters."
     )
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("")
+    lines.append(
+        "| scenario | cards | brief (chars) | `list` full (chars) | "
+        "`list` default (chars) | est. tokens | cut | "
+        "`review_view` full (chars) | `review_view` default (chars) | "
+        "est. tokens | cut | one read of each: full -> default (est. tokens) |"
+    )
+    lines.append(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
+        "| ---: | ---: |"
+    )
     for row in rows:
         c = row["context"]
+
+        def cut(full: int, now: int) -> str:
+            return f"{(1 - now / full) * 100:.1f}%" if full else "-"
+
         lines.append(
             f"| `{c['scenario_id']}` | {c['n_suggestions']} | {c['brief_chars']:,} | "
+            f"{c['list_document_suggestions_full_chars']:,} | "
             f"{c['list_document_suggestions_chars']:,} | "
             f"{c['list_document_suggestions_tokens_est']:,} | "
-            f"{c['chars_per_record']:,} | {c['get_doc_review_view_chars']:,} | "
+            f"{cut(c['list_document_suggestions_full_chars'], c['list_document_suggestions_chars'])} | "
+            f"{c['get_doc_review_view_full_chars']:,} | "
+            f"{c['get_doc_review_view_chars']:,} | "
             f"{c['get_doc_review_view_tokens_est']:,} | "
+            f"{cut(c['get_doc_review_view_full_chars'], c['get_doc_review_view_chars'])} | "
+            f"{c['one_read_of_each_full_tokens_est']:,} -> "
             f"{c['one_read_of_each_tokens_est']:,} |"
         )
     lines.append("")

@@ -202,7 +202,7 @@ def test_clean_view_modes_round_trip(session):
 def test_list_document_suggestions_reports_authors_and_utf16_indexes(session):
     result = session.call_json(
         "list_document_suggestions",
-        {"user_google_email": EMAIL, "document_id": "seeded-doc"},
+        {"user_google_email": EMAIL, "document_id": "seeded-doc", "fields": "full"},
     )
     assert result["suggestion_count"] == 2
     by_author = {r["author"]["display_name"]: r for r in result["suggestions"]}
@@ -220,6 +220,53 @@ def test_list_document_suggestions_reports_authors_and_utf16_indexes(session):
     # one greater than Python code-point arithmetic would give (grapheme 21 ->
     # UTF-16 23, not 22). This is the index discipline the mock exists to test.
     assert carol["start_index"] == 23
+
+
+def test_list_document_suggestions_fields_and_filters_over_the_wire(session):
+    """The narrowing parameters survive the MCP boundary: FastMCP has to
+    advertise and coerce them, which a pure-function test cannot prove."""
+    summary = session.call_json(
+        "list_document_suggestions",
+        {"user_google_email": EMAIL, "document_id": "seeded-doc"},
+    )
+    assert summary["fields"] == "summary"
+    assert summary["suggestion_count"] == 2
+    assert {r["author"] for r in summary["suggestions"]} == {"bob", "carol"}
+    assert "pre_text" not in summary["suggestions"][0]
+
+    filtered = session.call_json(
+        "list_document_suggestions",
+        {
+            "user_google_email": EMAIL,
+            "document_id": "seeded-doc",
+            "author": "carol",
+        },
+    )
+    assert filtered["suggestion_count"] == 2
+    assert filtered["matched_count"] == 1
+    assert [r["author"] for r in filtered["suggestions"]] == ["carol"]
+
+    first = session.call_json(
+        "list_document_suggestions",
+        {"user_google_email": EMAIL, "document_id": "seeded-doc", "page_size": 1},
+    )
+    assert first["returned_count"] == 1
+    assert first["page"]["has_more"] is True
+    second = session.call_json(
+        "list_document_suggestions",
+        {
+            "user_google_email": EMAIL,
+            "document_id": "seeded-doc",
+            "page_size": 1,
+            "page_token": first["page"]["next_page_token"],
+        },
+    )
+    assert second["returned_count"] == 1
+    assert second["page"]["has_more"] is False
+    assert (
+        first["suggestions"][0]["suggestion_id"]
+        != second["suggestions"][0]["suggestion_id"]
+    )
 
 
 def test_suggest_then_accept_over_mcp(session):

@@ -391,6 +391,15 @@ def filter_records(
                     if r.get("segment")
                 }
             )
+        if tab_key is not None or wants_range:
+            # A mistyped tab id used to be the one filter that answered
+            # `matched_count: 0` with nothing to compare against, while
+            # author/status/segment all listed their present values. The tab
+            # is half of the address; a caller cannot correct a typo it
+            # cannot see.
+            applied["tabs_present"] = sorted(
+                {str(r.get("tab_id")) for r in records if r.get("tab_id")}
+            )
     return kept, applied
 
 
@@ -795,15 +804,21 @@ def build_review_view(
             "end_index), matching the Docs convention that endIndex is "
             "exclusive."
         )
+    # Blank is refused here for the same reason it is in the listing
+    # (:func:`normalize_filter_value`): ``tab_id=" "`` used to be passed
+    # through as the id ``""``, which no paragraph carries, so the window
+    # came back EMPTY -- indistinguishable from a range that genuinely
+    # selected nothing.
+    segment_id = normalize_filter_value(segment_id, "segment_id")
+    tab_id = normalize_filter_value(tab_id, "tab_id")
+    segment_key = segment_id.strip() if segment_id is not None else None
+    tab_key = tab_id.strip() if tab_id is not None else None
+
     paragraphs = list(rendered.get("paragraphs") or [])
     total_paragraphs = len(paragraphs)
     scope: dict[str, Any] = {}
     if windowed:
-        scope = resolve_range_scope(
-            paragraphs,
-            segment_id=segment_id.strip() if isinstance(segment_id, str) else None,
-            tab_id=tab_id.strip() if isinstance(tab_id, str) else None,
-        )
+        scope = resolve_range_scope(paragraphs, segment_id=segment_key, tab_id=tab_key)
         paragraphs = [
             p
             for p in paragraphs
@@ -821,16 +836,32 @@ def build_review_view(
 
     if fields in (VIEW_FIELDS_TEXT, VIEW_FIELDS_FULL):
         if windowed:
-            # Recomputed from the surviving body paragraphs so text and map
-            # can never describe different windows. Without a window this is
-            # character-identical to the renderer's own body_text.
+            # ALL FOUR text surfaces are recomputed from the surviving
+            # paragraphs, so the whole response describes one window. They
+            # used to disagree: body_text was narrowed while headers, footers
+            # and footnotes came back whole, so a body window silently
+            # carried every header in the document, and a header-scoped
+            # window returned `body_text: ""` next to the full header text of
+            # a segment it had not narrowed.
             result["body_text"] = "".join(
                 p.get("text") or "" for p in paragraphs if p.get("segment") == "body"
             )
+            for key, kind in (
+                ("headers", "header"),
+                ("footers", "footer"),
+                ("footnotes", "footnote"),
+            ):
+                narrowed: dict[str, str] = {}
+                for paragraph in paragraphs:
+                    if paragraph.get("segment") != kind:
+                        continue
+                    seg = paragraph.get("segment_id") or ""
+                    narrowed[seg] = narrowed.get(seg, "") + (paragraph.get("text") or "")
+                result[key] = narrowed
         else:
             result["body_text"] = rendered.get("body_text", "")
-        for key in ("headers", "footers", "footnotes"):
-            result[key] = rendered.get(key) or {}
+            for key in ("headers", "footers", "footnotes"):
+                result[key] = rendered.get(key) or {}
     else:
         omitted.append("body_text")
         omitted.extend(("headers", "footers", "footnotes"))
@@ -859,6 +890,24 @@ def build_review_view(
             "scope": scope,
             "paragraphs_outside_window": total_paragraphs - len(paragraphs),
         }
+    elif segment_key is not None or tab_key is not None:
+        # segment_id/tab_id are the coordinate space an index range is read
+        # in; with no range there is nothing to read, so they do nothing.
+        # Silently doing nothing with an argument the caller passed reads as
+        # "this response is scoped to that segment", which it is not.
+        named = " and ".join(
+            f"{name}={value!r}"
+            for name, value in (("segment_id", segment_key), ("tab_id", tab_key))
+            if value is not None
+        )
+        result["scope_note"] = (
+            f"{named} was IGNORED: it names the coordinate space a "
+            "start_index/end_index window is read in, and this call passed "
+            "no window. Everything below is the whole document, not that "
+            "segment or tab. Pass start_index/end_index to narrow, or use "
+            "list_document_suggestions(segment_id=..., tab_id=...) -- there "
+            "they are filters in their own right."
+        )
     if omitted:
         result["omitted_fields"] = omitted
         result["notice"] = (

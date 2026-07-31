@@ -432,6 +432,22 @@ class TestRangeScope:
         assert "body:None" in result["filters"]["segments_present"]
         assert "header:kix.h1" in result["filters"]["segments_present"]
 
+    def test_a_mistyped_tab_id_lists_the_tabs_that_exist(self):
+        """author/status/segment all answer an empty match with the values
+        that ARE present; the tab used to answer with nothing, and it is the
+        one half of the address a caller cannot look up any other way."""
+        records = [
+            record("s.one", tab_id="t.0", start=100, end=140),
+            record("s.two", tab_id="t.second", start=100, end=140),
+        ]
+        result = listing(records, tab_id="t.typo")
+        assert result["matched_count"] == 0
+        assert result["filters"]["tabs_present"] == ["t.0", "t.second"]
+
+    def test_a_range_that_matches_nothing_also_lists_the_tabs(self):
+        result = listing(self.body_and_header(), start_index=5000, end_index=6000)
+        assert result["filters"]["tabs_present"] == ["t.0"]
+
     def test_a_token_scoped_to_one_segment_is_refused_under_another(self):
         records = [
             record(f"s.h{i}", start=i * 10, end=i * 10 + 5, segment="header",
@@ -917,3 +933,75 @@ class TestReviewViewWindowScope:
         source["paragraphs"][1]["tab_id"] = "t.second"
         with pytest.raises(ValueError, match="needs a tab_id"):
             rp.build_review_view(source, fields="full", start_index=1, end_index=30)
+
+
+class TestReviewViewWindowIsWholeResponse:
+    """A window has to narrow every text surface, not just ``body_text``."""
+
+    def test_a_body_window_does_not_carry_the_whole_header(self):
+        view = rp.build_review_view(
+            rendered_with_header(), fields="full", start_index=1, end_index=8
+        )
+        assert view["body_text"] == "First.\n"
+        # The header is a different coordinate space and outside this window;
+        # returning it whole made the response describe two windows at once.
+        assert view["headers"] == {}
+
+    def test_a_header_window_returns_the_header_text_it_selected(self):
+        view = rp.build_review_view(
+            rendered_with_header(),
+            fields="full",
+            start_index=0,
+            end_index=12,
+            segment_id="kix.h1",
+        )
+        assert view["headers"] == {"kix.h1": "Header.\n"}
+        # body_text is empty because no BODY paragraph is in this window --
+        # legible now that headers is populated beside it.
+        assert view["body_text"] == ""
+
+    def test_an_unwindowed_read_still_returns_every_segment(self):
+        view = rp.build_review_view(rendered_with_header(), fields="full")
+        assert view["headers"] == {"kix.h1": "Header.\n"}
+        assert view["body_text"] == "First.\nSecond.\nThird.\n"
+
+
+class TestReviewViewScopeArguments:
+    def test_a_blank_segment_id_is_refused_not_treated_as_a_segment(self):
+        """It used to be passed through as the id '', which no paragraph
+        carries, so the window came back empty -- indistinguishable from a
+        range that genuinely selected nothing."""
+        with pytest.raises(ValueError, match="segment_id"):
+            rp.build_review_view(
+                rendered_with_header(), fields="full",
+                start_index=0, end_index=12, segment_id="   ",
+            )
+
+    def test_a_blank_tab_id_is_refused(self):
+        with pytest.raises(ValueError, match="tab_id"):
+            rp.build_review_view(
+                rendered_document(), fields="full",
+                start_index=1, end_index=8, tab_id=" ",
+            )
+
+    def test_a_scope_without_a_window_says_it_did_nothing(self):
+        view = rp.build_review_view(
+            rendered_with_header(), fields="full", segment_id="kix.h1"
+        )
+        assert "IGNORED" in view["scope_note"]
+        assert "kix.h1" in view["scope_note"]
+        # And it really did nothing: the whole document is still here.
+        assert view["returned_paragraph_count"] == view["paragraph_count"]
+        assert view["body_text"] == "First.\nSecond.\nThird.\n"
+
+    def test_a_tab_id_without_a_window_says_it_did_nothing(self):
+        view = rp.build_review_view(rendered_document(), fields="text", tab_id="t.0")
+        assert "tab_id='t.0'" in view["scope_note"]
+
+    def test_no_scope_note_when_none_was_passed(self):
+        assert "scope_note" not in rp.build_review_view(
+            rendered_document(), fields="full"
+        )
+        assert "scope_note" not in rp.build_review_view(
+            rendered_document(), fields="full", start_index=1, end_index=8
+        )

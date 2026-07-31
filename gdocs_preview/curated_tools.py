@@ -116,8 +116,10 @@ async def list_document_suggestions(
     characters and a real client answered that with "result exceeds maximum
     allowed tokens" and spilled it to a file the agent could not open -- the
     agent never saw a single suggestion id. A default response that cannot be
-    delivered is not the conservative choice. ``summary`` costs ~217
-    characters per card and keeps everything a decision needs:
+    delivered is not the conservative choice. ``summary`` costs ~232-252
+    characters per card (measured across all four stress tiers,
+    ``llmux/scenarios/stressgen/measure.py``; budgeted at 260) and keeps
+    everything a decision needs:
     ``suggestion_id``, ``type``, ``author`` (the display name as a plain
     string), ``summary_text`` (Google's own label, e.g. ``Replace: "x" with
     "y"``), ``segment``, ``segment_id``, ``tab_id``, ``start_index``,
@@ -166,8 +168,9 @@ async def list_document_suggestions(
         document_id (str): The ID of the document to analyse.
         fields (str): "summary" (default) or "full". See above.
         page_size (int): Records per page. The bound is BYTES, not cards: a
-            record costs ~240 characters in "summary" and ~780 in "full", so
-            one number for both modes would be wrong for one of them.
+            record costs ~232-252 characters in "summary" and ~780-792 in
+            "full" (measured; budgeted at 260 and 800), so one number for
+            both modes would be wrong for one of them.
             Defaults to about 35 KB of records (134 summary / 43 full) and is
             capped at about 50 KB (192 summary / 62 full) -- past roughly
             57 KB the observed client stops delivering tool output and writes
@@ -201,7 +204,9 @@ async def list_document_suggestions(
         tab_id (str): Only suggestions in this tab, and the tab an index
             range is read in. Omit for a single-tab document -- it is
             resolved from the records; a document with more than one tab
-            REFUSES an index range without it rather than guessing.
+            REFUSES an index range without it rather than guessing. When it
+            matches nothing the response lists filters.tabs_present, the
+            same way author and status list theirs.
 
     Returns:
         str: JSON with document_id, title, suggestion_count, matched_count,
@@ -399,15 +404,23 @@ async def get_doc_review_view(
 
     ``start_index``/``end_index`` narrow the response to the paragraphs
     overlapping that half-open UTF-16 range ``[start_index, end_index)`` --
-    the way to read one section of a long document. ``body_text`` is then
-    recomputed from exactly the paragraphs returned, so text and map can
-    never describe different windows, and ``suggestion_ids`` lists only the
-    ids inside it. The window is read in ONE (tab, segment) -- the body of
+    the way to read one section of a long document. ``body_text`` AND the
+    header/footer/footnote texts are then recomputed from exactly the
+    paragraphs returned, so no part of the response describes a different
+    window than another, and ``suggestion_ids`` lists only the ids inside it.
+    A body window therefore reports ``headers: {}`` (they are outside it),
+    and a header-scoped window reports ``body_text: ""`` beside the header
+    text it selected. The window is read in ONE (tab, segment) -- the body of
     the document's only tab unless ``segment_id``/``tab_id`` say otherwise --
     because Docs numbers each tab and each header/footer/footnote from its
     own start, so a header paragraph numbered from 0 would otherwise fall
     inside every window taken off the body's first page. ``window.scope``
     reports the space that was used.
+
+    ``segment_id``/``tab_id`` name that space and nothing else: passing
+    either WITHOUT a start_index/end_index window does not filter anything,
+    and the response says so in ``scope_note`` rather than looking scoped.
+    Use ``list_document_suggestions`` when you want them as filters.
 
     ``comments`` carries the Docs-side comment threads: comment_id,
     anchor_id, status, quoted_text, the head post's author/content/times and
@@ -430,11 +443,12 @@ async def get_doc_review_view(
         end_index (int): See start_index.
         segment_id (str): Read the window in this header/footer/footnote
             segment instead of the body (take the value from a paragraph's
-            own segment_id).
+            own segment_id). Only meaningful with start_index/end_index;
+            without them it is reported as ignored, not silently applied.
         tab_id (str): Read the window in this tab. Omit for a single-tab
             document -- it is resolved from the paragraphs; a document with
             more than one tab REFUSES a window without it rather than
-            guessing.
+            guessing. Only meaningful with start_index/end_index.
         include_comments (bool): Return the comment threads. Default True;
             pass False when you only want the prose.
 
@@ -442,6 +456,7 @@ async def get_doc_review_view(
         str: JSON with view_mode, read_source, tabs, fields, paragraph_count,
             returned_paragraph_count, the requested body_text and/or
             paragraph map, suggestion_ids, window (when narrowed),
+            scope_note (when segment_id/tab_id was passed without a window),
             omitted_fields + notice (when narrowed), and comments.
     """
     if view_mode not in VIEW_MODES:

@@ -104,7 +104,17 @@ def snapshot(backend: Any, document_id: str) -> dict[str, Any]:
         "original": doc.original_text(),
         "final": doc.final_text(),
         "registry": sorted(doc.registry),
-        "marks": [[c.cp, sorted(c.ins), sorted(c.dels)] for c in doc.chars if c.marks],
+        # Every segment, each mark tagged with the one it is in. Reading
+        # ``doc.chars`` here compared the default tab's BODY and nothing
+        # else, so the model-vs-API cross-check -- the guard against an
+        # oracle that is wrong in the same way as the expectation it
+        # produces -- was blind to a header or a second tab, which is
+        # precisely where a wrong-segment write lands.
+        "marks": [
+            [seg.describe(), c.cp, sorted(c.ins), sorted(c.dels)]
+            for seg, _, c in doc.iter_chars()
+            if c.marks
+        ],
         "threads": {
             sid: [(p.author, p.content) for p in doc.registry[sid].thread]
             for sid in sorted(doc.registry)

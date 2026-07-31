@@ -411,7 +411,8 @@ def filter_records(
                 if scope not in seen:
                     seen.append(scope)
             applied["segments_present"] = sorted(
-                seen, key=lambda s: (str(s["tab_id"]), s["segment"], str(s["segment_id"]))
+                seen,
+                key=lambda s: (str(s["tab_id"]), s["segment"], str(s["segment_id"])),
             )
         if tab_key is not None or wants_range:
             # A mistyped tab id used to be the one filter that answered

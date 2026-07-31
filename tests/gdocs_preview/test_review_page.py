@@ -448,8 +448,37 @@ class TestRangeScope:
     def test_a_range_that_matches_nothing_lists_the_segments_that_exist(self):
         result = listing(self.body_and_header(), start_index=5000, end_index=6000)
         assert result["matched_count"] == 0
-        assert "body:None" in result["filters"]["segments_present"]
-        assert "header:kix.h1" in result["filters"]["segments_present"]
+        present = result["filters"]["segments_present"]
+        assert {"segment": "body", "segment_id": None, "tab_id": "t.0"} in present
+        assert {
+            "segment": "header",
+            "segment_id": "kix.h1",
+            "tab_id": "t.0",
+        } in present
+
+    def test_each_segment_present_names_its_tab(self):
+        """LOW 7: a segment id is only half an address. Listed beside an
+        unrelated ``tabs_present``, it left the caller to guess the
+        cross-product -- and 'kix.h1' may exist in one tab and not another.
+
+        Each entry is exactly the shape ``range_scope`` reports and the
+        filters accept, so correcting the call is a copy, not a rebuild.
+        """
+        records = [
+            record("s.a", tab_id="t.0", segment="header", segment_id="kix.h1"),
+            record("s.b", tab_id="t.second"),
+        ]
+        result = listing(records, segment_id="kix.nope")
+        assert result["matched_count"] == 0
+        assert result["filters"]["segments_present"] == [
+            {"segment": "header", "segment_id": "kix.h1", "tab_id": "t.0"},
+            {"segment": "body", "segment_id": None, "tab_id": "t.second"},
+        ]
+        # And every entry is a scope the filters take verbatim.
+        for scope in result["filters"]["segments_present"]:
+            assert set(scope) == set(rp.SCOPE_FIELDS)
+            filters = {k: v for k, v in scope.items() if k != "segment"}
+            assert listing(records, **filters)["matched_count"] == 1
 
     def test_a_mistyped_tab_id_lists_the_tabs_that_exist(self):
         """author/status/segment all answer an empty match with the values

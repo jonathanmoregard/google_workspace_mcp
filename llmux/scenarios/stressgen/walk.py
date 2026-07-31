@@ -541,7 +541,9 @@ def run_walk(
             op = candidate.op
             if op == "replace" and not candidate.text:
                 op = "delete"  # a replacement with nothing on the right is a cut
-            builder.move(f"m{cursor:04d}", Move(reviewer.name, op, span, candidate.text))
+            builder.move(
+                f"m{cursor:04d}", Move(reviewer.name, op, span, candidate.text)
+            )
             if op != "delete":
                 tracker.shift(start, len(candidate.text))
             if any(
@@ -630,7 +632,9 @@ def _nest(
         author = next(r for r in panel if r.name != host.reviewer)
         at = start + (end - start) // 2
         text = rng.choice((" roughly", " approximately", " we think", " reportedly"))
-        builder.move(f"nest{made:02d}", Move(author.name, "insert", LiveIndex(at), text))
+        builder.move(
+            f"nest{made:02d}", Move(author.name, "insert", LiveIndex(at), text)
+        )
         tracker.shift(at, len(text))
         made += 1
     return made

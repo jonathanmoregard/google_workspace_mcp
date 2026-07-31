@@ -202,9 +202,7 @@ def _fold(
 ) -> None:
     """Add one run to the report model."""
     reasons = list(getattr(result, "inconclusive_reasons", ()) or ())
-    outcome = getattr(
-        result, "outcome", OUTCOME_PASS if result.passed else "FAIL"
-    )
+    outcome = getattr(result, "outcome", OUTCOME_PASS if result.passed else "FAIL")
 
     agg.total_runs += 1
     if outcome == OUTCOME_PASS:
@@ -511,8 +509,7 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
     lines.append("## Per-scenario scores")
     lines.append("")
     lines.append(
-        "| scenario | difficulty | model | outcome | score | turns | "
-        "calls (err) | $ |"
+        "| scenario | difficulty | model | outcome | score | turns | calls (err) | $ |"
     )
     lines.append("| --- | --- | --- | :---: | ---: | ---: | ---: | ---: |")
     for scenario_id in sorted(agg.by_scenario):
@@ -838,11 +835,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # subscripting it here made the recovery path itself crash -- taking the
     # JSON path down with it, on exactly the run that needed reporting most.
     markdown = paths.get("markdown")
-    print(f"report: {markdown}" if markdown else (
-        "report: NOT WRITTEN -- aggregation failed, so there was nothing to "
-        "render. The per-run records are intact; see report_problems in the "
-        "JSON below."
-    ))
+    print(
+        f"report: {markdown}"
+        if markdown
+        else (
+            "report: NOT WRITTEN -- aggregation failed, so there was nothing to "
+            "render. The per-run records are intact; see report_problems in the "
+            "JSON below."
+        )
+    )
     print(f"json:   {paths['json']}")
     return 0
 

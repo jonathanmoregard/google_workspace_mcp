@@ -57,7 +57,9 @@ def grade(backend: Any) -> dict[str, Any]:
     checks += 1
     authors = {s.author for s in doc.registry.values()}
     if authors and authors != {backend.me}:
-        failures.append(f"suggestion authored by {sorted(authors)}, expected {backend.me}")
+        failures.append(
+            f"suggestion authored by {sorted(authors)}, expected {backend.me}"
+        )
     else:
         passed += 1
 

@@ -111,9 +111,7 @@ class Scenario:
         env = self.meta.get("env") or {}
         if not isinstance(env, dict):
             return {}
-        return {
-            str(k): str(v) for k, v in env.items() if str(k) not in reserved
-        }
+        return {str(k): str(v) for k, v in env.items() if str(k) not in reserved}
 
 
 @dataclass(frozen=True)
@@ -206,7 +204,10 @@ def discover(
         scenario = load_scenario(child)
         if wanted is not None and scenario.id not in wanted:
             continue
-        if wanted_difficulty is not None and scenario.difficulty not in wanted_difficulty:
+        if (
+            wanted_difficulty is not None
+            and scenario.difficulty not in wanted_difficulty
+        ):
             continue
         found.append(scenario)
 

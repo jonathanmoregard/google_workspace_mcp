@@ -1250,6 +1250,109 @@ class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
         assert mine in ours
         assert "appeared_since_last_read" not in verification
 
+    @pytest.mark.asyncio
+    async def test_the_merge_note_does_not_delete_the_authorship_note(self):
+        """Both are true of one write, so both have to survive it.
+
+        ``verification["notes"] = [...]`` in the range-fallback branch
+        overwrote the concurrent-authorship note appended just above it --
+        on the merge path, which is precisely where a write comes back with
+        no created id AND somebody else's card in the same read. The agent
+        was left holding ``appeared_since_last_read`` with nothing saying it
+        is not its own work.
+        """
+        _observe(
+            {
+                "suggestion_id": "s.mine",
+                "type": "insertion",
+                "pre_text": "",
+                "post_text": "bold ",
+                "segment": "body",
+                "segment_id": None,
+                "tab_id": "t.0",
+                "start_index": 17,
+                "end_index": 22,
+            }
+        )
+        document = fx.build_doc(
+            [
+                fx.paragraph(
+                    fx.run("The "),
+                    fx.run("URGENT ", ins=["s.bob"]),
+                    fx.run("brave"),
+                    fx.run("bold ", ins=["s.mine"]),
+                    fx.run("plan.\n"),
+                )
+            ]
+        )
+        service = _batch_service(
+            # A merged edit: the API reports no created id at all.
+            {},
+            document=fx.build_tabs_payload(
+                [("t.0", document)],
+                suggestions=[
+                    thread_for("s.mine"),
+                    thread_for("s.bob", me=False, display_name="Bob"),
+                ],
+            ),
+        )
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=17,
+                text="bold ",
+            )
+        )
+
+        verification = result["verification"]
+        assert [
+            s["suggestion_id"] for s in verification["appeared_since_last_read"]
+        ] == ["s.bob"]
+        assert [
+            s["suggestion_id"] for s in verification["suggestions_at_edit_range"]
+        ] == ["s.mine"]
+        notes = verification["notes"]
+        assert len(notes) == 2, notes
+        assert any("Check the author before acting on it" in n for n in notes), notes
+        assert any("merges into it" in n for n in notes), notes
+
+    @pytest.mark.asyncio
+    async def test_the_ambiguous_tab_note_does_not_delete_it_either(self):
+        """The other assignment: a multi-tab document with no tab_id."""
+        suggestion_ledger.observe(EMAIL, DOC, [])
+        service = _batch_service(
+            {},
+            document=fx.build_tabs_payload(
+                [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)],
+                suggestions=[
+                    thread_for("suggest.ins1", me=False, display_name="Bob"),
+                    thread_for("suggest.tab2", me=False, display_name="Bob"),
+                ],
+            ),
+        )
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="x",
+            )
+        )
+
+        verification = result["verification"]
+        assert "suggestions_at_edit_range_unavailable" in verification
+        notes = verification["notes"]
+        assert len(notes) == 2, notes
+        assert any("Check the author before acting on it" in n for n in notes), notes
+        assert any("named no tab_id" in n for n in notes), notes
+
     def test_unknown_authorship_is_not_ownership(self):
         """A read that degraded to the GA documents.get carries no threads,
         so every author is null. Null is not "me"."""

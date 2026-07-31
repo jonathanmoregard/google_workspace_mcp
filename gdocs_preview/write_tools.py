@@ -794,6 +794,18 @@ async def _verify_suggest(
     this module exists to fix. It is reported under its own key because
     overlap is a weaker claim than authorship: the range says where the
     suggestion is, not that this call made it.
+
+    **``notes`` accumulates; it is never assigned.** Four independent things
+    have something to say about one write here -- somebody else's card
+    appeared, the tab is ambiguous, the edit merged into an existing
+    suggestion, another suggestion was garbage-collected -- and more than one
+    of them can be true at once. Two used to do
+    ``verification["notes"] = [...]``, which deleted the concurrent-
+    authorship note ("is NOT reported as created by this call ... Check the
+    author before acting on it") on exactly the merge path this module exists
+    to handle: a second reviewer's card, echoed under
+    ``appeared_since_last_read`` with nothing left to say why. Use
+    ``setdefault("notes", []).append`` / ``.extend``.
     """
     if not verify:
         return {"source": "skipped", "reason": "verify=false"}
@@ -848,13 +860,13 @@ async def _verify_suggest(
             # as "the one your edit merged into" is a wrong id the agent may
             # go on to reply to or accept.
             verification["suggestions_at_edit_range_unavailable"] = str(error)
-            verification["notes"] = [
+            verification.setdefault("notes", []).append(
                 "this edit named no tab_id and the document has more than "
                 "one tab, so the suggestion(s) at the edited range cannot be "
                 "identified: an index means a different place in each tab. "
                 "Re-run with the tab_id the record carries, or read the "
                 "range back with list_document_suggestions(tab_id=...)."
-            ]
+            )
             scope = None
         if scope is not None:
             overlapping = [
@@ -865,12 +877,12 @@ async def _verify_suggest(
             if overlapping:
                 verification["suggestions_at_edit_range"] = overlapping
                 verification["range_scope"] = scope
-                verification["notes"] = [
+                verification.setdefault("notes", []).append(
                     "the API reported no new suggestion id for this edit; the "
                     "suggestion(s) now covering the edited range are echoed "
                     "instead -- editing inside an existing same-author "
                     "suggestion merges into it rather than creating a new one."
-                ]
+                )
     vanished = sorted(known_before - read.live_ids) if known_before is not None else []
     if vanished:
         resolutions = suggestion_ledger.record_resolution(
@@ -1162,6 +1174,10 @@ async def _verify_resolution(
         # said nothing at all, so "the read could not see that tab", "the
         # anchor is gone" and "we never listed this id" arrived identical.
         verification["resulting_text_unavailable"] = unlocated
+        # setdefault(...).append, never ``notes = [...]``: this block and the
+        # collateral block below both have something to say about the same
+        # write, and an assignment silently deletes whichever ran first --
+        # see the note in :func:`_verify_suggest`.
         verification.setdefault("notes", []).append(
             _unlocated_note(
                 unlocated,

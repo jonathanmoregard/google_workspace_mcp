@@ -185,14 +185,16 @@ class TestListSuggestions:
         document = fx.build_doc(
             [
                 fx.paragraph(
-                    fx.run("Body "), fx.run("edit", ins=["suggest.body1"]),
+                    fx.run("Body "),
+                    fx.run("edit", ins=["suggest.body1"]),
                     fx.run(" here.\n"),
                 )
             ],
             headers={
                 "kix.h1": [
                     fx.paragraph(
-                        fx.run("Head "), fx.run("edit", ins=["suggest.hdr1"]),
+                        fx.run("Head "),
+                        fx.run("edit", ins=["suggest.hdr1"]),
                         fx.run("\n"),
                     )
                 ]
@@ -227,9 +229,7 @@ class TestListSuggestions:
                 end_index=20,
             )
         )
-        assert [s["suggestion_id"] for s in in_body["suggestions"]] == [
-            "suggest.body1"
-        ]
+        assert [s["suggestion_id"] for s in in_body["suggestions"]] == ["suggest.body1"]
         assert in_body["filters"]["excluded_other_segments"] == 1
         in_header = json.loads(
             await fn(

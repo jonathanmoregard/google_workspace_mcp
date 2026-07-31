@@ -357,9 +357,7 @@ class TestFilters:
     def test_no_filters_means_an_empty_filter_block(self):
         assert listing(ladder(3))["filters"] == {}
 
-    @pytest.mark.parametrize(
-        "parameter", ["author", "status", "segment_id", "tab_id"]
-    )
+    @pytest.mark.parametrize("parameter", ["author", "status", "segment_id", "tab_id"])
     def test_a_blank_filter_is_refused_rather_than_dropped(self, parameter):
         """Fail-open is the one failure mode a review filter cannot have:
         a dropped filter answers with every suggestion in the document, and
@@ -498,8 +496,13 @@ class TestRangeScope:
 
     def test_a_token_scoped_to_one_segment_is_refused_under_another(self):
         records = [
-            record(f"s.h{i}", start=i * 10, end=i * 10 + 5, segment="header",
-                   segment_id="kix.h1")
+            record(
+                f"s.h{i}",
+                start=i * 10,
+                end=i * 10 + 5,
+                segment="header",
+                segment_id="kix.h1",
+            )
             for i in range(6)
         ] + [record(f"s.b{i}", start=i * 10, end=i * 10 + 5) for i in range(6)]
         first = listing(records, segment_id="kix.h1", page_size=4)
@@ -747,8 +750,11 @@ class TestPageTokenCannotRescope:
         assert first["filters"]["range_scope"]["segment"] == "body"
         header = [
             record(
-                f"h.{i}", start=i * 10, end=i * 10 + 5,
-                segment="header", segment_id="kix.h1",
+                f"h.{i}",
+                start=i * 10,
+                end=i * 10 + 5,
+                segment="header",
+                segment_id="kix.h1",
             )
             for i in range(6)
         ]
@@ -879,10 +885,7 @@ class TestReviewView:
     def test_unwindowed_body_text_is_character_identical_to_the_renderer(self):
         source = rendered_document()
         for mode in ("text", "full"):
-            assert (
-                review_view(source, fields=mode)["body_text"]
-                == source["body_text"]
-            )
+            assert review_view(source, fields=mode)["body_text"] == source["body_text"]
 
     def test_window_narrows_paragraphs_body_text_and_suggestion_ids(self):
         view = review_view(
@@ -914,9 +917,7 @@ class TestReviewView:
 
     def test_a_backwards_window_is_refused(self):
         with pytest.raises(ValueError, match="half-open"):
-            review_view(
-                rendered_document(), fields="full", start_index=16, end_index=8
-            )
+            review_view(rendered_document(), fields="full", start_index=16, end_index=8)
 
     def test_window_that_matches_nothing_is_an_empty_map_not_an_error(self):
         view = review_view(
@@ -1021,21 +1022,25 @@ class TestReviewViewScopeArguments:
         range that genuinely selected nothing."""
         with pytest.raises(ValueError, match="segment_id"):
             review_view(
-                rendered_with_header(), fields="full",
-                start_index=0, end_index=12, segment_id="   ",
+                rendered_with_header(),
+                fields="full",
+                start_index=0,
+                end_index=12,
+                segment_id="   ",
             )
 
     def test_a_blank_tab_id_is_refused(self):
         with pytest.raises(ValueError, match="tab_id"):
             review_view(
-                rendered_document(), fields="full",
-                start_index=1, end_index=8, tab_id=" ",
+                rendered_document(),
+                fields="full",
+                start_index=1,
+                end_index=8,
+                tab_id=" ",
             )
 
     def test_a_scope_without_a_window_says_it_did_nothing(self):
-        view = review_view(
-            rendered_with_header(), fields="full", segment_id="kix.h1"
-        )
+        view = review_view(rendered_with_header(), fields="full", segment_id="kix.h1")
         assert "IGNORED" in view["scope_note"]
         assert "kix.h1" in view["scope_note"]
         # And it really did nothing: the whole document is still here.
@@ -1047,9 +1052,7 @@ class TestReviewViewScopeArguments:
         assert "tab_id='t.0'" in view["scope_note"]
 
     def test_no_scope_note_when_none_was_passed(self):
-        assert "scope_note" not in review_view(
-            rendered_document(), fields="full"
-        )
+        assert "scope_note" not in review_view(rendered_document(), fields="full")
         assert "scope_note" not in review_view(
             rendered_document(), fields="full", start_index=1, end_index=8
         )

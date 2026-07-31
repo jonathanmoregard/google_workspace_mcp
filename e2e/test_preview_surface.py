@@ -336,9 +336,7 @@ def test_fields_filters_and_pagination_against_the_real_api(
         )
     )
     full_record = next(
-        r
-        for r in full["suggestions"]
-        if r["suggestion_id"] == record["suggestion_id"]
+        r for r in full["suggestions"] if r["suggestion_id"] == record["suggestion_id"]
     )
     assert full_record["author"]["display_name"] == record["author"], (
         "summary flattened the author to something other than the display "
@@ -488,9 +486,7 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
                 },
             )
         )
-        return next(
-            (p for p in view["paragraphs"] if p["segment"] == "header"), None
-        )
+        return next((p for p in view["paragraphs"] if p["segment"] == "header"), None)
 
     header = poll_until(
         _header_paragraph, timeout=30, description="the header segment to appear"
@@ -538,15 +534,11 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
         segments = {r["segment"] for r in listing["suggestions"]}
         return listing if {"body", "header"} <= segments else None
 
-    listing = poll_until(
-        _both, timeout=30, description="a body card and a header card"
-    )
+    listing = poll_until(_both, timeout=30, description="a body card and a header card")
     assert listing["fields"] == "summary"
     body_card = next(r for r in listing["suggestions"] if r["segment"] == "body")
     header_card = next(r for r in listing["suggestions"] if r["segment"] == "header")
-    REPORT.note(
-        f"summary cards by segment: body={body_card!r} header={header_card!r}"
-    )
+    REPORT.note(f"summary cards by segment: body={body_card!r} header={header_card!r}")
     assert body_card["segment_id"] is None, body_card
     assert header_card["segment_id"] == header["segment_id"], header_card
 
@@ -561,11 +553,7 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
                 "start_index": header_card["start_index"],
                 "text": "X",
                 "segment_id": header_card["segment_id"],
-                **(
-                    {"tab_id": header_card["tab_id"]}
-                    if header_card["tab_id"]
-                    else {}
-                ),
+                **({"tab_id": header_card["tab_id"]} if header_card["tab_id"] else {}),
             },
         )
     )
@@ -599,8 +587,7 @@ def test_a_header_suggestion_is_addressable_from_the_summary_listing(
         f"card(s), {len(body_after)} body card(s)"
     )
     assert len(body_after) == 1, (
-        "writing back the header card's own indexes landed in the body: "
-        f"{body_after!r}"
+        f"writing back the header card's own indexes landed in the body: {body_after!r}"
     )
 
 
@@ -705,8 +692,12 @@ def test_a_multi_tab_document_never_answers_across_tabs(
     )
     REPORT.note(
         "per-tab summary cards: "
-        + repr([(r["suggestion_id"], r["tab_id"], r["start_index"]) for r in
-                listing["suggestions"]])
+        + repr(
+            [
+                (r["suggestion_id"], r["tab_id"], r["start_index"])
+                for r in listing["suggestions"]
+            ]
+        )
     )
 
     # 1. An index range with no tab_id is refused rather than guessed.
@@ -750,9 +741,7 @@ def test_a_multi_tab_document_never_answers_across_tabs(
     assert sorted(typo["filters"]["tabs_present"]) == sorted(tab_ids), typo["filters"]
 
     # 3. The write echo says which tab it wrote to.
-    second_card = next(
-        r for r in listing["suggestions"] if r["tab_id"] == second_tab
-    )
+    second_card = next(r for r in listing["suggestions"] if r["tab_id"] == second_tab)
     echo_call = tool_json(
         mcp.call_tool(
             "suggest_doc_edit",
@@ -823,9 +812,7 @@ def test_review_view_fields_and_window_against_the_real_api(
     against prod's own text.
     """
     email = ga_auth.email
-    doc_id = make_scratch_doc(
-        "-view", content="First line.\nSecond line.\nThird line."
-    )
+    doc_id = make_scratch_doc("-view", content="First line.\nSecond line.\nThird line.")
 
     full = tool_json(
         mcp.call_tool(
@@ -862,9 +849,12 @@ def test_review_view_fields_and_window_against_the_real_api(
         )
     )
     assert "body_text" not in paragraphs_only
-    assert "".join(
-        p["text"] for p in paragraphs_only["paragraphs"] if p["segment"] == "body"
-    ) == full["body_text"]
+    assert (
+        "".join(
+            p["text"] for p in paragraphs_only["paragraphs"] if p["segment"] == "body"
+        )
+        == full["body_text"]
+    )
 
     # A window taken off prod's own paragraph map returns that paragraph.
     target = body_paragraphs[1]
@@ -1208,6 +1198,336 @@ def test_accept_and_reject_collapse_pre_post(
     )
     assert "ACCEPTED-TOKEN" in read["body_text"]
     assert "REJECTED-TOKEN" not in read["body_text"]
+
+
+def test_accepting_a_deletion_that_spans_a_style_boundary(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """A suggestion prod splits across TWO runs, accepted, against prod.
+
+    Prod chunks a ``textRun`` at every style boundary, so a deletion spanning
+    a bold/regular seam arrives as two deletion-marked runs and the reviewer
+    view renders it ``{-brave-}{- new-}`` -- the base string "brave new" is
+    nowhere in that. The post-write verification used to search the RENDERED
+    text for it and read "not found" as "the accept removed it", so an accept
+    that had not landed reported ``matches_expectation: true`` on the one
+    destructive path these tools have. Nothing in the mock could build the
+    payload (its runs coalesced by mark set alone), so prod is the only
+    oracle this case ever had.
+
+    Both directions are checked here: the accept that lands must say True,
+    and the same split card REJECTED must say True about the text coming
+    back -- which is the mirror comparison, and the one a marker inside the
+    range used to turn into a false alarm.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-split", content="Hello brave new world.")
+
+    # Bold "brave" only -> a style seam between "brave" and " new".
+    styled = tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 12,
+                "bold": True,
+            },
+        )
+    )
+    assert "Error" not in styled, styled
+
+    # Suggest deleting "brave new" -- [7, 16), straight across the seam.
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 7,
+                "end_index": 16,
+            },
+        )
+    )
+    listing = _wait_for_suggestions(mcp, email, doc_id)
+    (card,) = listing["suggestions"]
+    assert card["pre_text"] == "brave new", card
+    assert card["post_text"] == "", card
+
+    # RECORD: is the deletion really two runs in prod's payload? The reviewer
+    # view is where the split becomes visible, and it is the string the old
+    # check searched.
+    view = tool_json(
+        mcp.call_tool(
+            "get_doc_review_view", {"user_google_email": email, "document_id": doc_id}
+        )
+    )
+    REPORT.note(
+        "style-split deletion, reviewer view: "
+        f"{view['body_text']!r} (marked spans for one suggestion id)"
+    )
+    assert "{-brave-}" in view["body_text"], (
+        "prod did not split the run at the style boundary, so this test no "
+        f"longer exercises the multi-run case: {view['body_text']!r}"
+    )
+    assert "brave new" not in view["body_text"], (
+        "the rendered text contains the base string, so the split did not "
+        f"happen: {view['body_text']!r}"
+    )
+
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": card["suggestion_id"],
+            },
+        )
+    )
+    verification = accepted["verification"]
+    REPORT.note(f"style-split accept verification: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    assert verification["matches_expectation"] is True, verification
+    assert "resulting_text_unavailable" not in verification, verification
+    assert "brave" not in verification["resulting_text"], verification
+
+    # The mirror: a split card REJECTED expects the struck text back.
+    reject_doc = make_scratch_doc("-split-reject", content="Hello brave new world.")
+    tool_text(
+        mcp.call_tool(
+            "modify_doc_text",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "start_index": 7,
+                "end_index": 12,
+                "bold": True,
+            },
+        )
+    )
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "start_index": 7,
+                "end_index": 16,
+            },
+        )
+    )
+    reject_card = _wait_for_suggestions(mcp, email, reject_doc)["suggestions"][0]
+    rejected = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": reject_doc,
+                "action": "reject",
+                "suggestion_id": reject_card["suggestion_id"],
+            },
+        )
+    )
+    reject_verification = rejected["verification"]
+    REPORT.note(f"style-split reject verification: {reject_verification!r}")
+    assert reject_verification["expected_text"] == "brave new", reject_verification
+    assert reject_verification["matches_expectation"] is True, reject_verification
+
+
+def test_accepting_next_to_another_pending_card_is_verified_not_diagnosed(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """Two pending cards ~11 characters apart; accept one, against prod.
+
+    The surviving card's pending insertion falls inside the accepted card's
+    40-character ``context_before`` window. That window is BASE text and
+    carries no markers, but the post-write check used to look for it in the
+    RENDERED text, where the neighbour reads ``{+INSERTED-B +}``: the anchor
+    was not found, and the tool reported ``anchor_not_found`` with a note
+    asserting "the likeliest cause is a concurrent edit by another editor"
+    about a document nobody else had touched.
+
+    Constructible with one account, unlike the overlapping case: prod's
+    same-author merge needs the ranges to abut, and these do not (confirmed
+    by ``test_accept_can_garbage_collect_another_suggestion``, which relies on
+    the opposite).
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-neighbour", content="one two three four.")
+
+    # Highest index first, so the pending insertion cannot shift the range
+    # the deletion was computed against. "three" is [9, 14).
+    tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": 9,
+                "end_index": 14,
+            },
+        )
+    )
+    _suggest_insert(mcp, email, doc_id, "INSERTED-B ", index=5)
+
+    listing = _wait_for_suggestions(mcp, email, doc_id, minimum=2)
+    REPORT.note(
+        "two cards ~11 chars apart: "
+        + repr(
+            [
+                (r["suggestion_id"], r["type"], r["pre_text"], r["context_before"])
+                for r in listing["suggestions"]
+            ]
+        )
+    )
+    deletion = next(r for r in listing["suggestions"] if r["type"] == "deletion")
+    insertion = next(r for r in listing["suggestions"] if r["type"] == "insertion")
+    # The anchor is base text, so the neighbour's pending insertion is NOT in
+    # it -- which is exactly the disagreement with the rendered string.
+    assert deletion["context_before"] == "one two ", deletion
+    assert "INSERTED-B" not in deletion["context_before"], deletion
+
+    accepted = tool_json(
+        mcp.call_tool(
+            "manage_document_suggestion",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "accept",
+                "suggestion_id": deletion["suggestion_id"],
+            },
+        )
+    )
+    verification = accepted["verification"]
+    REPORT.note(f"accept beside a pending neighbour: {verification!r}")
+    assert verification["still_pending"] is False, verification
+    assert verification["matches_expectation"] is True, verification
+    assert "resulting_text_unavailable" not in verification, verification
+    assert "notes" not in verification, verification
+    # The neighbour is untouched and still pending.
+    assert verification["pending_suggestion_ids"] == [insertion["suggestion_id"]], (
+        verification
+    )
+
+
+def test_a_header_entry_carries_the_tab_it_lives_in(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """``get_doc_review_view``'s header entries must be whole addresses.
+
+    Prod MINTS segment ids document-wide but RESOLVES them per tab: a
+    request naming another tab's header id is rejected with "Segment with ID
+    ... was not found". The entries used to be a ``segment_id -> text`` map
+    with no tab anywhere, so an agent reading a header on a multi-tab
+    document had exactly the id that does not work and nothing to fix it
+    with. RECORD what prod does with both.
+    """
+    email = ga_auth.email
+    doc_id = make_scratch_doc("-tabheader", content="First tab body.")
+
+    created = tool_json(
+        mcp.call_tool(
+            "manage_doc_tab",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "action": "create",
+                "title": "Second tab",
+                "index": 1,
+            },
+        )
+    )
+    assert created["success"], created
+
+    def _two_tabs():
+        listing = tool_json(
+            mcp.call_tool(
+                "list_document_suggestions",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return listing if len(listing.get("tabs") or []) >= 2 else None
+
+    tabs = poll_until(_two_tabs, timeout=30, description="a second tab")["tabs"]
+    tab_ids = [t["tab_id"] for t in tabs]
+
+    header = tool_text(
+        mcp.call_tool(
+            "update_doc_headers_footers",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "section_type": "header",
+                "content": "Header of the first tab.",
+            },
+        )
+    )
+    assert "Error" not in header, header
+
+    def _header_entry():
+        view = tool_json(
+            mcp.call_tool(
+                "get_doc_review_view",
+                {"user_google_email": email, "document_id": doc_id},
+            )
+        )
+        return view if view.get("headers") else None
+
+    view = poll_until(_header_entry, timeout=30, description="a header entry")
+    (entry,) = view["headers"]
+    REPORT.note(f"get_doc_review_view header entry on a two-tab document: {entry!r}")
+    assert entry["segment"] == "header", entry
+    assert entry["segment_id"], entry
+    assert entry["tab_id"] in tab_ids, entry
+    assert entry["text"].startswith("Header of the first tab"), entry
+
+    # The entry is a complete address: writing back with exactly what it says
+    # lands, and the write's own echo agrees about where.
+    echo = tool_json(
+        mcp.call_tool(
+            "suggest_doc_edit",
+            {
+                "user_google_email": email,
+                "document_id": doc_id,
+                "start_index": entry["start_index"],
+                "text": "DRAFT ",
+                "segment_id": entry["segment_id"],
+                "tab_id": entry["tab_id"],
+            },
+        )
+    )
+    echoed = echo["verification"].get("created_suggestions") or echo[
+        "verification"
+    ].get("suggestions_at_edit_range")
+    assert echoed, echo["verification"]
+    for record in echoed:
+        assert record["segment_id"] == entry["segment_id"], record
+        assert record["tab_id"] == entry["tab_id"], record
+
+    # And prod's own refusal, RECORDED: the same segment id WITHOUT its tab.
+    wrong = mcp.call_tool_raw(
+        "suggest_doc_edit",
+        {
+            "user_google_email": email,
+            "document_id": doc_id,
+            "start_index": entry["start_index"],
+            "text": "X",
+            "segment_id": entry["segment_id"],
+            "tab_id": [t for t in tab_ids if t != entry["tab_id"]][0],
+        },
+    )
+    REPORT.note(
+        "a header segment id addressed in the WRONG tab: "
+        + ("ERROR: " + tool_text(wrong)[:220] if wrong.is_error else "accepted (!)")
+    )
+    assert wrong.is_error, (
+        "prod accepted a segment id in a tab it does not belong to; the "
+        "per-tab resolution this entry's tab_id exists for does not hold: "
+        + tool_text(wrong)[:300]
+    )
 
 
 def test_accept_can_garbage_collect_another_suggestion(

@@ -24,6 +24,7 @@ from googleapiclient.errors import HttpError
 from core.utils import UserInputError
 from gdocs_preview import (
     address,
+    preview_read,
     preview_status,
     review_page,
     suggestion_ledger,
@@ -2195,9 +2196,10 @@ class TestOverlapSemanticsAreShared:
     def test_a_single_tab_document_resolves_implicitly_on_both_paths(self):
         single = [r for r in self.RECORDS if r["tab_id"] == "t.0"]
         for side in (self._read_side, self._write_side):
-            assert side(
-                single, tab_ids=("t.0",), segment_id=None, tab_id=None
-            ) == ("ok", ["b.t0"])
+            assert side(single, tab_ids=("t.0",), segment_id=None, tab_id=None) == (
+                "ok",
+                ["b.t0"],
+            )
 
     def test_a_tab_holding_no_cards_still_forces_a_tab_id(self):
         """HIGH 1: the round-1/2 class surviving UNDER the refusal.
@@ -2442,3 +2444,151 @@ class TestResolutionIsLocatedInItsOwnSegment:
         verification = result["verification"]
         assert verification["resulting_text"] is None
         assert verification["matches_expectation"] is None
+
+
+class TestAnUnlocatedWindowSaysWhy:
+    """HIGH 2: ``matches_expectation: null`` used to be four situations.
+
+    A null verdict with no note is indistinguishable from "we never listed
+    this id" (nothing is wrong), from an ambiguous multi-tab read (name the
+    tab), from a degraded read that lost its tab ids (retry), and from a
+    concurrent-edit anchor miss (somebody else changed the document). The
+    agent's next move differs in every case, and none of them means the
+    write failed -- which is the reading a bare null invites. Its sibling
+    ``_verify_suggest`` already names its one ambiguity
+    (``suggestions_at_edit_range_unavailable``); this is the same courtesy
+    on the destructive path.
+    """
+
+    RECORD = {
+        "suggestion_id": "suggest.t1",
+        "type": "insertion",
+        "pre_text": "",
+        "post_text": "bravo",
+        "context_before": "Two ",
+        "context_after": ".\n",
+        "segment": "body",
+        "segment_id": None,
+        "tab_id": "t.0",
+        "start_index": 5,
+        "end_index": 10,
+    }
+
+    @staticmethod
+    async def _accept(service, suggestion_id="suggest.t1") -> dict:
+        fn = _unwrap(write_tools.manage_document_suggestion)
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id=suggestion_id,
+            )
+        )
+        return result["verification"]
+
+    @pytest.mark.asyncio
+    async def test_an_id_we_never_listed_says_so(self):
+        """The benign case, and the one a bare null hid most damagingly:
+        nothing about the document is wrong."""
+        verification = await self._accept(
+            _batch_service({}, document=EMPTY_READ), suggestion_id="never.listed"
+        )
+        assert verification["matches_expectation"] is None
+        assert verification["resulting_text_unavailable"] == "suggestion_not_listed"
+        (note,) = verification["notes"]
+        assert "never listed" in note
+        assert "NOT because the write failed" in note
+        # The end state is still answered.
+        assert verification["still_pending"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_tab_says_which_tabs(self):
+        _observe({**self.RECORD, "tab_id": None})
+        verification = await self._accept(_batch_service({}, document=TWO_TAB_READ))
+        assert verification["matches_expectation"] is None
+        assert verification["resulting_text_unavailable"] == "ambiguous_tab"
+        (note,) = verification["notes"]
+        assert "2 tabs" in note and "t.0" in note and "t.second" in note
+        assert "list_document_suggestions(tab_id=...)" in note
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_read_that_lost_the_tab_ids_says_so(self):
+        """The GA documents.get carries no tabs at all, so a card listed in
+        't.0' has no segment to be located in after the fallback."""
+        _observe(self.RECORD)
+        service = Mock()
+        service.documents.return_value.batchUpdate.return_value.execute = Mock(
+            return_value={}
+        )
+
+        def _get(**kwargs):
+            if "commentsViewMode" in kwargs:
+                raise preview_read.PreviewReadError("not enrolled")
+            return Mock(
+                execute=Mock(
+                    return_value=fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))])
+                )
+            )
+
+        service.documents.return_value.get.side_effect = _get
+
+        verification = await self._accept(service)
+        assert verification["read_source"] == "ga_documents_get"
+        assert verification["matches_expectation"] is None
+        assert verification["resulting_text_unavailable"] == "segment_not_in_read"
+        (note,) = verification["notes"]
+        assert "ga_documents_get" in note
+        assert "'t.0'" in note
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_anchor_is_named_as_a_concurrent_edit(self):
+        """The anchor is base text -- resolving cannot touch it -- so its
+        disappearance is somebody else's edit, not this write's doing."""
+        _observe(self.RECORD)
+        verification = await self._accept(
+            _batch_service(
+                {},
+                document=fx.build_tabs_payload(
+                    [
+                        (
+                            "t.0",
+                            fx.build_doc([fx.paragraph(fx.run("Wholly rewritten.\n"))]),
+                        )
+                    ]
+                ),
+            )
+        )
+        assert verification["matches_expectation"] is None
+        assert verification["resulting_text_unavailable"] == "anchor_not_found"
+        (note,) = verification["notes"]
+        assert "concurrent edit" in note
+
+    @pytest.mark.asyncio
+    async def test_a_located_window_carries_no_unavailable_key(self):
+        _observe(self.RECORD)
+        verification = await self._accept(
+            _batch_service(
+                {},
+                document=fx.build_tabs_payload(
+                    [("t.0", fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))]))]
+                ),
+            )
+        )
+        assert verification["matches_expectation"] is True
+        assert "resulting_text_unavailable" not in verification
+        assert "notes" not in verification
+
+    def test_every_reason_has_a_note(self):
+        """A reason code with no sentence behind it is a silent null again."""
+        read = Mock(tab_ids=["t.0", "t.second"], source="preview_threads")
+        for reason in write_tools.UNLOCATED_REASONS:
+            note = write_tools._unlocated_note(
+                reason,
+                suggestion_id="s.1",
+                record=self.RECORD,
+                read=read,
+            )
+            assert "s.1" in note or "post-write read" in note
+            assert "NOT because the write failed" in note

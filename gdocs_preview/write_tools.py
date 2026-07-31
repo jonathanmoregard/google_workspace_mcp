@@ -178,25 +178,36 @@ class _PostWriteRead:
     def live_ids(self) -> frozenset[str]:
         return frozenset(self.records)
 
-    def text_at(self, record: dict[str, Any]) -> Optional[str]:
+    def text_at(self, record: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
         """The rendered text of the ONE ``(tab, segment)`` ``record`` lives in.
 
-        A record that names no tab is resolved the way
+        Returns ``(text, None)``, or ``(None, reason)`` naming why this read
+        cannot say. A record that names no tab is resolved the way
         :func:`gdocs_preview.address.resolve_range_scope` resolves an omitted
         ``tab_id``: implicitly when the read has one tab, and not at all when
-        it has several. ``None`` means "this read cannot say", which the
-        caller reports as an unlocated window rather than guessing -- a
-        guessed tab makes ``matches_expectation`` a statement about a
-        different part of the document.
+        it has several -- a guessed tab makes ``matches_expectation`` a
+        statement about a different part of the document.
+
+        The reason is returned rather than swallowed because a bare ``None``
+        window is three different situations wearing one face, and an agent
+        acts differently on each: an ambiguous multi-tab read is fixed by
+        naming the tab, a degraded read is fixed by retrying, and a missing
+        anchor means somebody else edited the document. Reporting all three
+        as ``resulting_text: null`` also made them indistinguishable from
+        "we never listed this id" -- which is the one case where nothing is
+        wrong at all.
         """
         segment_id = record.get("segment_id") or None
         tab_id = record.get("tab_id") or None
         if tab_id is None:
             candidates = sorted({tab for tab in self.tab_ids if tab})
             if len(candidates) > 1:
-                return None
+                return None, "ambiguous_tab"
             tab_id = candidates[0] if candidates else None
-        return self.segment_texts.get((tab_id, segment_id))
+        text = self.segment_texts.get((tab_id, segment_id))
+        if text is None:
+            return None, "segment_not_in_read"
+        return text, None
 
 
 async def _post_write_read(
@@ -262,6 +273,70 @@ def _locate(
         return None
     end = position + len(anchor) + len(expected) + CONTEXT_WINDOW
     return segment_text[position:end]
+
+
+#: The reason codes :func:`_verify_resolution` reports as
+#: ``resulting_text_unavailable``. Every one of them means the same thing
+#: about the verdict -- ``matches_expectation: null`` because NO CHECK RAN --
+#: and a different thing about what the caller should do next, which is the
+#: whole reason they are separate values instead of one silent ``null``.
+UNLOCATED_REASONS = (
+    "suggestion_not_listed",
+    "ambiguous_tab",
+    "segment_not_in_read",
+    "anchor_not_found",
+)
+
+_NOT_A_FAILED_WRITE = (
+    "matches_expectation is null because no check ran, NOT because the write "
+    "failed -- `still_pending` is the evidence about the write itself."
+)
+
+
+def _unlocated_note(
+    reason: str,
+    *,
+    suggestion_id: str,
+    record: Optional[dict[str, Any]],
+    read: "_PostWriteRead",
+) -> str:
+    """One sentence saying why no verdict was reached, and what to do."""
+    if reason == "suggestion_not_listed":
+        return (
+            f"this session never listed suggestion {suggestion_id!r}, so there "
+            f"is no expected text to compare the document against. "
+            f"{_NOT_A_FAILED_WRITE} Call list_document_suggestions before "
+            "resolving to get the before/after text of the card."
+        )
+    if reason == "ambiguous_tab":
+        tabs = sorted({t for t in read.tab_ids if t})
+        return (
+            f"suggestion {suggestion_id!r} was listed without a tab_id and this "
+            f"read has {len(tabs)} tabs ({', '.join(tabs)}), so the text at its "
+            "range cannot be located: an index means a different place in each "
+            f"tab. {_NOT_A_FAILED_WRITE} Re-read with "
+            "list_document_suggestions(tab_id=...) to see the resulting text."
+        )
+    if reason == "segment_not_in_read":
+        where = (
+            f"tab={(record or {}).get('tab_id')!r}, "
+            f"segment={(record or {}).get('segment_id')!r}"
+        )
+        return (
+            f"the post-write read does not contain the ({where}) that "
+            f"suggestion {suggestion_id!r} was listed in, so its range could "
+            f"not be located -- read_source is {read.source!r}, and the GA "
+            "documents.get carries no tabs at all, so a read that degraded "
+            f"loses every tab id. {_NOT_A_FAILED_WRITE} Retry the read."
+        )
+    return (
+        f"the base text immediately before suggestion {suggestion_id!r}'s range "
+        "is no longer in that segment, so the range could not be located -- "
+        "that text is unaffected by accepting or rejecting, so the likeliest "
+        "cause is a concurrent edit by another editor between the listing and "
+        f"this write. {_NOT_A_FAILED_WRITE} Re-read the document to see its "
+        "current state."
+    )
 
 
 def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) -> bool:
@@ -813,12 +888,25 @@ async def manage_document_suggestion(
             (including its segment/segment_id/tab_id, so its indexes are a
             complete address), expected_text, resulting_text,
             matches_expectation, pending_suggestion_count,
-            pending_suggestion_ids, and -- only when non-empty --
-            also_removed_suggestion_ids + notes}.
+            pending_suggestion_ids, and -- only when they apply --
+            resulting_text_unavailable, also_removed_suggestion_ids and
+            notes}.
 
             resulting_text is read in the resolved suggestion's OWN (tab,
             segment), never the document body, so matches_expectation is a
-            statement about the place the write happened.
+            statement about the place the write happened. It is compared at
+            full width; only the echoed copy is trimmed.
+
+            matches_expectation is null ONLY when no check could be run, and
+            resulting_text_unavailable then names which of the four reasons
+            it was: suggestion_not_listed (this session never listed the id,
+            so there is no before/after to compare), ambiguous_tab (the card
+            carried no tab_id and the document has several),
+            segment_not_in_read (the post-write read lost that (tab,
+            segment) -- a degraded GA read carries no tab ids), or
+            anchor_not_found (the base text before the range is gone, which
+            means a concurrent edit). None of them says the write failed;
+            still_pending is the evidence about that.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":
@@ -922,6 +1010,12 @@ async def _verify_resolution(
     clipped (:func:`_clip`). Comparing against the clipped window made the
     verdict a function of :data:`ECHO_MAX_CHARS` rather than of the write --
     fail-open on the destructive path, false-alarm on the constructive one.
+
+    A ``matches_expectation`` of ``None`` always carries
+    ``resulting_text_unavailable`` naming which of
+    :data:`UNLOCATED_REASONS` prevented the check, plus a note saying so in
+    words. Silence made four different situations -- one of them entirely
+    benign -- arrive at the agent as the same ``null``.
     """
     if not verify:
         # Still remember the resolution: a later "does not exist" for this id
@@ -941,6 +1035,7 @@ async def _verify_resolution(
     expected_text: Optional[str] = None
     resulting_text: Optional[str] = None
     matches: Optional[bool] = None
+    unlocated: Optional[str] = None if resolved_record else "suggestion_not_listed"
     if resolved_record is not None:
         kept, dropped = (
             ("post_text", "pre_text")
@@ -956,8 +1051,9 @@ async def _verify_resolution(
         # and its context window are numbered there and nowhere else. Full
         # width, not the echo width -- the comparison below is the whole
         # point of the read, and a clipped window answers about the clip.
+        segment_text, unlocated = read.text_at(resolved_record)
         resulting_text = _locate(
-            read.text_at(resolved_record),
+            segment_text,
             resolved_record.get("context_before"),
             expected_text or removed_text or "",
         )
@@ -966,6 +1062,9 @@ async def _verify_resolution(
                 matches = expected_text in resulting_text
             elif removed_text:
                 matches = removed_text not in resulting_text
+        elif unlocated is None:
+            # The segment was found; the anchor inside it was not.
+            unlocated = "anchor_not_found"
 
     verification: dict[str, Any] = {
         "source": "post_write_read",
@@ -983,6 +1082,20 @@ async def _verify_resolution(
         "pending_suggestion_count": len(read.records),
         "pending_suggestion_ids": sorted(read.records),
     }
+    if unlocated is not None:
+        # Its sibling _verify_suggest names its one ambiguity
+        # (``suggestions_at_edit_range_unavailable``); a null verdict here
+        # said nothing at all, so "the read could not see that tab", "the
+        # anchor is gone" and "we never listed this id" arrived identical.
+        verification["resulting_text_unavailable"] = unlocated
+        verification["notes"] = [
+            _unlocated_note(
+                unlocated,
+                suggestion_id=suggestion_id,
+                record=resolved_record,
+                read=read,
+            )
+        ]
 
     collateral = (
         sorted((known_before - read.live_ids) - {suggestion_id})
@@ -994,9 +1107,9 @@ async def _verify_resolution(
     )
     if collateral:
         verification["also_removed_suggestion_ids"] = collateral
-        verification["notes"] = [
+        verification.setdefault("notes", []).extend(
             suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
-        ]
+        )
     suggestion_ledger.observe(user_google_email, document_id, read.records.values())
     return verification
 

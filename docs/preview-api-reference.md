@@ -11,7 +11,7 @@ launched 2026-07-07: comment threads, suggestion accept/reject/delete, and the
 2026-07-13). The preview surface is absent from the public discovery document.
 Statements marked **VERIFIED 2026-07-30** were observed against the live API
 with an enrolled Workspace Developer Preview account
-(`jonathan@klaffat.com`); statements marked **UNCERTAIN** are still gaps in
+(a single enrolled Workspace account); statements marked **UNCERTAIN** are still gaps in
 the official docs, preserved verbatim from the overlay this file replaces
 (`codegen/overlay/docs_preview_overlay.json` +
 `codegen/overlay/generator_config.json`, removed in the 2026-07-29 redirect).

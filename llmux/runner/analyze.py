@@ -8,6 +8,19 @@ move the wrong-tool-for-intent rate?).
 The report leads with the taxonomy rather than the pass rate on purpose: a
 pass rate says how the models did, the taxonomy says what the tools did to
 them.
+
+**One definition of a pass, used everywhere.** A run's verdict is its
+``outcome`` (``llmux.runner.run``), never ``grade.passed`` on its own. The
+two are not the same: a run that was throttled, killed by the wall clock, or
+handed a contaminated tool surface is ``INCONCLUSIVE``, and its
+``grade.passed`` is whatever the grader made of a document the agent may
+never have finished working on. This module used ``result.passed`` while
+``run.py`` used ``outcome``, so an INCONCLUSIVE run counted as a PASS in the
+headline and in every pass-rate cell -- inflating exactly the number the
+INCONCLUSIVE state was introduced to protect. Pass rate is therefore
+``passes / (passes + fails)``, INCONCLUSIVE runs are excluded from it and
+from ``mean_score``, and they are carried as their own count so nothing
+about them is invisible.
 """
 
 from __future__ import annotations
@@ -17,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
+from llmux.runner.run import OUTCOME_FAIL, OUTCOME_INCONCLUSIVE, OUTCOME_PASS
 from llmux.runner.taxonomy import (
     CLASSES,
     POSITIVE_CLASSES,
@@ -29,29 +43,50 @@ DIFFICULTY_ORDER = ("easy", "medium", "hard", "unknown")
 
 @dataclass
 class Cell:
-    """Pass rate for one bucket of runs."""
+    """Pass rate for one bucket of runs.
+
+    ``runs`` is every run that landed in the bucket; ``passes``/``fails`` are
+    the ones that produced a capability result. The rate is over the latter,
+    because a batch where three runs were throttled is a batch with three
+    fewer measurements, not three more passes.
+    """
 
     runs: int = 0
     passes: int = 0
+    fails: int = 0
+    inconclusive: int = 0
     score_total: float = 0.0
 
-    def add(self, passed: bool, score: float) -> None:
+    def add(self, outcome: str, score: float) -> None:
         self.runs += 1
-        self.passes += int(bool(passed))
+        if outcome == OUTCOME_INCONCLUSIVE:
+            self.inconclusive += 1
+            return
         self.score_total += score
+        if outcome == OUTCOME_PASS:
+            self.passes += 1
+        else:
+            self.fails += 1
+
+    @property
+    def conclusive(self) -> int:
+        return self.passes + self.fails
 
     @property
     def pass_rate(self) -> float:
-        return self.passes / self.runs if self.runs else 0.0
+        return self.passes / self.conclusive if self.conclusive else 0.0
 
     @property
     def mean_score(self) -> float:
-        return self.score_total / self.runs if self.runs else 0.0
+        return self.score_total / self.conclusive if self.conclusive else 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "runs": self.runs,
             "passes": self.passes,
+            "fails": self.fails,
+            "inconclusive": self.inconclusive,
+            "conclusive": self.conclusive,
             "pass_rate": round(self.pass_rate, 3),
             "mean_score": round(self.mean_score, 3),
         }
@@ -63,6 +98,7 @@ class Aggregate:
 
     total_runs: int = 0
     total_passes: int = 0
+    total_fails: int = 0
     total_cost_usd: float = 0.0
     total_wall_s: float = 0.0
     total_turns: int = 0
@@ -76,9 +112,11 @@ class Aggregate:
     #: One entry per run of a scenario that declared a concurrent editor.
     interference: list[dict[str, Any]] = field(default_factory=list)
     #: Runs whose grade is not a capability result: throttled, killed by the
-    #: wall clock, or off the measured tool surface. Reported alongside the
-    #: pass rate rather than folded into it -- the arithmetic is unchanged so
-    #: batches stay comparable, but the caveat is impossible to miss.
+    #: wall clock, or handed a contaminated tool surface. EXCLUDED from every
+    #: pass rate and every mean score, and carried here so the exclusion is
+    #: visible rather than silent. Counting them as passes -- which this
+    #: module did, by reading ``result.passed`` where ``run.py`` read
+    #: ``outcome`` -- inflates the exact number they exist to protect.
     inconclusive: list[dict[str, Any]] = field(default_factory=list)
     #: Non-MCP tools any run was offered or reached for.
     contamination: list[str] = field(default_factory=list)
@@ -88,18 +126,21 @@ class Aggregate:
 
     @property
     def pass_rate(self) -> float:
-        return self.total_passes / self.total_runs if self.total_runs else 0.0
+        """Passes over CONCLUSIVE runs -- see the module docstring."""
+        return self.total_passes / self.conclusive_runs if self.conclusive_runs else 0.0
 
     @property
     def conclusive_runs(self) -> int:
-        return self.total_runs - len(self.inconclusive)
+        return self.total_passes + self.total_fails
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "totals": {
                 "runs": self.total_runs,
                 "passes": self.total_passes,
+                "fails": self.total_fails,
                 "pass_rate": round(self.pass_rate, 3),
+                "pass_rate_denominator": "conclusive runs (PASS + FAIL)",
                 "inconclusive": len(self.inconclusive),
                 "conclusive_runs": self.conclusive_runs,
                 "cost_usd": round(self.total_cost_usd, 4),
@@ -153,21 +194,26 @@ def _fold(
     agg: Aggregate, result: Any, per_run_findings: list[Sequence[Finding]]
 ) -> None:
     """Add one run to the report model."""
+    reasons = list(getattr(result, "inconclusive_reasons", ()) or ())
+    outcome = getattr(
+        result, "outcome", OUTCOME_PASS if result.passed else "FAIL"
+    )
+
     agg.total_runs += 1
-    agg.total_passes += int(bool(result.passed))
+    if outcome == OUTCOME_PASS:
+        agg.total_passes += 1
+    elif outcome != OUTCOME_INCONCLUSIVE:
+        agg.total_fails += 1
     agg.total_cost_usd += float(result.transcript.cost_usd or 0.0)
     agg.total_wall_s += float(result.wall_s or 0.0)
     agg.total_turns += int(result.transcript.num_turns or 0)
 
     score = float(result.grade.score)
-    agg.by_model.setdefault(result.model, Cell()).add(result.passed, score)
-    agg.by_difficulty.setdefault(result.difficulty, Cell()).add(result.passed, score)
+    agg.by_model.setdefault(result.model, Cell()).add(outcome, score)
+    agg.by_difficulty.setdefault(result.difficulty, Cell()).add(outcome, score)
     agg.by_model_difficulty.setdefault(result.model, {}).setdefault(
         result.difficulty, Cell()
-    ).add(result.passed, score)
-
-    reasons = list(getattr(result, "inconclusive_reasons", ()) or ())
-    outcome = getattr(result, "outcome", "PASS" if result.passed else "FAIL")
+    ).add(outcome, score)
 
     entry = agg.by_scenario.setdefault(
         result.scenario_id,
@@ -218,6 +264,7 @@ def _fold(
                 "scenario_id": result.scenario_id,
                 "model": result.model,
                 "pass": bool(result.passed),
+                "outcome": outcome,
                 **interference,
             }
         )
@@ -242,9 +289,13 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
     if corpus:
         lines.append(f"Corpus: `{corpus}`")
     lines.append(
-        f"{agg.total_runs} run(s), {agg.total_passes} passed "
-        f"({_pct(agg.pass_rate)}), {agg.total_turns} turns, "
-        f"${agg.total_cost_usd:.2f}, {agg.total_wall_s / 60:.1f} min wall."
+        f"{agg.total_runs} run(s): {agg.total_passes} PASS, "
+        f"{agg.total_fails} FAIL, {len(agg.inconclusive)} INCONCLUSIVE. "
+        f"Pass rate {_pct(agg.pass_rate)} "
+        f"({agg.total_passes}/{agg.conclusive_runs} conclusive runs; "
+        "INCONCLUSIVE runs are excluded, never counted as passes). "
+        f"{agg.total_turns} turns, ${agg.total_cost_usd:.2f}, "
+        f"{agg.total_wall_s / 60:.1f} min wall."
     )
     lines.append("")
 
@@ -254,11 +305,13 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         lines.append(
             f"{len(agg.inconclusive)} of {agg.total_runs} run(s) did not "
             "produce a capability result: the account was throttled, the "
-            "harness wall clock killed the run, or the agent got outside the "
-            "tool surface under measurement. Their scores are still counted "
-            "in every table below -- the arithmetic is deliberately unchanged "
-            "so batches stay comparable -- but a curve drawn through them is "
-            "measuring the harness, not the tools."
+            "harness wall clock killed the run, or the tool surface under "
+            "measurement was contaminated. They are EXCLUDED from every pass "
+            "rate and every mean score below -- a run that did not measure "
+            "the tools cannot be evidence about the tools, in either "
+            "direction -- and counted in their own column so the exclusion "
+            "is never invisible. A batch with many of these has a smaller "
+            "sample, not a better score."
         )
         lines.append("")
         lines.append("| scenario | model | score | why |")
@@ -361,7 +414,7 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         )
         lines.append("")
         lines.append(
-            "| scenario | model | pass | fired (at agent call) | re-read | "
+            "| scenario | model | outcome | fired (at agent call) | re-read | "
             "blind retries | stale writes |"
         )
         lines.append("| --- | --- | :---: | --- | :---: | ---: | ---: |")
@@ -369,9 +422,12 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
             fired = ", ".join(
                 f"{f['name']}@{f['at_call']}" for f in entry.get("fired") or []
             )
+            outcome = entry.get("outcome") or (
+                OUTCOME_PASS if entry["pass"] else OUTCOME_FAIL
+            )
             lines.append(
                 f"| {entry['scenario_id']} | {entry['model']} | "
-                f"{'PASS' if entry['pass'] else 'FAIL'} | {fired or '(none)'} | "
+                f"{outcome} | {fired or '(none)'} | "
                 f"{'yes' if entry.get('reread_after_change') else 'NO'} | "
                 f"{entry.get('blind_retries', 0)} | "
                 f"{entry.get('stale_index_writes', 0)} |"
@@ -393,22 +449,34 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
 
     lines.append("## Pass rate by model x difficulty")
     lines.append("")
+    lines.append(
+        "Every cell is `passes/conclusive` -- INCONCLUSIVE runs are not in "
+        "the numerator or the denominator. The last column counts them, so a "
+        "cell computed from two runs instead of four is visible rather than "
+        "inferred."
+    )
+    lines.append("")
     difficulties = _sorted_difficulties(agg.by_difficulty)
-    header = "| model | " + " | ".join(difficulties) + " | overall |"
+    header = "| model | " + " | ".join(difficulties) + " | overall | inconclusive |"
     lines.append(header)
-    lines.append("| --- | " + " | ".join("---:" for _ in difficulties) + " | ---: |")
+    lines.append(
+        "| --- | " + " | ".join("---:" for _ in difficulties) + " | ---: | ---: |"
+    )
     for model in sorted(agg.by_model):
         cells = agg.by_model_difficulty.get(model, {})
         row = [f"| {model} "]
         for difficulty in difficulties:
             cell = cells.get(difficulty)
             row.append(
-                f"| {_pct(cell.pass_rate)} ({cell.passes}/{cell.runs}) "
+                f"| {_pct(cell.pass_rate)} ({cell.passes}/{cell.conclusive}) "
                 if cell
                 else "| - "
             )
         overall = agg.by_model[model]
-        row.append(f"| {_pct(overall.pass_rate)} ({overall.passes}/{overall.runs}) |")
+        row.append(
+            f"| {_pct(overall.pass_rate)} ({overall.passes}/{overall.conclusive}) "
+            f"| {overall.inconclusive} |"
+        )
         lines.append("".join(row))
     lines.append("")
 
@@ -436,10 +504,16 @@ def render_markdown(agg: Aggregate, *, stamp: str, corpus: Optional[str] = None)
         (sid, model, run)
         for sid, entry in sorted(agg.by_scenario.items())
         for model, run in sorted(entry["runs"].items())
-        if not run["pass"]
+        if run.get("outcome") == OUTCOME_FAIL
     ]
     if failing:
         lines.append("## Failures in detail")
+        lines.append("")
+        lines.append(
+            "Runs that measured the tools and failed. INCONCLUSIVE runs are "
+            "in their own section above; a grader verdict on a run that was "
+            "throttled or contaminated is not a failure of the tools."
+        )
         lines.append("")
         for scenario_id, model, run in failing:
             lines.append(f"### {scenario_id} [{model}]")
@@ -659,8 +733,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     reports_dir = args.reports_dir or batch_dir.parent
     stamp = args.stamp or f"{batch_dir.name}-reanalyzed"
     paths = write_report(results, reports_dir, stamp=stamp)
-    passed = sum(1 for r in results if r.passed)
-    print(f"{passed}/{len(results)} runs passed")
+    # The same definition run.py prints: outcome, not grade.passed.
+    passed = sum(1 for r in results if r.outcome == OUTCOME_PASS)
+    inconclusive = sum(1 for r in results if r.outcome == OUTCOME_INCONCLUSIVE)
+    conclusive = len(results) - inconclusive
+    print(f"{passed}/{conclusive} conclusive runs passed")
+    if inconclusive:
+        print(
+            f"{inconclusive} run(s) INCONCLUSIVE, excluded from that rate "
+            "(not a capability result)"
+        )
     print(f"report: {paths['markdown']}")
     print(f"json:   {paths['json']}")
     return 0

@@ -73,13 +73,17 @@ class RunOptions:
     keep_going: bool = True
 
 
-#: A run's verdict. ``INCONCLUSIVE`` is the third state the batch needed: a
-#: run that was throttled, killed by the wall clock, or spent turns outside
-#: the surface under measurement did not measure the tool surface, and
-#: scoring it as FAIL puts the account's usage limits into the capability
-#: curve. It is deliberately NOT part of the pass/fail arithmetic -- clean
-#: runs grade exactly as they always did, so batches stay comparable -- it is
-#: an extra label the report leads with.
+#: A run's verdict, and the ONLY definition of one -- ``grade.passed`` is an
+#: input to it, never a substitute for it (``llmux.runner.analyze`` used to
+#: read ``passed`` where this module read ``outcome``, which counted every
+#: INCONCLUSIVE run as a pass).
+#:
+#: ``INCONCLUSIVE`` is the third state the batch needed: a run that was
+#: throttled, killed by the wall clock, or handed a contaminated tool surface
+#: did not measure the tools, and scoring it either way puts the harness into
+#: the capability curve. It is excluded from every pass rate and every mean
+#: score, and counted on its own, so a batch with three of them reads as a
+#: batch with three fewer measurements rather than three more passes.
 OUTCOME_PASS = "PASS"
 OUTCOME_FAIL = "FAIL"
 OUTCOME_INCONCLUSIVE = "INCONCLUSIVE"
@@ -690,12 +694,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"{label + ':':9s} {report_paths[label]}")
     passed = sum(1 for r in results if r.outcome == OUTCOME_PASS)
     inconclusive = [r for r in results if r.outcome == OUTCOME_INCONCLUSIVE]
-    print(f"{passed}/{len(results)} runs passed")
+    conclusive = len(results) - len(inconclusive)
+    print(f"{passed}/{conclusive} conclusive runs passed")
     if inconclusive:
         print(
-            f"{len(inconclusive)} run(s) INCONCLUSIVE (not a capability "
-            "result -- rate limit, wall clock, or an escape from the "
-            "measured tool surface):"
+            f"{len(inconclusive)} run(s) INCONCLUSIVE, excluded from that "
+            "rate (not a capability result -- rate limit, wall clock, or a "
+            "contaminated tool surface):"
         )
         for result in inconclusive:
             print(

@@ -263,14 +263,59 @@ class TestRateLimits:
         )
         assert transcript.rate_limited is True
 
-    def test_an_inconclusive_run_keeps_its_pass_flag(self):
-        """Pass/fail arithmetic is deliberately unchanged so batches stay
-        comparable; INCONCLUSIVE is an extra label, not a third grade."""
+    def test_an_inconclusive_run_is_not_a_pass_anywhere(self):
+        """The grader's verdict on a throttled run is not evidence about the
+        tools. Reading `passed` in the report while `run.py` read `outcome`
+        counted every one of these as a PASS -- inflating exactly the number
+        INCONCLUSIVE was introduced to protect."""
         transcript = parse_stream_json([_init([]), _rate_limit("rejected"), RESULT])
         result = _run(transcript, grade=GradeResult(passed=True, score=1.0))
-        assert result.passed is True
+        assert result.passed is True  # the grader still says what it says
         assert result.outcome == OUTCOME_INCONCLUSIVE
-        assert aggregate([result]).total_passes == 1
+        agg = aggregate([result])
+        assert agg.total_passes == 0
+        assert agg.total_fails == 0
+        assert agg.conclusive_runs == 0
+        assert agg.pass_rate == 0.0
+        assert len(agg.inconclusive) == 1
+        assert agg.by_model["sonnet"].inconclusive == 1
+        assert agg.by_model["sonnet"].conclusive == 0
+
+    def test_the_pass_rate_is_over_conclusive_runs_only(self):
+        clean_pass = good_run()
+        clean_fail = _run(
+            parse_stream_json([_init(["mcp__gdocsmock__x"]), RESULT]),
+            scenario_id="sc-fail",
+            grade=GradeResult(passed=False, score=0.2),
+        )
+        throttled = _run(
+            parse_stream_json([_init([]), _rate_limit("rejected"), RESULT]),
+            scenario_id="sc-throttled",
+            grade=GradeResult(passed=True, score=1.0),
+        )
+        agg = aggregate([clean_pass, clean_fail, throttled])
+        assert agg.total_runs == 3
+        assert (agg.total_passes, agg.total_fails) == (1, 1)
+        assert agg.conclusive_runs == 2
+        assert agg.pass_rate == 0.5  # not 2/3, and not 2/2
+        # The inconclusive run's score is out of the mean as well: it is not
+        # evidence in either direction.
+        assert agg.by_model["sonnet"].mean_score == pytest.approx(0.6)
+
+    def test_the_report_says_which_denominator_it_used(self):
+        throttled = _run(
+            parse_stream_json([_init([]), _rate_limit("rejected"), RESULT]),
+            scenario_id="sc-throttled",
+            grade=GradeResult(passed=True, score=1.0),
+        )
+        agg = aggregate([good_run(), throttled])
+        text = render_markdown(agg, stamp="20260731-000005")
+        assert "1 INCONCLUSIVE" in text
+        assert "conclusive runs" in text
+        assert "EXCLUDED from every pass rate" in text
+        assert agg.as_dict()["totals"]["pass_rate_denominator"] == (
+            "conclusive runs (PASS + FAIL)"
+        )
 
     def test_a_timeout_is_inconclusive_not_a_capability_result(self):
         transcript = parse_stream_json([_init([]), RESULT])

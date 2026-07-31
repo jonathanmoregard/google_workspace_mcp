@@ -1555,6 +1555,24 @@ async def create_anchored_doc_comment(
     manage_document_comment action="create" (Drive API). Use
     list_document_comments to enumerate comments afterwards.
 
+    **An index is only half of an address.** Docs numbers each
+    ``(tabId, segmentId)`` pair from its own start, so index 412 in a
+    footnote and index 412 in the body are different places, and this tool
+    defaults to ``segment_id=None``/``tab_id=None``, which means the body of
+    the default tab. Every record from ``list_document_suggestions`` and
+    every paragraph, header, footer and footnote from
+    ``get_doc_review_view`` carries ``segment``, ``segment_id`` and
+    ``tab_id`` alongside its indexes: pass them back here unchanged. Taking
+    a header's or footnote's index without its ``segment_id`` anchors the
+    comment in the body at that number, silently.
+
+    ``segment_id`` and ``tab_id`` are a PAIR, not two independent options: a
+    segment id is resolved WITHIN the tab the request names, so a segment id
+    sent without the tab it came from is a 400 against a multi-tab document
+    ("Segment with ID kix.… was not found", measured against the live API
+    2026-07-31), with nothing in the response saying which tab would have
+    worked. Send both or neither.
+
     Self-verifying at no extra cost: the batchUpdate response carries the
     whole stored CommentThread, so the return echoes quoted_text -- the text
     the comment ACTUALLY anchored to. Compare it with the text you meant to
@@ -1569,13 +1587,21 @@ async def create_anchored_doc_comment(
         document_id (str): The ID of the document to comment on.
         content (str): Comment text. Must be non-empty (API cap: 2048
             UTF-8 code units).
-        start_index (int): UTF-16 start index of the anchored range.
-            Must be >= 1.
+        start_index (int): UTF-16 start index of the anchored range, in the
+            (tab_id, segment_id) coordinate space named below. Must be >= 1
+            in the body (index 0 is the section break) and >= 0 in a
+            header/footer/footnote segment, which is numbered from its own
+            start.
         end_index (int): UTF-16 end index (exclusive). Must be greater
             than start_index.
-        segment_id (str): Optional header/footer/footnote segment ID;
-            omitted means the document body.
-        tab_id (str): Optional document tab ID to target.
+        segment_id (str): Header/footer/footnote segment ID; omitted means
+            the document body. Take it from the same record the indexes
+            came from, and send tab_id WITH it -- a segment id is resolved
+            inside one tab, so the pair is mandatory in a multi-tab
+            document.
+        tab_id (str): Document tab ID. Omitted means the default tab, which
+            is only safe when the indexes came from that tab; always send it
+            alongside a segment_id.
         assignee_email (str): Optional email address to assign the
             comment to.
 

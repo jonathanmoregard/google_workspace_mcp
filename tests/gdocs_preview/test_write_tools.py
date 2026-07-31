@@ -30,6 +30,8 @@ from gdocs_preview import (
     suggestion_ledger,
     write_tools,
 )
+from mockdocs.concurrency import Interference, Trigger, apply_interference
+from mockdocs.fake_services import FakeBackend
 from tests.gdocs_preview import fixtures as fx
 
 EMAIL = "reviewer@example.com"
@@ -62,11 +64,37 @@ def missing_suggestion_404(suggestion_id: str = "sug.bob.1") -> bytes:
     ).encode()
 
 
+def thread_for(
+    suggestion_id: str, *, me: bool = True, display_name: str = "Reviewer"
+) -> dict:
+    """The SuggestionThread a preview read carries for one pending card.
+
+    A preview read of a document with a pending suggestion ALWAYS carries its
+    thread, and the thread's ``author.me`` is the only evidence of authorship
+    the API offers -- which is what keeps a second reviewer's card from being
+    echoed as one this call created.
+    """
+    return {
+        "suggestionId": suggestion_id,
+        "headPost": {
+            "postId": f"{suggestion_id}.head",
+            "author": {"displayName": display_name, "me": me, "user": "users/1"},
+            "createTime": "2026-07-30T10:00:00.000Z",
+            "updateTime": "2026-07-30T10:00:00.000Z",
+        },
+        "status": "OPEN",
+        "summaryText": f"Add: “{suggestion_id}”",
+    }
+
+
 #: Verification read payload with no pending suggestions -- the default for
 #: tests that are not about verification.
 EMPTY_READ = fx.build_tabs_payload([("t.0", fx.DOC_EMPTY)])
-#: One pending replacement ("morning" -> "evening"), id ``suggest.rep1``.
-REPLACEMENT_READ = fx.build_tabs_payload([("t.0", fx.DOC_REPLACEMENT)])
+#: One pending replacement ("morning" -> "evening"), id ``suggest.rep1``,
+#: with the thread the preview read really returns beside it.
+REPLACEMENT_READ = fx.build_tabs_payload(
+    [("t.0", fx.DOC_REPLACEMENT)], suggestions=[thread_for("suggest.rep1")]
+)
 
 
 def _unwrap(tool):
@@ -1110,6 +1138,125 @@ class TestSuggestDocEditVerification:
         verification = result["verification"]
         assert verification["also_removed_suggestion_ids"] == ["suggest.rep1"]
         assert "merges" in verification["notes"][0]
+
+
+CONC_DOC = "conc-doc"
+CONC_SEED = {
+    "me": "mockuser",
+    "documents": [
+        {
+            "document_id": CONC_DOC,
+            "title": "Concurrency",
+            "text": "The brave new plan ships in March.\n",
+            "suggestions": [],
+        }
+    ],
+}
+
+
+def _other_editor_suggests(backend, *, editor: str, text: str, at: int) -> str:
+    """The harness's ``overlapping_suggestion``, fired as ``editor``."""
+    effect, violations, _ = apply_interference(
+        backend,
+        Interference(
+            name=f"{editor}-edits",
+            kind="overlapping_suggestion",
+            trigger=Trigger(),
+            editor=editor,
+            document_id=CONC_DOC,
+            params={"at": at, "text": text},
+        ),
+    )
+    assert violations == [], violations
+    return effect["suggestion_id"]
+
+
+class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
+    """MEDIUM 5: ``created_suggestions`` claims authorship, so it needs it.
+
+    Source (2) of the echo is a DIFF -- "ids in the post-write read that were
+    not in the last listing" -- against a snapshot that is as old as the last
+    ``list_document_suggestions``. A second reviewer working in the document
+    at the same time has their card land in exactly that set, and it was
+    echoed under ``created_suggestions``: this call claiming authorship of
+    somebody else's suggestion, which the agent may then reply to or resolve
+    as its own.
+
+    Driven through ``mockdocs.concurrency`` rather than a hand-built payload,
+    so the other editor's card is produced by the same SPEC §5 operations a
+    real second editor's would be -- including its thread, which is the only
+    evidence of authorship the API offers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_another_editors_card_is_reported_but_not_attributed(self):
+        backend = FakeBackend(me="mockuser")
+        backend.seed(CONC_SEED)
+        # The agent's last listing: nothing pending anywhere.
+        suggestion_ledger.observe(EMAIL, CONC_DOC, [])
+
+        # Bob edits while the agent is deciding.
+        bob = _other_editor_suggests(backend, editor="bob", text="URGENT ", at=0)
+
+        fn = _unwrap(write_tools.suggest_doc_edit)
+        result = json.loads(
+            await fn(
+                backend.docs_service(),
+                user_google_email=EMAIL,
+                document_id=CONC_DOC,
+                start_index=11,
+                text="bold ",
+            )
+        )
+
+        verification = result["verification"]
+        ours = {s["suggestion_id"] for s in verification["created_suggestions"]}
+        theirs = {s["suggestion_id"] for s in verification["appeared_since_last_read"]}
+
+        assert bob in theirs
+        assert bob not in ours, "another editor's card was claimed by this write"
+        assert ours == set(result["created_suggestion_ids"])
+        assert ours, "the write's own suggestion must still be echoed"
+        (note,) = verification["notes"]
+        assert bob in note
+        assert "NOT reported as created by this call" in note
+        assert "different author" in note
+
+    @pytest.mark.asyncio
+    async def test_our_own_card_is_still_attributed_without_a_reported_id(self):
+        """Source (2) still does its job: an id the API did not report, but
+        whose thread names us, is ours."""
+        backend = FakeBackend(me="mockuser")
+        backend.seed(CONC_SEED)
+        suggestion_ledger.observe(EMAIL, CONC_DOC, [])
+
+        # A second session of the SAME account -- the phone, the other tab.
+        mine = _other_editor_suggests(backend, editor="mockuser", text="URGENT ", at=0)
+
+        fn = _unwrap(write_tools.suggest_doc_edit)
+        result = json.loads(
+            await fn(
+                backend.docs_service(),
+                user_google_email=EMAIL,
+                document_id=CONC_DOC,
+                start_index=11,
+                text="bold ",
+            )
+        )
+
+        verification = result["verification"]
+        ours = {s["suggestion_id"] for s in verification["created_suggestions"]}
+        assert mine in ours
+        assert "appeared_since_last_read" not in verification
+
+    def test_unknown_authorship_is_not_ownership(self):
+        """A read that degraded to the GA documents.get carries no threads,
+        so every author is null. Null is not "me"."""
+        assert write_tools._is_ours({"author": {"me": True}}) is True
+        assert write_tools._is_ours({"author": {"me": False}}) is False
+        assert write_tools._is_ours({"author": {"me": None}}) is False
+        assert write_tools._is_ours({"author": None}) is False
+        assert write_tools._is_ours({}) is False
 
 
 class TestManageSuggestionVerification:

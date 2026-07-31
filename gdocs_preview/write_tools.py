@@ -339,6 +339,40 @@ def _unlocated_note(
     )
 
 
+def _is_ours(record: dict[str, Any]) -> bool:
+    """Did the AUTHENTICATED user write this suggestion?
+
+    ``PostAuthor.me`` is the API's own answer and the only evidence there is;
+    it is ``None`` on a read that degraded to the GA ``documents.get``, which
+    carries no threads and therefore no authors. Unknown authorship is NOT
+    ownership: a strict ``is True`` keeps the degraded read from
+    manufacturing a claim it cannot support.
+    """
+    return ((record.get("author") or {}).get("me")) is True
+
+
+def _concurrent_note(suggestion_ids: list[str], read: "_PostWriteRead") -> str:
+    """One sentence about suggestions that appeared but are not ours."""
+    names = ", ".join(repr(sid) for sid in suggestion_ids)
+    unknown = any(
+        (read.records[sid].get("author") or {}).get("me") is None
+        for sid in suggestion_ids
+    )
+    why = (
+        "this read carries no authors (read_source="
+        f"{read.source!r}), so authorship could not be established"
+        if unknown
+        else "the suggestion thread names a different author"
+    )
+    return (
+        f"{names} appeared between the last listing and this write, and is "
+        f"NOT reported as created by this call: {why}. A second reviewer "
+        "editing the same document produces exactly this, and attributing "
+        "their card to your write would have you resolve or reply to it as "
+        "your own. Check the author before acting on it."
+    )
+
+
 def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) -> bool:
     """Does a suggestion's index range touch the range an edit targeted?
 
@@ -601,7 +635,16 @@ async def suggest_doc_edit(
             -- only when they apply -- suggestions_at_edit_range (when the
             API reported no new id, which happens when the edit merged into
             an existing same-author suggestion) with the range_scope it was
-            read in, also_removed_suggestion_ids, and notes}.
+            read in, appeared_since_last_read, also_removed_suggestion_ids,
+            and notes}.
+
+            created_suggestions claims AUTHORSHIP, so it holds only what the
+            API reported as created plus what the suggestion thread
+            attributes to you. A card that merely appeared between the last
+            listing and this write -- which is what a second reviewer
+            editing the same document looks like -- is reported under
+            appeared_since_last_read instead, with a note. Check the author
+            before resolving or replying to one of those.
 
             Every echoed suggestion carries segment/segment_id/tab_id
             alongside its indexes, because a Docs index is only unique
@@ -738,12 +781,17 @@ async def _verify_suggest(
     """Post-write echo for :func:`suggest_doc_edit`.
 
     ``createdSuggestionIds`` is the primary join key, but it is not
-    trustworthy on its own, so three sources are used in order:
+    trustworthy on its own, so three sources are used in order, and each is
+    reported under the strength of claim it can actually support:
 
     1. the reported created ids, intersected with what the read actually
-       found (an id the response named may already be retired);
+       found (an id the response named may already be retired) -- authorship
+       proven by the API;
     2. anything new since the last read -- the diff answers even when the
-       response says nothing;
+       response says nothing, but "new since a snapshot" is not "made by
+       this call". Only the ones the thread attributes to the authenticated
+       user (:func:`_is_ours`) join ``created_suggestions``; the rest go to
+       ``appeared_since_last_read`` with a note;
     3. the suggestions overlapping the edited range, reported separately as
        ``suggestions_at_edit_range``.
 
@@ -762,11 +810,27 @@ async def _verify_suggest(
     if read is None:
         return {"source": "unavailable", "reason": failure}
 
+    # (1) What the API itself said it created. Authorship is proven.
     echoed_ids = [sid for sid in created_ids if sid in read.records]
+    # (2) What is new since the last read. This is a DIFF against a snapshot
+    # that may be arbitrarily old -- the ledger holds whatever the last
+    # listing saw -- so "new since then" is not "made by this call". A second
+    # reviewer working in the document at the same time has their card appear
+    # in exactly this set, and it used to be echoed under
+    # ``created_suggestions``: this call claiming authorship of somebody
+    # else's suggestion, which the agent may then reply to or resolve as its
+    # own. The thread says who wrote it, so ask.
+    appeared: list[str] = []
     if known_before is not None:
         for sid in read.records:
             if sid not in known_before and sid not in echoed_ids:
-                echoed_ids.append(sid)
+                appeared.append(sid)
+    others: list[str] = []
+    for sid in appeared:
+        if _is_ours(read.records[sid]):
+            echoed_ids.append(sid)
+        else:
+            others.append(sid)
 
     verification: dict[str, Any] = {
         "source": "post_write_read",
@@ -774,6 +838,11 @@ async def _verify_suggest(
         "created_suggestions": [_echo_suggestion(read.records[s]) for s in echoed_ids],
         "pending_suggestion_count": len(read.records),
     }
+    if others:
+        verification["appeared_since_last_read"] = [
+            _echo_suggestion(read.records[s]) for s in others
+        ]
+        verification.setdefault("notes", []).append(_concurrent_note(others, read))
     if not echoed_ids:
         try:
             scope = resolve_range_scope(

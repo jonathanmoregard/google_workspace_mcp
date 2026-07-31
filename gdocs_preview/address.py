@@ -10,14 +10,15 @@ an agent that reads a bare index out of one of our responses and hands it
 back writes into the BODY at that number, silently, in a customer document.
 Index 0 fails loud on the floor check; every other index does not.
 
-That bug class has now been found twice -- on the read path (summary cards)
-and on the write path (the post-write echo and the resolution ledger). The
-remedy is structural rather than vigilant: **this module is the only place
-that projects an index into an agent-facing payload**, and it cannot project
-one without its ``segment``/``segment_id``/``tab_id``. :func:`address_of`
-returns all five fields or none; :func:`with_address` is how a payload
-acquires them. A future edit that drops the pairing has to delete a field
-from :data:`ADDRESS_FIELDS`, where the docstring above is looking at it.
+That bug class has now been found three times -- on the read path (summary
+cards), on the write path (the post-write echo and the resolution ledger),
+and in the coordinate-space filters. The remedy is structural rather than
+vigilant: **this module is the only place that projects an index into an
+agent-facing payload**, and it cannot project one without its
+``segment``/``segment_id``/``tab_id``. :func:`address_of` returns all five
+fields or none; :func:`with_address` is how a payload acquires them. A
+future edit that drops the pairing has to delete a field from
+:data:`ADDRESS_FIELDS`, where the docstring above is looking at it.
 
 The other half of the same idea is comparison: two indexes may only be
 compared when they are numbered in the same space. :func:`resolve_range_scope`
@@ -25,9 +26,7 @@ decides which space a caller meant (resolving an omitted ``tab_id`` when the
 document has only one, REFUSING to guess when it has several), and
 :func:`in_range_scope` is the membership test. Read and write paths share
 both, so "which suggestions are at this range" cannot mean two different
-things depending on which module asked -- which it did: the listing refused
-a multi-tab range without a ``tab_id`` while the write echo answered it from
-every tab at once.
+things depending on which module asked.
 """
 
 from __future__ import annotations

@@ -2052,3 +2052,179 @@ class TestOverlapSemanticsAreShared:
         (echo,) = result["verification"]["suggestions_at_edit_range"]
         assert echo["suggestion_id"] == "suggest.t1"
         assert echo["tab_id"] == "t.second"
+
+
+class TestResolutionIsLocatedInItsOwnSegment:
+    """HIGH 2: ``_locate`` used to search the merged body text of every tab.
+    A suggestion at the very start of a header has ``context_before == ""``
+    (analysis.py), so the empty anchor returned the head of the BODY and
+    ``matches_expectation`` for a header resolution was computed there."""
+
+    #: The header suggestion accepted: "DRAFT header\n" stays in the header.
+    ACCEPTED_HEADER_READ = fx.build_tabs_payload(
+        [
+            (
+                "t.0",
+                fx.build_doc(
+                    [fx.paragraph(fx.run("Good evening\n"))],
+                    headers={"kix.h1": [fx.paragraph(fx.run("DRAFT header\n"))]},
+                ),
+            )
+        ]
+    )
+
+    HEADER_RECORD = {
+        "suggestion_id": "suggest.hdr1",
+        "type": "insertion",
+        "pre_text": "",
+        "post_text": "DRAFT",
+        "context_before": "",  # at the very start of the header
+        "context_after": " header\n",
+        "segment": "header",
+        "segment_id": "kix.h1",
+        "tab_id": "t.0",
+        "start_index": 0,
+        "end_index": 5,
+    }
+
+    @pytest.mark.asyncio
+    async def test_a_header_resolution_reads_the_header_not_the_body(self):
+        _observe(self.HEADER_RECORD)
+        service = _batch_service(
+            {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.hdr1"]}]},
+            document=self.ACCEPTED_HEADER_READ,
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id="suggest.hdr1",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["resulting_text"] == "DRAFT header\n"
+        assert "Good evening" not in verification["resulting_text"]
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_anchor_no_longer_answers_from_the_body(self):
+        """Same construction, but the header did NOT get the text: the old
+        body fallback found "DRAFT" in the body and called it a match."""
+        _observe(self.HEADER_RECORD)
+        service = _batch_service(
+            {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.hdr1"]}]},
+            document=fx.build_tabs_payload(
+                [
+                    (
+                        "t.0",
+                        fx.build_doc(
+                            [fx.paragraph(fx.run("DRAFT body copy\n"))],
+                            headers={"kix.h1": [fx.paragraph(fx.run(" header\n"))]},
+                        ),
+                    )
+                ]
+            ),
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id="suggest.hdr1",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["resulting_text"] == " header\n"
+        assert verification["matches_expectation"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_second_tab_resolution_is_not_located_in_the_first(self):
+        _observe(
+            {
+                "suggestion_id": "suggest.t1",
+                "type": "insertion",
+                "pre_text": "",
+                "post_text": "bravo",
+                "context_before": "Two ",
+                "context_after": ".\n",
+                "segment": "body",
+                "segment_id": None,
+                "tab_id": "t.second",
+                "start_index": 5,
+                "end_index": 10,
+            }
+        )
+        service = _batch_service(
+            {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.t1"]}]},
+            document=fx.build_tabs_payload(
+                [
+                    ("t.0", fx.build_doc([fx.paragraph(fx.run("Two alpha.\n"))])),
+                    ("t.second", fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))])),
+                ]
+            ),
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id="suggest.t1",
+            )
+        )
+
+        verification = result["verification"]
+        # "Two " matches in BOTH tabs; the merged text found the first one
+        # and reported "Two alpha." as the result of a tab-2 accept.
+        assert verification["resulting_text"] == "Two bravo.\n"
+        assert verification["matches_expectation"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_unlocatable_tab_reports_nothing_rather_than_guessing(self):
+        """A record with no tab id, in a document with several: there is no
+        honest window to return."""
+        _observe(
+            {
+                "suggestion_id": "suggest.t1",
+                "type": "insertion",
+                "pre_text": "",
+                "post_text": "bravo",
+                "context_before": "Two ",
+                "context_after": ".\n",
+                "segment": "body",
+                "segment_id": None,
+                "tab_id": None,
+                "start_index": 5,
+                "end_index": 10,
+            }
+        )
+        service = _batch_service(
+            {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.t1"]}]},
+            document=TWO_TAB_READ,
+        )
+        fn = _unwrap(write_tools.manage_document_suggestion)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id="suggest.t1",
+            )
+        )
+
+        verification = result["verification"]
+        assert verification["resulting_text"] is None
+        assert verification["matches_expectation"] is None

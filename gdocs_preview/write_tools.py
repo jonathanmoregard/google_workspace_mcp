@@ -54,11 +54,15 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, suggestion_ledger
-from gdocs_preview.address import in_range_scope, resolve_range_scope, with_address
+from gdocs_preview.address import (
+    in_range_scope,
+    resolve_range_scope,
+    with_address,
+)
 from gdocs_preview.analysis import (
     CONTEXT_WINDOW,
     extract_suggestions_from_tabs,
-    render_tabs,
+    render_document,
 )
 from gdocs_preview.preview_read import normalize_author, read_for_review
 
@@ -119,8 +123,16 @@ def _echo_suggestion(record: dict[str, Any]) -> dict[str, Any]:
 class _PostWriteRead:
     """The one read a write tool makes to verify itself.
 
-    Not a dataclass because ``records`` and ``body_text`` are derived from
-    the same payload and must not drift apart.
+    Not a dataclass because ``records`` and ``segment_texts`` are derived
+    from the same payload and must not drift apart.
+
+    ``segment_texts`` is keyed by ``(tab_id, segment_id)`` -- the coordinate
+    space, not the document -- because that is the only text a record's
+    indexes and context windows mean anything against. A merged
+    whole-document string (what ``render_tabs`` produces) concatenates every
+    tab's body and drops headers, footers and footnotes entirely, so
+    locating a header resolution in it either finds nothing or finds the
+    same words somewhere else and calls that a match.
     """
 
     def __init__(self, read: Any) -> None:
@@ -129,11 +141,37 @@ class _PostWriteRead:
         self.records: dict[str, dict[str, Any]] = {
             r["suggestion_id"]: r for r in analysed["suggestions"]
         }
-        self.body_text: str = render_tabs(read.tabs)["body_text"]
+        self.segment_texts: dict[tuple[Optional[str], Optional[str]], str] = {}
+        for tab_id, document in read.tabs:
+            rendered = render_document(document, tab_id=tab_id)
+            self.segment_texts[(tab_id, None)] = rendered["body_text"]
+            for kind in ("headers", "footers", "footnotes"):
+                for segment_id, text in (rendered.get(kind) or {}).items():
+                    self.segment_texts[(tab_id, segment_id or None)] = text
 
     @property
     def live_ids(self) -> frozenset[str]:
         return frozenset(self.records)
+
+    def text_at(self, record: dict[str, Any]) -> Optional[str]:
+        """The rendered text of the ONE ``(tab, segment)`` ``record`` lives in.
+
+        A record that names no tab is resolved the way
+        :func:`gdocs_preview.address.resolve_range_scope` resolves an omitted
+        ``tab_id``: implicitly when the read has one tab, and not at all when
+        it has several. ``None`` means "this read cannot say", which the
+        caller reports as an unlocated window rather than guessing -- a
+        guessed tab makes ``matches_expectation`` a statement about a
+        different part of the document.
+        """
+        segment_id = record.get("segment_id") or None
+        tab_id = record.get("tab_id") or None
+        if tab_id is None:
+            candidates = {tab for (tab, segment) in self.segment_texts if tab}
+            if len(candidates) > 1:
+                return None
+            tab_id = next(iter(candidates), None)
+        return self.segment_texts.get((tab_id, segment_id))
 
 
 async def _post_write_read(
@@ -158,24 +196,37 @@ async def _post_write_read(
         return None, f"{type(error).__name__}: {error}"[:200]
 
 
-def _locate(body_text: str, anchor: Optional[str], expected: str) -> Optional[str]:
+def _locate(
+    segment_text: Optional[str], anchor: Optional[str], expected: str
+) -> Optional[str]:
     """The post-write text around a resolved range, located by its context.
+
+    ``segment_text`` is the rendered text of the ONE ``(tab, segment)`` the
+    resolved suggestion lives in (:meth:`_PostWriteRead.text_at`), never the
+    whole document. Both failure modes of the whole-document version are
+    structural, not unlucky: a suggestion at the very start of a header has
+    ``context_before == ""`` (:mod:`gdocs_preview.analysis`), so the empty
+    anchor returned the head of the BODY and compared a header resolution
+    against it; and the merged body text concatenates every tab, so
+    ``find(anchor)`` could land in a different tab than the one that was
+    written to.
 
     ``anchor`` is the suggestion's ``context_before`` -- base text, so
     accepting or rejecting leaves it untouched and it still identifies the
-    spot after the write. Returns a window starting at that anchor, or
-    ``None`` when the anchor cannot be found (a concurrent edit, or a range
-    at the very start of a segment with no preceding text).
+    spot after the write. Returns a window starting at that anchor, the head
+    of the segment when there is no preceding text to anchor on, or ``None``
+    when the anchor cannot be found (a concurrent edit) or the segment could
+    not be identified at all.
     """
-    if not body_text:
+    if not segment_text:
         return None
     if not anchor:
-        return _clip(body_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW])
-    position = body_text.find(anchor)
+        return _clip(segment_text[: CONTEXT_WINDOW + len(expected) + CONTEXT_WINDOW])
+    position = segment_text.find(anchor)
     if position < 0:
         return None
     end = position + len(anchor) + len(expected) + CONTEXT_WINDOW
-    return _clip(body_text[position:end])
+    return _clip(segment_text[position:end])
 
 
 def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) -> bool:
@@ -192,10 +243,9 @@ def _overlaps(record: dict[str, Any], edit_range: tuple[int, int], scope: dict) 
     checked ``segment_id`` always but ``tab_id`` only when the caller had
     named one, so on a multi-tab document the default ``tab_id=None`` echoed
     overlapping suggestions from EVERY tab and asserted "your edit merged
-    into it" about a suggestion in a tab the edit never touched -- a wrong id
-    the agent may then reply to or accept. The read path refuses that guess;
-    making the write path share the resolver is what stops the two answering
-    the same question differently again.
+    into it" about a suggestion in a tab the edit never touched. The read
+    path refuses that guess; making the write path share the resolver is
+    what stops the two answering the same question differently again.
     """
     start, end = record.get("start_index"), record.get("end_index")
     if start is None or end is None:
@@ -525,7 +575,8 @@ async def suggest_doc_edit(
 
     logger.info(
         f"[suggest_doc_edit] Doc={document_id}, mode={mode}, "
-        f"start={start_index}, end={end_index}"
+        f"start={start_index}, end={end_index}, "
+        f"segment={segment_id or 'body'}, tab={tab_id or 'default'}"
     )
     known_before = suggestion_ledger.known_ids(user_google_email, document_id)
     response = await _execute_preview_batch_update(
@@ -622,8 +673,7 @@ async def _verify_suggest(
             # Multi-tab document, no tab_id given: the listing REFUSES this
             # and so must the echo. Naming a suggestion from some other tab
             # as "the one your edit merged into" is a wrong id the agent may
-            # go on to reply to or accept. The write itself already landed,
-            # so this is reported, never raised.
+            # go on to reply to or accept.
             verification["suggestions_at_edit_range_unavailable"] = str(error)
             verification["notes"] = [
                 "this edit named no tab_id and the document has more than "
@@ -727,6 +777,10 @@ async def manage_document_suggestion(
             matches_expectation, pending_suggestion_count,
             pending_suggestion_ids, and -- only when non-empty --
             also_removed_suggestion_ids + notes}.
+
+            resulting_text is read in the resolved suggestion's OWN (tab,
+            segment), never the document body, so matches_expectation is a
+            statement about the place the write happened.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":
@@ -854,8 +908,10 @@ async def _verify_resolution(
         )
         expected_text = resolved_record.get(kept)
         removed_text = resolved_record.get(dropped)
+        # Scoped to the resolved suggestion's OWN (tab, segment): its indexes
+        # and its context window are numbered there and nowhere else.
         resulting_text = _locate(
-            read.body_text,
+            read.text_at(resolved_record),
             resolved_record.get("context_before"),
             expected_text or removed_text or "",
         )
@@ -1118,7 +1174,8 @@ async def create_anchored_doc_comment(
 
     logger.info(
         f"[create_anchored_doc_comment] Doc={document_id}, "
-        f"range=[{start_index}, {end_index})"
+        f"range=[{start_index}, {end_index}), "
+        f"segment={segment_id or 'body'}, tab={tab_id or 'default'}"
     )
     requests = [{"insertComment": insert_comment}]
     response = await _execute_preview_batch_update(

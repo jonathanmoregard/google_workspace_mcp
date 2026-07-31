@@ -223,7 +223,13 @@ async def list_document_suggestions(
     # resolution took with it (gdocs_preview/suggestion_ledger.py), and a
     # ledger that only knew about page 2 would explain nothing about page 1.
     suggestion_ledger.observe(
-        user_google_email, document_id, analysis.get("suggestions") or []
+        user_google_email,
+        document_id,
+        analysis.get("suggestions") or [],
+        # ...and how much of the document that set covers. A degraded read
+        # sees one unnamed body, so every diff a later write takes against
+        # this snapshot has to know not to read absence as removal.
+        complete=read.complete,
     )
     try:
         result = review_page.build_listing(
@@ -491,6 +497,7 @@ async def get_doc_review_view(
             user_google_email,
             document_id,
             extract_suggestions_from_tabs(read.tabs, read.threads)["suggestions"],
+            complete=read.complete,
         )
     try:
         shaped = review_page.build_review_view(

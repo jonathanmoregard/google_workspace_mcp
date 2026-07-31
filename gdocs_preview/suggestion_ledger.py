@@ -31,7 +31,11 @@ evidence it actually has, and never more:
    explanation.
 3. *may have been removed* -- never seen to disappear, but we did resolve
    something on this document and resolving can remove others.
-4. *never seen* -- no record at all; most likely a wrong id.
+4. *never seen* -- no record at all **and the last read covered the whole
+   document**, so most likely a wrong id. A degraded read cannot support even
+   that: it returns one unnamed body and no tab ids, so an id it did not list
+   may simply live in a tab it could not see, and the answer says so instead
+   of diagnosing the caller's id.
 
 State is keyed by ``(user_google_email, document_id)`` so a multi-user HTTP
 deployment never attributes one caller's resolution to another, and is bounded
@@ -106,6 +110,24 @@ class Resolution:
         }
 
 
+@dataclass(frozen=True)
+class Snapshot:
+    """What the last read saw -- and whether that was the whole document.
+
+    The two travel together because every use of ``ids`` is a set difference
+    whose meaning depends on ``complete``. "In the ledger and not in the read"
+    is a removal only if the read could see where the id lives; "in the read
+    and not in the ledger" is a NEW card only if the ledger's read could see
+    where it lives. A bare ``frozenset`` invited both diffs to be taken
+    against a snapshot that had never covered the tabs being differenced, and
+    the answers were reported as observations either way.
+    """
+
+    ids: frozenset[str]
+    #: Did the read behind these ids enumerate every tab and segment?
+    complete: bool
+
+
 @dataclass
 class _Entry:
     #: suggestion id -> compact record, as of the most recent read.
@@ -115,6 +137,11 @@ class _Entry:
     #: True once any read has been observed, so "we have never looked" is
     #: distinguishable from "we looked and it was not there".
     observed: bool = False
+    #: Did the most recent observation see the whole document? A degraded
+    #: read REPLACES ``records`` with only what it could see, so an id that
+    #: silently left the ledger this way must not later be answered with
+    #: "most likely the id is wrong".
+    complete: bool = False
 
 
 _entries: dict[tuple[str, str], _Entry] = {}
@@ -147,12 +174,21 @@ def observe(
     user_google_email: str,
     document_id: str,
     suggestions: Iterable[dict[str, Any]],
+    *,
+    complete: bool,
 ) -> None:
     """Record the live suggestions a read just returned (replaces the set).
 
     Every read tool and every post-write verification read calls this, which
     is what keeps the "before" picture fresh enough for the diff in
     :func:`record_resolution` to mean something.
+
+    ``complete`` is
+    :attr:`gdocs_preview.preview_read.ReviewRead.complete` -- did that read
+    enumerate the whole document? It has no default: a call site that does not
+    know how much of the document it just saw cannot record a snapshot other
+    code will take differences against, and every consumer of
+    :func:`snapshot` needs the answer.
     """
     entry = _entry(user_google_email, document_id)
     records: dict[str, dict[str, Any]] = {}
@@ -162,14 +198,15 @@ def observe(
             records[str(sid)] = _compact(record)
     entry.records = records
     entry.observed = True
+    entry.complete = complete
 
 
-def known_ids(user_google_email: str, document_id: str) -> Optional[frozenset[str]]:
-    """Suggestion ids as of the last read, or ``None`` if we never looked."""
+def snapshot(user_google_email: str, document_id: str) -> Optional[Snapshot]:
+    """The last read's ids WITH its coverage, or ``None`` if we never looked."""
     entry = _entries.get(_key(user_google_email, document_id))
     if entry is None or not entry.observed:
         return None
-    return frozenset(entry.records)
+    return Snapshot(ids=frozenset(entry.records), complete=entry.complete)
 
 
 def record_of(
@@ -300,6 +337,17 @@ def explain_missing(
             "It WAS present in the last read of this document, so it was "
             "removed between that read and this call -- most likely by another "
             f"editor. {reread}"
+        )
+    if not entry.complete:
+        # The last read was the GA fallback: one unnamed body, no tab ids, so
+        # an id in another tab is missing from ``records`` because that read
+        # could not see it. "Most likely the id is wrong" is a diagnosis of
+        # the caller, drawn from a read that never looked where the id lives.
+        return (
+            "The last read of this document was degraded and could not see "
+            "every tab, so the id's absence from it is not evidence about the "
+            "id. No write of ours is recorded as removing it either. "
+            f"{reread}"
         )
     return (
         "It was not in the last read of this document either, and no write of "

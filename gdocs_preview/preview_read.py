@@ -359,6 +359,19 @@ class ReviewRead:
     ``tabs`` is ``(tab_id, GA-shaped Document)`` per tab -- a single
     ``(None, document)`` entry for the GA fallback -- so the analysis layer
     has exactly one input shape to walk.
+
+    **A read carries how much of the document it saw.** ``complete`` is not a
+    diagnostic: it is the premise every ABSENCE claim downstream rests on. A
+    suggestion id missing from a complete read is missing from the document;
+    the same id missing from the GA fallback may be sitting in a tab this read
+    structurally cannot see, because ``documents.get`` without
+    ``includeTabsContent`` returns one unnamed body and no tab ids at all.
+    Treating those two absences alike is how a post-write verification came to
+    report ``still_pending: false`` off a blind read, and how a resolution came
+    to claim it had garbage-collected every live suggestion in the other tabs.
+    It defaults to ``False`` so that a read assembled by hand -- or by a future
+    code path nobody has thought about yet -- cannot attest an absence it never
+    checked.
     """
 
     tabs: list[tuple[Optional[str], dict[str, Any]]]
@@ -367,6 +380,8 @@ class ReviewRead:
     comments: list[dict[str, Any]] = field(default_factory=list)
     source: str = READ_SOURCE_GA
     degraded_reason: Optional[str] = None
+    #: Did this read enumerate EVERY tab and segment of the document?
+    complete: bool = False
 
 
 async def fetch_ga_document(
@@ -395,6 +410,11 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
     ``body_text: ""`` -- while ``read_source`` still says the preview read
     worked. "The document has no suggestions" and "this read saw nothing" are
     not the same sentence, and the second one has to be said out loud.
+
+    Either degradation returns ``complete=False``: the GA payload has one
+    unnamed body and no tab ids, so nothing downstream may read an id's
+    absence from it as the id's absence from the document (see
+    :class:`ReviewRead`).
     """
     from googleapiclient.errors import HttpError
 
@@ -445,4 +465,10 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
         threads=suggestion_threads_by_id(payload),
         comments=comment_threads(payload),
         source=READ_SOURCE_PREVIEW,
+        # The ONE path that saw the whole document: ``includeTabsContent``
+        # returned every tab (``tab_documents`` walks childTabs too) and
+        # :mod:`gdocs_preview.analysis` walks every segment of each. Both
+        # fallbacks above leave ``complete`` at its False default, so an id
+        # absent from them is not an id absent from the document.
+        complete=True,
     )

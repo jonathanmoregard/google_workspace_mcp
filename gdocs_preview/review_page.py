@@ -668,7 +668,19 @@ def _degraded_notice() -> str:
         + " are null on EVERY record here, in both field modes. That is a "
         "property of this read, not of the document -- do not conclude that a "
         "suggestion has no author or is not open. `pre_text`/`post_text` "
-        "(fields='full') still show what each suggestion changes."
+        "(fields='full') still show what each suggestion changes. "
+        # The counts are the same kind of claim as the null author, one level
+        # up: `suggestion_count: 0` from a read that saw one tab of a
+        # multi-tab document reads as "this document is clear" and is the
+        # sentence a reviewer acts on by stopping. The GA payload carries no
+        # tabs array at all, so this read cannot even say how many tabs it did
+        # not see.
+        "`suggestion_count` and `tabs` are likewise what THIS read saw: the "
+        "GA documents.get returns one unnamed body with no tab ids, so on a "
+        "multi-tab document the cards in every other tab are missing from "
+        "this response. `suggestion_count: 0` here does NOT mean the document "
+        "has no pending suggestions. Retry for the preview read before "
+        "concluding a review is finished."
     )
 
 

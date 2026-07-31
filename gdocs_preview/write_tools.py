@@ -46,7 +46,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
@@ -171,10 +171,28 @@ class _PostWriteRead:
     raised a false alarm on a write that had landed; and a marker inside the
     40-character anchor made the range unlocatable, which was then reported
     as "the likeliest cause is a concurrent edit by another editor".
+
+    **It also knows what it did NOT see.** ``complete`` and
+    ``observed_spaces`` are carried alongside the records because absence is
+    only evidence when the read looked: the GA fallback returns one unnamed
+    body and no tab ids at all, so a card in ``t.0`` is missing from
+    ``records`` without having gone anywhere. Every membership question
+    therefore goes through :meth:`pending_state`, which answers UNKNOWN for a
+    space this read never observed rather than ``False``. ``x in
+    read.records`` used to be asked directly in three places -- the resolution
+    verdict and both collateral diffs -- and each of them turned a blind read
+    into a confident claim about a customer's document.
     """
 
     def __init__(self, read: Any) -> None:
         self.source: str = read.source
+        #: Did this read enumerate the WHOLE document -- every tab, every
+        #: segment? Taken straight off
+        #: :class:`~gdocs_preview.preview_read.ReviewRead` rather than
+        #: re-derived from ``source`` here: the read is the authority on its
+        #: own coverage, and a second opinion about it is a second thing to
+        #: keep in sync.
+        self.complete: bool = bool(getattr(read, "complete", False))
         analysed = extract_suggestions_from_tabs(read.tabs, read.threads)
         self.records: dict[str, dict[str, Any]] = {
             r["suggestion_id"]: r for r in analysed["suggestions"]
@@ -194,17 +212,39 @@ class _PostWriteRead:
     def live_ids(self) -> frozenset[str]:
         return frozenset(self.records)
 
+    @property
+    def observed_spaces(self) -> frozenset[tuple[Optional[str], Optional[str]]]:
+        """The ``(tab_id, segment_id)`` spaces this read actually walked."""
+        return frozenset(self.base_texts)
+
+    def space_of(
+        self, record: dict[str, Any]
+    ) -> tuple[Optional[tuple[Optional[str], Optional[str]]], Optional[str]]:
+        """The ONE ``(tab_id, segment_id)`` ``record`` is numbered in.
+
+        Returns ``(key, None)`` or ``(None, reason)``. A record that names no
+        tab is resolved the way
+        :func:`gdocs_preview.address.resolve_range_scope` resolves an omitted
+        ``tab_id``: implicitly when the read has one tab, and not at all when
+        it has several -- a guessed tab makes every answer derived from it a
+        statement about a different part of the document.
+        """
+        segment_id = record.get("segment_id") or None
+        tab_id = record.get("tab_id") or None
+        if tab_id is None:
+            candidates = sorted({tab for tab in self.tab_ids if tab})
+            if len(candidates) > 1:
+                return None, "ambiguous_tab"
+            tab_id = candidates[0] if candidates else None
+        return (tab_id, segment_id), None
+
     def text_at(
         self, record: dict[str, Any]
     ) -> tuple[Optional[BaseText], Optional[str]]:
         """The base text of the ONE ``(tab, segment)`` ``record`` lives in.
 
         Returns ``(text, None)``, or ``(None, reason)`` naming why this read
-        cannot say. A record that names no tab is resolved the way
-        :func:`gdocs_preview.address.resolve_range_scope` resolves an omitted
-        ``tab_id``: implicitly when the read has one tab, and not at all when
-        it has several -- a guessed tab makes ``matches_expectation`` a
-        statement about a different part of the document.
+        cannot say -- the space (:meth:`space_of`) or the text in it.
 
         The reason is returned rather than swallowed because a bare ``None``
         window is three different situations wearing one face, and an agent
@@ -215,17 +255,65 @@ class _PostWriteRead:
         "we never listed this id" -- which is the one case where nothing is
         wrong at all.
         """
-        segment_id = record.get("segment_id") or None
-        tab_id = record.get("tab_id") or None
-        if tab_id is None:
-            candidates = sorted({tab for tab in self.tab_ids if tab})
-            if len(candidates) > 1:
-                return None, "ambiguous_tab"
-            tab_id = candidates[0] if candidates else None
-        text = self.base_texts.get((tab_id, segment_id))
+        key, reason = self.space_of(record)
+        if key is None:
+            return None, reason
+        text = self.base_texts.get(key)
         if text is None:
             return None, "segment_not_in_read"
         return text, None
+
+    def pending_state(
+        self, suggestion_id: str, record: Optional[dict[str, Any]]
+    ) -> tuple[Optional[bool], Optional[str]]:
+        """Is ``suggestion_id`` STILL in the document's pending set?
+
+        Returns ``(True, None)``, ``(False, None)`` or ``(None, reason)`` --
+        and the third answer is the point of this method. Presence is decisive
+        whatever the read's coverage: an id this read LISTED is pending, full
+        stop. Absence is decisive only if the read looked where the id lives,
+        which a complete read did for every id and a degraded read did for
+        nothing outside :attr:`observed_spaces`.
+
+        ``record`` is the card as the ledger listed it -- the only thing that
+        says which ``(tab, segment)`` the id belongs to. Without it, a read
+        that did not cover the document cannot even name the space it failed
+        to look in, so the answer is UNKNOWN rather than a ``False`` nobody
+        checked.
+        """
+        if suggestion_id in self.records:
+            return True, None
+        if self.complete:
+            return False, None
+        if record is not None:
+            key, _ = self.space_of(record)
+            if key is not None:
+                if key in self.observed_spaces:
+                    return False, None
+                return None, "segment_not_in_read"
+        return None, "read_incomplete"
+
+    def absences(
+        self,
+        suggestion_ids: Iterable[str],
+        records: dict[str, Optional[dict[str, Any]]],
+    ) -> tuple[list[str], list[str]]:
+        """Split ids into (gone -- checked) and (this read cannot say).
+
+        The input is a ledger-minus-read difference, which is a candidate list
+        and not a finding: on a degraded read every id in a tab the read
+        cannot see drops out of that subtraction without having gone anywhere.
+        Only the first list may be reported as removed, or RECORDED as removed
+        -- :func:`gdocs_preview.suggestion_ledger.record_resolution` pops what
+        it is given, so a fabricated removal outlives the response it appeared
+        in and is repeated by ``explain_missing`` later.
+        """
+        gone: list[str] = []
+        unattested: list[str] = []
+        for sid in sorted(suggestion_ids):
+            state, _ = self.pending_state(sid, records.get(sid))
+            (gone if state is False else unattested).append(sid)
+        return gone, unattested
 
 
 async def _post_write_read(
@@ -270,28 +358,54 @@ _NOT_A_FAILED_WRITE = (
     "resolution itself took effect."
 )
 
+#: The same sentence when ``still_pending`` is ALSO null. Round 6: every note
+#: below pointed the agent at ``still_pending`` as the evidence, and a read
+#: that could not see the suggestion's tab set that field from a subtraction
+#: it had no standing to make -- so the field the prose called "the evidence"
+#: was a `false` nobody had checked. It is now null in that case, and a note
+#: cannot go on calling a null field the evidence.
+_NOTHING_REPORTS_ON_THE_WRITE = (
+    "No TEXT comparison could be made, and this read could not see the "
+    "pending set the suggestion lives in either, so NOTHING in this response "
+    "reports on whether the resolution took effect -- see "
+    "`still_pending_unavailable`."
+)
 
-def _note_suggestion_not_listed(*, suggestion_id: str, record: Any, read: Any) -> str:
+
+def _not_a_failed_write(still_pending: Optional[bool]) -> str:
+    """What an unlocated window means, given what the pending set could say."""
     return (
-        f"this session never listed suggestion {suggestion_id!r}, so there "
-        f"is no expected text to compare the document against. "
-        f"{_NOT_A_FAILED_WRITE} Call list_document_suggestions before "
-        "resolving to get the before/after text of the card."
+        _NOTHING_REPORTS_ON_THE_WRITE if still_pending is None else _NOT_A_FAILED_WRITE
     )
 
 
-def _note_ambiguous_tab(*, suggestion_id: str, record: Any, read: Any) -> str:
+def _note_suggestion_not_listed(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
+    return (
+        f"this session never listed suggestion {suggestion_id!r}, so there "
+        f"is no expected text to compare the document against. "
+        f"{_not_a_failed_write(still_pending)} Call list_document_suggestions "
+        "before resolving to get the before/after text of the card."
+    )
+
+
+def _note_ambiguous_tab(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
     tabs = sorted({t for t in read.tab_ids if t})
     return (
         f"suggestion {suggestion_id!r} was listed without a tab_id and this "
         f"read has {len(tabs)} tabs ({', '.join(tabs)}), so the text at its "
         "range cannot be located: an index means a different place in each "
-        f"tab. {_NOT_A_FAILED_WRITE} Re-read with "
+        f"tab. {_not_a_failed_write(still_pending)} Re-read with "
         "list_document_suggestions(tab_id=...) to see the resulting text."
     )
 
 
-def _note_segment_not_in_read(*, suggestion_id: str, record: Any, read: Any) -> str:
+def _note_segment_not_in_read(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
     where = (
         f"tab={(record or {}).get('tab_id')!r}, "
         f"segment={(record or {}).get('segment_id')!r}"
@@ -301,37 +415,45 @@ def _note_segment_not_in_read(*, suggestion_id: str, record: Any, read: Any) -> 
         f"suggestion {suggestion_id!r} was listed in, so its range could "
         f"not be located -- read_source is {read.source!r}, and the GA "
         "documents.get carries no tabs at all, so a read that degraded "
-        f"loses every tab id. {_NOT_A_FAILED_WRITE} Retry the read."
+        f"loses every tab id. {_not_a_failed_write(still_pending)} "
+        "Retry the read."
     )
 
 
-def _note_anchor_not_found(*, suggestion_id: str, record: Any, read: Any) -> str:
+def _note_anchor_not_found(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
     return (
         f"the base text immediately before suggestion {suggestion_id!r}'s range "
         "is no longer in that segment, so the range could not be located -- "
         "that text is unaffected by accepting or rejecting, so the likeliest "
         "cause is a concurrent edit by another editor between the listing and "
-        f"this write. {_NOT_A_FAILED_WRITE} Re-read the document to see its "
-        "current state."
+        f"this write. {_not_a_failed_write(still_pending)} Re-read the "
+        "document to see its current state."
     )
 
 
-def _note_ambiguous_anchor(*, suggestion_id: str, record: Any, read: Any) -> str:
+def _note_ambiguous_anchor(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
     return (
         f"the base text around suggestion {suggestion_id!r}'s range repeats "
         "in that segment, so more than one place reads as its range and "
         "they do not agree on whether the resolution landed. No verdict is "
-        f"reported rather than one picked at random. {_NOT_A_FAILED_WRITE} "
+        f"reported rather than one picked at random. "
+        f"{_not_a_failed_write(still_pending)} "
         "Read the range back with get_doc_review_view(start_index=..., "
         "end_index=...) to see the one place you resolved."
     )
 
 
-def _note_nothing_to_compare(*, suggestion_id: str, record: Any, read: Any) -> str:
+def _note_nothing_to_compare(
+    *, suggestion_id: str, record: Any, read: Any, still_pending: Optional[bool]
+) -> str:
     return (
         f"suggestion {suggestion_id!r} was listed without the before/after "
         "text a resolution is checked against, so there was nothing to "
-        f"compare the document to. {_NOT_A_FAILED_WRITE} Call "
+        f"compare the document to. {_not_a_failed_write(still_pending)} Call "
         "list_document_suggestions(fields='full') before resolving."
     )
 
@@ -368,8 +490,14 @@ def _unlocated_note(
     suggestion_id: str,
     record: Optional[dict[str, Any]],
     read: "_PostWriteRead",
+    still_pending: Optional[bool],
 ) -> str:
-    """One sentence saying why no text comparison was made, and what to do."""
+    """One sentence saying why no text comparison was made, and what to do.
+
+    ``still_pending`` is the verdict's OTHER half, and it is passed in rather
+    than looked up because every sentence here ends by pointing at it: when it
+    is null there is nothing to point at, and the note has to say that instead.
+    """
     builder = _UNLOCATED_NOTES.get(reason)
     if builder is None:
         # A reason from outside UNLOCATED_REASONS. Logged rather than raised:
@@ -384,10 +512,119 @@ def _unlocated_note(
         return (
             f"the text at suggestion {suggestion_id!r}'s range could not be "
             f"compared, and the reason given ({reason!r}) is one this build "
-            f"has no explanation for. {_NOT_A_FAILED_WRITE} Re-read the "
-            "document to see its current state."
+            f"has no explanation for. {_not_a_failed_write(still_pending)} "
+            "Re-read the document to see its current state."
         )
-    return builder(suggestion_id=suggestion_id, record=record, read=read)
+    return builder(
+        suggestion_id=suggestion_id,
+        record=record,
+        read=read,
+        still_pending=still_pending,
+    )
+
+
+#: The reason codes :func:`_verify_resolution` reports as
+#: ``still_pending_unavailable``: the post-write read could not say whether
+#: the id is in the document's pending set, because it did not look where the
+#: id lives. Both are only reachable from a read that degraded
+#: (:attr:`_PostWriteRead.complete` false); a complete read answers every id.
+PENDING_UNKNOWN_REASONS = ("segment_not_in_read", "read_incomplete")
+
+
+def _note_pending_segment_not_in_read(
+    *, action: str, suggestion_id: str, record: Any, read: Any
+) -> str:
+    where = (
+        f"tab={(record or {}).get('tab_id')!r}, "
+        f"segment={(record or {}).get('segment_id')!r}"
+    )
+    return (
+        f"whether suggestion {suggestion_id!r} is still pending is UNKNOWN: "
+        f"it was listed in ({where}) and this post-write read did not cover "
+        f"that space -- read_source is {read.source!r}, and the GA "
+        "documents.get carries no tabs at all, so a read that degraded loses "
+        "every tab id. The id is absent from this read, and that absence is "
+        f"NOT evidence that the {action} landed: a read that cannot see the "
+        "card's tab cannot see the card. Re-read with "
+        "list_document_suggestions before treating it as resolved, and do "
+        f"not repeat the {action} on the strength of this response."
+    )
+
+
+def _note_pending_read_incomplete(
+    *, action: str, suggestion_id: str, record: Any, read: Any
+) -> str:
+    return (
+        f"whether suggestion {suggestion_id!r} is still pending is UNKNOWN: "
+        f"this post-write read did not cover the whole document "
+        f"(read_source={read.source!r}) and this session never listed the id, "
+        "so there is nothing saying which tab it lives in and no way to tell "
+        "whether this read looked there. Its absence from the read is "
+        f"therefore not evidence that the {action} landed. Call "
+        "list_document_suggestions to see the document's real pending set."
+    )
+
+
+#: Same discipline as :data:`_UNLOCATED_NOTES`: a mapping, so a reason cannot
+#: fall through into somebody else's diagnosis, plus an import-time guard so a
+#: reason without a sentence is a build failure rather than a silent null.
+_PENDING_UNKNOWN_NOTES = {
+    "segment_not_in_read": _note_pending_segment_not_in_read,
+    "read_incomplete": _note_pending_read_incomplete,
+}
+
+if set(_PENDING_UNKNOWN_NOTES) != set(  # pragma: no cover - import guard
+    PENDING_UNKNOWN_REASONS
+):
+    raise RuntimeError(
+        "every reason in PENDING_UNKNOWN_REASONS needs its own sentence in "
+        "_PENDING_UNKNOWN_NOTES (and vice versa); the difference is "
+        f"{set(_PENDING_UNKNOWN_NOTES) ^ set(PENDING_UNKNOWN_REASONS)}"
+    )
+
+
+def _pending_unknown_note(
+    reason: str,
+    *,
+    action: str,
+    suggestion_id: str,
+    record: Optional[dict[str, Any]],
+    read: "_PostWriteRead",
+) -> str:
+    """One sentence for a pending set this read had no standing to report."""
+    builder = _PENDING_UNKNOWN_NOTES.get(reason)
+    if builder is None:  # pragma: no cover - the guard above is the catch
+        logger.error(
+            f"[docs_preview] no note is written for pending-unknown reason "
+            f"{reason!r}; add one to _PENDING_UNKNOWN_NOTES"
+        )
+        return (
+            f"whether suggestion {suggestion_id!r} is still pending is "
+            f"UNKNOWN, and the reason given ({reason!r}) is one this build "
+            "has no explanation for. Re-read with list_document_suggestions."
+        )
+    return builder(action=action, suggestion_id=suggestion_id, record=record, read=read)
+
+
+def _matches_expectation(
+    still_pending: Optional[bool], text_check: Optional[bool]
+) -> Optional[bool]:
+    """The ONE rule turning the two pieces of evidence into a verdict.
+
+    It is a module function rather than a method so that
+    :meth:`_ResolutionVerdict.derive` and :meth:`_ResolutionVerdict.
+    __post_init__` cannot drift: the constructor checks the field against the
+    same rule the factory used, so any hand-built verdict that is not entailed
+    by its own evidence raises.
+    """
+    if still_pending is None:
+        # The pending set was not observed. The text cannot decide alone: for
+        # a reject, and for a style-only accept, it reads identically whether
+        # or not the resolution landed.
+        return None
+    if still_pending:
+        return False
+    return text_check
 
 
 @dataclass(frozen=True)
@@ -417,42 +654,68 @@ class _ResolutionVerdict:
     reporting success on a write it had not verified, each time through a
     different branch; deriving the verdict from the evidence rather than
     comparing the two afterwards is what retires the branch.
+
+    **Round 6: that was necessary and not sufficient.** Making the pair
+    consistent says nothing about whether its INPUTS were founded, and
+    ``still_pending`` was computed as ``suggestion_id in read.records`` --
+    which on a read that structurally cannot see the suggestion's tab (the GA
+    fallback carries no tab ids at all) is ``False`` for a card that never
+    moved. The derivation then faithfully turned an unfounded input into a
+    confident output, on the destructive path. So ``still_pending`` is now
+    ``Optional[bool]``: UNKNOWN is a first-class input
+    (:meth:`_PostWriteRead.pending_state`) that this type must PROPAGATE
+    rather than collapse. A positive verdict requires the pending set to have
+    been observed and the id to have been absent from it; nothing weaker can
+    be spelled.
     """
 
-    #: Is the resolved id STILL in the post-write pending set?
-    still_pending: bool
+    #: Is the resolved id STILL in the post-write pending set? ``None`` when
+    #: the read could not see the space the id lives in --
+    #: :data:`PENDING_UNKNOWN_REASONS` names which way.
+    still_pending: Optional[bool]
     #: What :func:`~gdocs_preview.analysis.check_resolution` said about the
     #: text at the range, or ``None`` when no comparison could be made.
     text_check: Optional[bool]
-    #: The agent-facing verdict, which is never positive while the suggestion
-    #: is pending.
+    #: The agent-facing verdict, which is never positive unless the pending
+    #: set was observed and the id was gone from it.
     matches_expectation: Optional[bool]
 
     def __post_init__(self) -> None:
-        if self.still_pending and self.matches_expectation is not False:
+        entailed = _matches_expectation(self.still_pending, self.text_check)
+        if self.matches_expectation is not entailed:
             raise ValueError(
-                "matches_expectation cannot be "
-                f"{self.matches_expectation!r} while still_pending is true: "
-                "the id is in the post-write pending set, so the resolution "
-                "did not take effect. Build this with _ResolutionVerdict."
-                "derive(), which cannot produce that pair."
+                f"matches_expectation={self.matches_expectation!r} is not "
+                f"what still_pending={self.still_pending!r} and "
+                f"text_check={self.text_check!r} entail ({entailed!r}). "
+                "Build this with _ResolutionVerdict.derive(), which cannot "
+                "produce an unentailed verdict."
             )
 
     @classmethod
     def derive(
-        cls, *, still_pending: bool, text_check: Optional[bool]
+        cls, *, still_pending: Optional[bool], text_check: Optional[bool]
     ) -> "_ResolutionVerdict":
         """The verdict the two pieces of evidence add up to.
 
-        A pending id is a decided ``False``; only once it is gone does the
-        text decide, and a text check that could not run stays ``None`` there
-        (with :data:`UNLOCATED_REASONS` naming why).
+        A pending id is a decided ``False``; only once it is OBSERVED to be
+        gone does the text decide, and a text check that could not run stays
+        ``None`` there (with :data:`UNLOCATED_REASONS` naming why). A pending
+        set nobody could see decides nothing at all -- the text cannot stand
+        in for it, because for a reject, and for a style-only accept, base
+        text reads the same in both worlds.
         """
         return cls(
             still_pending=still_pending,
             text_check=text_check,
-            matches_expectation=False if still_pending else text_check,
+            matches_expectation=_matches_expectation(still_pending, text_check),
         )
+
+    @classmethod
+    def unknown(cls) -> "_ResolutionVerdict":
+        """The verdict that claims nothing. Always representable, by
+        construction -- which is what makes it a safe degrade target for the
+        post-write path (see :func:`_verify_resolution`)."""
+        return cls(still_pending=None, text_check=None, matches_expectation=None)
 
 
 def _still_pending_note(
@@ -561,6 +824,46 @@ class _ThreadWriteVerdict:
         )
 
 
+def _partial_pending_note(read: "_PostWriteRead") -> str:
+    """One sentence for a pending count that is a count of what was SEEN.
+
+    ``pending_suggestion_count`` / ``pending_suggestion_ids`` are the same
+    shape of claim as ``still_pending``, one level up: they read as the
+    document's pending set, and off a degraded read they are one tab's. An
+    agent that sees ``pending_suggestion_count: 0`` stops reviewing.
+    """
+    return (
+        f"pending_suggestion_count and pending_suggestion_ids are what this "
+        f"read saw, not what the document holds: read_source is "
+        f"{read.source!r}, the GA documents.get returns one unnamed body with "
+        "no tab ids, so cards in any other tab are missing from both. A count "
+        "of 0 here does NOT mean the document has no pending suggestions. "
+        "Re-read with list_document_suggestions."
+    )
+
+
+def _unverified_note(action: str, suggestion_id: str, why: str) -> str:
+    """One sentence for a resolution nothing checked.
+
+    ``{"source": "skipped"}`` and ``{"source": "unavailable"}`` used to be the
+    whole story on these two paths, and the response around them is
+    byte-for-byte the shape prod returns for a resolution that resolved
+    NOTHING: ``rejected_suggestion_ids: ["sug.x"]`` and
+    ``comment_update_state: "ALL_SAVED"`` beside them, with nothing saying the
+    ids are a receipt for the REQUEST rather than for its effect. The warning
+    that used to fire only on the verified path fires here too, because here
+    is where there is least to go on.
+    """
+    return (
+        f"nothing verified this {action}: {why}. The preview API can answer a "
+        "resolution with HTTP 200 and no effect -- an id that no longer "
+        f"resolves is one way -- so {action}ed_suggestion_ids and "
+        "comment_update_state are a receipt for the REQUEST, not evidence "
+        f"that {suggestion_id!r} left the document's pending set. Re-read "
+        "with list_document_suggestions before treating the card as resolved."
+    )
+
+
 def _is_ours(record: dict[str, Any]) -> bool:
     """Did the AUTHENTICATED user write this suggestion?
 
@@ -573,8 +876,21 @@ def _is_ours(record: dict[str, Any]) -> bool:
     return ((record.get("author") or {}).get("me")) is True
 
 
-def _concurrent_note(suggestion_ids: list[str], read: "_PostWriteRead") -> str:
-    """One sentence about suggestions that appeared but are not ours."""
+def _concurrent_note(
+    suggestion_ids: list[str],
+    read: "_PostWriteRead",
+    *,
+    listing_was_complete: bool,
+) -> str:
+    """One sentence about suggestions that appeared but are not ours.
+
+    "Appeared between the last listing and this write" is a claim about the
+    LISTING, and it only holds if that listing could see where the card lives.
+    A degraded listing carries one unnamed body and no tab ids, so every card
+    in every other tab is "new" to the diff against it without anything having
+    happened -- the same unfounded subtraction that produced fabricated
+    collateral on the resolution path, running in the opposite direction.
+    """
     names = ", ".join(repr(sid) for sid in suggestion_ids)
     unknown = any(
         (read.records[sid].get("author") or {}).get("me") is None
@@ -586,12 +902,64 @@ def _concurrent_note(suggestion_ids: list[str], read: "_PostWriteRead") -> str:
         if unknown
         else "the suggestion thread names a different author"
     )
+    appeared = (
+        f"{names} appeared between the last listing and this write"
+        if listing_was_complete
+        else (
+            f"{names} is in the document now and was not in the last listing "
+            "-- though that listing was a degraded read which could not see "
+            "every tab, so it may have been there all along"
+        )
+    )
     return (
-        f"{names} appeared between the last listing and this write, and is "
+        f"{appeared}, and is "
         f"NOT reported as created by this call: {why}. A second reviewer "
         "editing the same document produces exactly this, and attributing "
         "their card to your write would have you resolve or reply to it as "
         "your own. Check the author before acting on it."
+    )
+
+
+def _ledger_records(
+    user_google_email: str,
+    document_id: str,
+    before: Optional[suggestion_ledger.Snapshot],
+) -> dict[str, Optional[dict[str, Any]]]:
+    """The listed card behind every id in ``before`` -- its (tab, segment).
+
+    An id with no record is kept as ``None`` rather than dropped:
+    :meth:`_PostWriteRead.absences` treats "we do not know where it lives" as
+    a reason it cannot attest the absence, which is exactly what it is.
+    """
+    if before is None:
+        return {}
+    return {
+        sid: suggestion_ledger.record_of(user_google_email, document_id, sid)
+        for sid in before.ids
+    }
+
+
+def _collateral_unavailable_note(
+    action: str, suggestion_ids: list[str], read: "_PostWriteRead"
+) -> str:
+    """One sentence for removals this read had no standing to report.
+
+    The claim being withheld is ``collateral_note``'s: "accepting X also
+    removed it, because that removed the last character it marked. Its comment
+    thread went with it." That is causation about a customer's document, and
+    the only evidence for it is a before/after diff -- which says nothing at
+    all when the "after" read cannot see the tab the id lives in.
+    """
+    names = ", ".join(repr(sid) for sid in suggestion_ids)
+    return (
+        f"{names} was listed before this {action} and is absent from the "
+        f"post-write read, but that read did not cover the whole document "
+        f"(read_source={read.source!r}, which carries no tab ids at all), so "
+        "whether this write removed anything else is UNKNOWN. Nothing is "
+        "reported as also-removed and nothing has been recorded against "
+        "those ids: a read that cannot see a tab is not evidence about the "
+        "suggestions in it. Re-read with list_document_suggestions to see "
+        "which are still pending."
     )
 
 
@@ -953,7 +1321,7 @@ async def suggest_doc_edit(
         f"start={start_index}, end={end_index}, "
         f"segment={segment_id or 'body'}, tab={tab_id or 'default'}"
     )
-    known_before = suggestion_ledger.known_ids(user_google_email, document_id)
+    before = suggestion_ledger.snapshot(user_google_email, document_id)
     response = await _execute_preview_batch_update(
         service, "suggest_doc_edit", document_id, requests, write_mode="SUGGEST"
     )
@@ -974,7 +1342,7 @@ async def suggest_doc_edit(
             user_google_email=user_google_email,
             document_id=document_id,
             created_ids=created_ids,
-            known_before=known_before,
+            before=before,
             edit_range=(
                 start_index,
                 end_index if end_index is not None else start_index,
@@ -994,7 +1362,7 @@ async def _verify_suggest(
     user_google_email: str,
     document_id: str,
     created_ids: list[str],
-    known_before: Optional[frozenset[str]],
+    before: Optional[suggestion_ledger.Snapshot],
     edit_range: tuple[int, int],
     verify: bool,
     segment_id: Optional[str] = None,
@@ -1037,6 +1405,14 @@ async def _verify_suggest(
     to handle: a second reviewer's card, echoed under
     ``appeared_since_last_read`` with nothing left to say why. Use
     ``setdefault("notes", []).append`` / ``.extend``.
+
+    **Both diffs against ``before`` are bounded by what the two reads saw.**
+    ``before`` is a :class:`~gdocs_preview.suggestion_ledger.Snapshot`, not a
+    bare id set, because each direction of the subtraction is unfounded when
+    the read on that side of it could not see the tab in question: "new since
+    the listing" is not new if the listing was blind (the note says so), and
+    "gone since the listing" is not gone if THIS read is blind (the ids are
+    withheld from ``also_removed_suggestion_ids`` and from the ledger).
     """
     if not verify:
         return {"source": "skipped", "reason": "verify=false"}
@@ -1055,9 +1431,9 @@ async def _verify_suggest(
     # else's suggestion, which the agent may then reply to or resolve as its
     # own. The thread says who wrote it, so ask.
     appeared: list[str] = []
-    if known_before is not None:
+    if before is not None:
         for sid in read.records:
-            if sid not in known_before and sid not in echoed_ids:
+            if sid not in before.ids and sid not in echoed_ids:
                 appeared.append(sid)
     others: list[str] = []
     for sid in appeared:
@@ -1072,11 +1448,23 @@ async def _verify_suggest(
         "created_suggestions": [_echo_suggestion(read.records[s]) for s in echoed_ids],
         "pending_suggestion_count": len(read.records),
     }
+    if not read.complete:
+        verification["pending_suggestions_are_partial"] = True
+        verification.setdefault("notes", []).append(_partial_pending_note(read))
     if others:
         verification["appeared_since_last_read"] = [
             _echo_suggestion(read.records[s]) for s in others
         ]
-        verification.setdefault("notes", []).append(_concurrent_note(others, read))
+        verification.setdefault("notes", []).append(
+            _concurrent_note(
+                others,
+                read,
+                # ``others`` came out of a subtraction against ``before``, so
+                # the sentence describing it may only claim what THAT read
+                # could see.
+                listing_was_complete=bool(before and before.complete),
+            )
+        )
     if not echoed_ids:
         try:
             scope = resolve_range_scope(
@@ -1114,7 +1502,13 @@ async def _verify_suggest(
                     "instead -- editing inside an existing same-author "
                     "suggestion merges into it rather than creating a new one."
                 )
-    vanished = sorted(known_before - read.live_ids) if known_before is not None else []
+    # The absence half of the diff, filtered by what THIS read observed: an
+    # id that dropped out of the subtraction because the read cannot see its
+    # tab has not vanished, it was never looked for.
+    vanished, unattested = read.absences(
+        (before.ids - read.live_ids) if before is not None else (),
+        _ledger_records(user_google_email, document_id, before),
+    )
     if vanished:
         resolutions = suggestion_ledger.record_resolution(
             user_google_email,
@@ -1127,7 +1521,14 @@ async def _verify_suggest(
         verification.setdefault("notes", []).extend(
             suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
         )
-    suggestion_ledger.observe(user_google_email, document_id, read.records.values())
+    if unattested:
+        verification["also_removed_suggestion_ids_unavailable"] = "read_incomplete"
+        verification.setdefault("notes", []).append(
+            _collateral_unavailable_note("suggest_doc_edit", unattested, read)
+        )
+    suggestion_ledger.observe(
+        user_google_email, document_id, read.records.values(), complete=read.complete
+    )
     return verification
 
 
@@ -1192,8 +1593,9 @@ async def manage_document_suggestion(
             complete address), expected_text, resulting_text,
             matches_expectation, pending_suggestion_count,
             pending_suggestion_ids, and -- only when they apply --
-            resulting_text_unavailable, also_removed_suggestion_ids and
-            notes}.
+            still_pending_unavailable, resulting_text_unavailable,
+            also_removed_suggestion_ids,
+            also_removed_suggestion_ids_unavailable and notes}.
 
             resulting_text is read in the resolved suggestion's OWN (tab,
             segment), never the document body, so matches_expectation is a
@@ -1209,6 +1611,20 @@ async def manage_document_suggestion(
             text exactly as it was, so on a reject the text alone cannot tell
             a write that landed from one that did not.
 
+            still_pending is null when the post-write read could not see the
+            space the suggestion lives in, and still_pending_unavailable then
+            says which: segment_not_in_read (the read lost the card's
+            tab/segment -- the GA fallback carries no tab ids at all) or
+            read_incomplete (that read did not cover the document and this
+            session never listed the id, so there is nothing saying which tab
+            to look in). Absence from a read that could not look there is NOT
+            evidence the resolution landed, so matches_expectation is null too
+            and nothing in the response reports on the write: re-read with
+            list_document_suggestions rather than repeating the resolution.
+            The same coverage rule governs also_removed_suggestion_ids -- ids
+            whose disappearance that read cannot attest are withheld from it,
+            and also_removed_suggestion_ids_unavailable is set instead.
+
             matches_expectation is null ONLY when no check could be run, and
             resulting_text_unavailable then names which of the six reasons
             it was: suggestion_not_listed (this session never listed the id,
@@ -1221,7 +1637,8 @@ async def manage_document_suggestion(
             repeats, so several places read as the range and they disagree),
             nothing_to_compare (the card was listed without the before/after
             text a resolution is checked against). None of them says the
-            write failed; still_pending is the evidence about that.
+            write failed; still_pending is the evidence about that, unless it
+            is itself null.
     """
     action_normalized = action.lower().strip()
     if action_normalized == "accept":
@@ -1244,7 +1661,7 @@ async def manage_document_suggestion(
     requests = [{request_key: {"suggestionId": suggestion_id}}]
     # Snapshot BEFORE the write: the diff against the post-write read is the
     # only evidence that this resolution took other suggestions with it.
-    known_before = suggestion_ledger.known_ids(user_google_email, document_id)
+    before = suggestion_ledger.snapshot(user_google_email, document_id)
     resolved_record = suggestion_ledger.record_of(
         user_google_email, document_id, suggestion_id
     )
@@ -1286,7 +1703,7 @@ async def manage_document_suggestion(
         action=action_normalized,
         suggestion_id=suggestion_id,
         resolved_record=resolved_record,
-        known_before=known_before,
+        before=before,
         verify=verify,
     )
     result["link"] = _doc_link(document_id)
@@ -1301,7 +1718,7 @@ async def _verify_resolution(
     action: str,
     suggestion_id: str,
     resolved_record: Optional[dict[str, Any]],
-    known_before: Optional[frozenset[str]],
+    before: Optional[suggestion_ledger.Snapshot],
     verify: bool,
 ) -> dict[str, Any]:
     """Post-write echo for :func:`manage_document_suggestion`.
@@ -1344,6 +1761,21 @@ async def _verify_resolution(
     :data:`UNLOCATED_REASONS` prevented the text comparison, plus a note
     saying so in words. Silence made several different situations -- one of
     them entirely benign -- arrive at the agent as the same ``null``.
+
+    **A read only answers about what it saw.** ``still_pending`` was
+    ``suggestion_id in read.records`` -- a subtraction that reads ``False``
+    for a card in a tab the read structurally cannot see, which is every card
+    outside the body once the read degrades to the GA ``documents.get``. It is
+    now :meth:`_PostWriteRead.pending_state`, which answers ``None`` there,
+    and the same rule filters the collateral diff: an id whose absence this
+    read cannot attest is neither reported as removed nor recorded as removed.
+
+    The two ``verify``-less returns say so too. ``{"source": "skipped"}`` and
+    ``{"source": "unavailable"}`` are byte-for-byte the shape prod returns for
+    a resolution that resolved NOTHING -- an HTTP 200 no-op sits beside a
+    populated ``rejected_suggestion_ids`` and ``comment_update_state:
+    ALL_SAVED`` -- so both carry the warning that the response ids alone do
+    not say the write landed.
     """
     if not verify:
         # Still remember the resolution: a later "does not exist" for this id
@@ -1351,14 +1783,32 @@ async def _verify_resolution(
         suggestion_ledger.record_resolution(
             user_google_email, document_id, action, suggestion_id
         )
-        return {"source": "skipped", "reason": "verify=false"}
+        return {
+            "source": "skipped",
+            "reason": "verify=false",
+            "still_pending": None,
+            "still_pending_unavailable": "not_verified",
+            "notes": [_unverified_note(action, suggestion_id, "verify=false")],
+        }
 
     read, failure = await _post_write_read(service, document_id)
     if read is None:
         suggestion_ledger.record_resolution(
             user_google_email, document_id, action, suggestion_id
         )
-        return {"source": "unavailable", "reason": failure}
+        return {
+            "source": "unavailable",
+            "reason": failure,
+            "still_pending": None,
+            "still_pending_unavailable": "not_verified",
+            "notes": [
+                _unverified_note(
+                    action,
+                    suggestion_id,
+                    f"the post-write read failed ({failure})",
+                )
+            ],
+        }
 
     expected_text: Optional[str] = None
     resulting_text: Optional[str] = None
@@ -1398,11 +1848,30 @@ async def _verify_resolution(
                 matches = check.matches
                 resulting_text = check.window
                 unlocated = check.reason
+    # Is the id still pending -- and CAN this read say? A read that never
+    # walked the card's (tab, segment) has not observed its absence, it has
+    # only failed to observe its presence.
+    still_pending, pending_unknown = read.pending_state(suggestion_id, resolved_record)
     # The two pieces of evidence, added up in ONE place. `matches` from here
     # on is the derived verdict, not the text check: see _ResolutionVerdict.
-    verdict = _ResolutionVerdict.derive(
-        still_pending=suggestion_id in read.records, text_check=matches
-    )
+    try:
+        verdict = _ResolutionVerdict.derive(
+            still_pending=still_pending, text_check=matches
+        )
+    except ValueError as error:  # pragma: no cover - derive cannot violate it
+        # The invariant is real and the raise is how it is enforced against
+        # direct construction -- but not HERE. This runs after a landed
+        # destructive write, and an exception on this path turns an accept
+        # that applied into a tool error the agent will try to "fix" by
+        # writing again, which is precisely what _post_write_read refuses to
+        # do. Degrade to the verdict that claims nothing, and log.
+        logger.error(
+            f"[docs_preview] resolution verdict for {suggestion_id!r} could "
+            f"not be derived ({error}); reporting an unknown verdict rather "
+            "than failing a write that already landed"
+        )
+        verdict = _ResolutionVerdict.unknown()
+        still_pending, pending_unknown = None, "read_incomplete"
     if (
         verdict.matches_expectation is None and unlocated is None
     ):  # pragma: no cover - belt and braces
@@ -1427,12 +1896,30 @@ async def _verify_resolution(
         "pending_suggestion_count": len(read.records),
         "pending_suggestion_ids": sorted(read.records),
     }
-    if verdict.still_pending:
+    if not read.complete:
+        verification["pending_suggestions_are_partial"] = True
+        verification.setdefault("notes", []).append(_partial_pending_note(read))
+    if verdict.still_pending is True:
         # First note, because it is the one that changed the verdict. The
         # unlocated note below explains a missing resulting_text; this one
         # explains a false matches_expectation, and they can both apply.
         verification.setdefault("notes", []).append(
             _still_pending_note(action, suggestion_id, verdict.text_check)
+        )
+    elif verdict.still_pending is None:
+        # The pending set was not observed where this card lives. Named and
+        # explained rather than left as a bare null, for the same reason
+        # ``resulting_text_unavailable`` exists: "the read could not look
+        # there" and "the read looked and it was gone" are opposite facts.
+        verification["still_pending_unavailable"] = pending_unknown
+        verification.setdefault("notes", []).append(
+            _pending_unknown_note(
+                pending_unknown or "read_incomplete",
+                action=action,
+                suggestion_id=suggestion_id,
+                record=resolved_record,
+                read=read,
+            )
         )
     if unlocated is not None:
         # Its sibling _verify_suggest names its one ambiguity
@@ -1450,13 +1937,22 @@ async def _verify_resolution(
                 suggestion_id=suggestion_id,
                 record=resolved_record,
                 read=read,
+                # Every unlocated sentence ends by pointing at ``still_pending``
+                # as the evidence about the write. When that is null there is
+                # nothing to point at, and the note has to say so instead.
+                still_pending=verdict.still_pending,
             )
         )
 
-    collateral = (
-        sorted((known_before - read.live_ids) - {suggestion_id})
-        if known_before is not None
-        else []
+    # The collateral claim -- "accepting X also removed it, because that
+    # removed the last character it marked" -- is causation about a customer's
+    # document, and its only evidence is this before/after diff. Ids the read
+    # could not look for are withheld from BOTH the response and the ledger:
+    # record_resolution pops what it is given, so a fabricated removal is
+    # repeated by explain_missing for the rest of the session.
+    collateral, unattested = read.absences(
+        ((before.ids - read.live_ids) - {suggestion_id}) if before is not None else (),
+        _ledger_records(user_google_email, document_id, before),
     )
     resolutions = suggestion_ledger.record_resolution(
         user_google_email, document_id, action, suggestion_id, collateral
@@ -1466,7 +1962,14 @@ async def _verify_resolution(
         verification.setdefault("notes", []).extend(
             suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
         )
-    suggestion_ledger.observe(user_google_email, document_id, read.records.values())
+    if unattested:
+        verification["also_removed_suggestion_ids_unavailable"] = "read_incomplete"
+        verification.setdefault("notes", []).append(
+            _collateral_unavailable_note(action, unattested, read)
+        )
+    suggestion_ledger.observe(
+        user_google_email, document_id, read.records.values(), complete=read.complete
+    )
     return verification
 
 

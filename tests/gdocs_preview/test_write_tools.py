@@ -131,6 +131,35 @@ def _batch_service(response=None, document=None):
     return service
 
 
+def _degraded_read_service(response=None, document=None):
+    """A service whose post-write read DEGRADES to the GA documents.get.
+
+    This is the read shape ``preview_read.read_for_review`` falls back to when
+    the thread-bearing request fails: one unnamed body, ``tabs=[(None, doc)]``,
+    ``read_source="ga_documents_get"``, and therefore no way to see into any
+    named tab. It is reachable in production from an unenrolled project, an
+    expired preview, a network blip on the raw authorized request, or a
+    payload that parses with an empty ``tabs`` array.
+    """
+    service = Mock()
+    service.documents.return_value.batchUpdate.return_value.execute = Mock(
+        return_value={} if response is None else response
+    )
+    ga_document = (
+        fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))])
+        if document is None
+        else document
+    )
+
+    def _get(**kwargs):
+        if "commentsViewMode" in kwargs:
+            raise preview_read.PreviewReadError("not enrolled")
+        return Mock(execute=Mock(return_value=ga_document))
+
+    service.documents.return_value.get.side_effect = _get
+    return service
+
+
 def _failing_service(error):
     service = Mock()
     service.documents.return_value.batchUpdate.return_value.execute = Mock(
@@ -154,9 +183,14 @@ def _batch_kwargs(service):
     return kwargs
 
 
-def _observe(*suggestions):
-    """Seed the ledger the way a list_document_suggestions call would."""
-    suggestion_ledger.observe(EMAIL, DOC, list(suggestions))
+def _observe(*suggestions, complete: bool = True):
+    """Seed the ledger the way a list_document_suggestions call would.
+
+    ``complete`` is the listing read's coverage: True for the preview read
+    (every tab, every segment), False for the GA fallback, which sees one
+    unnamed body and cannot support any claim about the rest of the document.
+    """
+    suggestion_ledger.observe(EMAIL, DOC, list(suggestions), complete=complete)
 
 
 @pytest.fixture(autouse=True)
@@ -1201,7 +1235,7 @@ class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
         backend = FakeBackend(me="mockuser")
         backend.seed(CONC_SEED)
         # The agent's last listing: nothing pending anywhere.
-        suggestion_ledger.observe(EMAIL, CONC_DOC, [])
+        suggestion_ledger.observe(EMAIL, CONC_DOC, [], complete=True)
 
         # Bob edits while the agent is deciding.
         bob = _other_editor_suggests(backend, editor="bob", text="URGENT ", at=0)
@@ -1236,7 +1270,7 @@ class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
         whose thread names us, is ours."""
         backend = FakeBackend(me="mockuser")
         backend.seed(CONC_SEED)
-        suggestion_ledger.observe(EMAIL, CONC_DOC, [])
+        suggestion_ledger.observe(EMAIL, CONC_DOC, [], complete=True)
 
         # A second session of the SAME account -- the phone, the other tab.
         mine = _other_editor_suggests(backend, editor="mockuser", text="URGENT ", at=0)
@@ -1330,7 +1364,7 @@ class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
     @pytest.mark.asyncio
     async def test_the_ambiguous_tab_note_does_not_delete_it_either(self):
         """The other assignment: a multi-tab document with no tab_id."""
-        suggestion_ledger.observe(EMAIL, DOC, [])
+        suggestion_ledger.observe(EMAIL, DOC, [], complete=True)
         service = _batch_service(
             {},
             document=fx.build_tabs_payload(
@@ -2793,7 +2827,7 @@ class TestEveryEchoedIndexCarriesItsAddress:
         assert echo["tab_id"] == "t.0"
 
     def test_the_ledger_keeps_the_address_it_was_given(self):
-        suggestion_ledger.observe(EMAIL, DOC, [REP1_RECORD])
+        suggestion_ledger.observe(EMAIL, DOC, [REP1_RECORD], complete=True)
         kept = suggestion_ledger.record_of(EMAIL, DOC, "suggest.rep1")
         assert ADDRESS_KEYS <= set(kept)
         assert kept["tab_id"] == "t.0"
@@ -3238,27 +3272,11 @@ class TestAnUnlocatedWindowSaysWhy:
         """The GA documents.get carries no tabs at all, so a card listed in
         't.0' has no segment to be located in after the fallback."""
         _observe(self.RECORD)
-        service = Mock()
-        service.documents.return_value.batchUpdate.return_value.execute = Mock(
-            return_value={}
-        )
-
-        def _get(**kwargs):
-            if "commentsViewMode" in kwargs:
-                raise preview_read.PreviewReadError("not enrolled")
-            return Mock(
-                execute=Mock(
-                    return_value=fx.build_doc([fx.paragraph(fx.run("Two bravo.\n"))])
-                )
-            )
-
-        service.documents.return_value.get.side_effect = _get
-
-        verification = await self._accept(service)
+        verification = await self._accept(_degraded_read_service())
         assert verification["read_source"] == "ga_documents_get"
         assert verification["matches_expectation"] is None
         assert verification["resulting_text_unavailable"] == "segment_not_in_read"
-        (note,) = verification["notes"]
+        note = next(n for n in verification["notes"] if "could not be located" in n)
         assert "ga_documents_get" in note
         assert "'t.0'" in note
 
@@ -3309,9 +3327,29 @@ class TestAnUnlocatedWindowSaysWhy:
                 suggestion_id="s.1",
                 record=self.RECORD,
                 read=read,
+                still_pending=False,
             )
             assert "s.1" in note or "post-write read" in note
             assert "`still_pending` is the evidence" in note
+
+    def test_no_note_calls_a_null_still_pending_the_evidence(self):
+        """Round 6: every sentence above ends by pointing the agent at
+        ``still_pending`` as the evidence about the write -- which is exactly
+        the field a blind read had no standing to fill in. When it is null
+        there is nothing to point at, and saying otherwise is the same
+        unfounded assertion one indirection further out."""
+        read = Mock(tab_ids=["t.0", "t.second"], source="ga_documents_get")
+        for reason in write_tools.UNLOCATED_REASONS:
+            note = write_tools._unlocated_note(
+                reason,
+                suggestion_id="s.1",
+                record=self.RECORD,
+                read=read,
+                still_pending=None,
+            )
+            assert "`still_pending` is the evidence" not in note, reason
+            assert "NOTHING in this response reports" in note, reason
+            assert "still_pending_unavailable" in note, reason
 
     def test_every_reason_has_its_OWN_note(self):
         """Round 5 MEDIUM: the fallback answered every unmatched reason with
@@ -3328,7 +3366,11 @@ class TestAnUnlocatedWindowSaysWhy:
         read = Mock(tab_ids=["t.0", "t.second"], source="preview_threads")
         notes = {
             reason: write_tools._unlocated_note(
-                reason, suggestion_id="s.1", record=self.RECORD, read=read
+                reason,
+                suggestion_id="s.1",
+                record=self.RECORD,
+                read=read,
+                still_pending=False,
             )
             for reason in write_tools.UNLOCATED_REASONS
         }
@@ -3343,6 +3385,7 @@ class TestAnUnlocatedWindowSaysWhy:
                 suggestion_id="s.1",
                 record=self.RECORD,
                 read=read,
+                still_pending=False,
             )
         assert "reason_from_the_future" in note
         assert "concurrent edit" not in note
@@ -3543,14 +3586,455 @@ class TestAStillPendingSuggestionIsNeverAMatch:
                 still_pending=False, text_check=text_check
             )
             assert verdict.matches_expectation is text_check
-        with pytest.raises(ValueError, match="still_pending"):
+        with pytest.raises(ValueError, match="matches_expectation"):
             write_tools._ResolutionVerdict(
                 still_pending=True, text_check=True, matches_expectation=True
             )
-        with pytest.raises(ValueError, match="still_pending"):
+        with pytest.raises(ValueError, match="matches_expectation"):
             write_tools._ResolutionVerdict(
                 still_pending=True, text_check=None, matches_expectation=None
             )
+
+
+# ---------------------------------------------------------------------------
+# Round 6 -- evidence that cannot bear on the question answers UNKNOWN
+# ---------------------------------------------------------------------------
+
+#: A card in the SECOND tab of a two-tab document, as a listing reports it.
+T1_RECORD = {
+    "suggestion_id": "suggest.t1",
+    "type": "insertion",
+    "pre_text": "",
+    "post_text": "bravo",
+    "context_before": "Two ",
+    "context_after": ".\n",
+    "segment": "body",
+    "segment_id": None,
+    "tab_id": "t.second",
+    "start_index": 5,
+    "end_index": 10,
+}
+
+
+class TestAReadThatCannotSeeTheTabSaysNothingAboutIt:
+    """Round 6 HIGH 1: ``still_pending`` was a subtraction, not an observation.
+
+    ``still_pending=suggestion_id in read.records`` treats absence as proof
+    the resolution landed. On a degraded post-write read -- the GA
+    ``documents.get`` fallback, which returns one unnamed body and no tab ids
+    at all -- a card in ``t.0`` or ``t.second`` is absent because the read is
+    BLIND, and the answer came out ``still_pending: false`` on the destructive
+    accept path. Round 5 made the contradictory PAIR unrepresentable; the
+    inputs to the derivation were still free to be unfounded, and the
+    derivation faithfully turned one into a confident output.
+
+    Worse, the surrounding prose pointed the agent AT that field:
+    ``_NOT_A_FAILED_WRITE`` ("`still_pending` is the evidence about whether
+    the resolution itself took effect") shipped in the very note that fires
+    on this path.
+    """
+
+    @staticmethod
+    async def _accept(service, suggestion_id="suggest.t1") -> dict:
+        result = json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id=suggestion_id,
+            )
+        )
+        return result["verification"]
+
+    @pytest.mark.asyncio
+    async def test_a_blind_read_does_not_report_the_resolution_as_landed(self):
+        _observe(T1_RECORD)
+        verification = await self._accept(_degraded_read_service())
+
+        assert verification["read_source"] == "ga_documents_get"
+        assert verification["still_pending"] is None, verification
+        assert verification["still_pending_unavailable"] == "segment_not_in_read"
+        assert verification["matches_expectation"] is None, verification
+
+    @pytest.mark.asyncio
+    async def test_the_note_says_the_absence_is_not_evidence(self):
+        _observe(T1_RECORD)
+        verification = await self._accept(_degraded_read_service())
+
+        note = next(n for n in verification["notes"] if "UNKNOWN" in n)
+        assert "suggest.t1" in note
+        assert "t.second" in note
+        assert "NOT evidence" in note
+        assert "list_document_suggestions" in note
+
+    @pytest.mark.asyncio
+    async def test_no_note_still_points_at_still_pending_as_the_evidence(self):
+        """The aggravating half: the prose that shipped beside the bad field
+        told the agent to trust it."""
+        _observe(T1_RECORD)
+        verification = await self._accept(_degraded_read_service())
+
+        for note in verification["notes"]:
+            assert "`still_pending` is the evidence" not in note, note
+
+    @pytest.mark.asyncio
+    async def test_an_id_we_never_listed_is_unknown_on_a_blind_read_too(self):
+        """No record means no address, so a read that did not cover the
+        document cannot even name the space it failed to look in."""
+        _observe(complete=False)
+        verification = await self._accept(
+            _degraded_read_service(), suggestion_id="never.listed"
+        )
+
+        assert verification["still_pending"] is None, verification
+        assert verification["still_pending_unavailable"] == "read_incomplete"
+        note = next(n for n in verification["notes"] if "UNKNOWN" in n)
+        assert "which tab it lives in" in note
+
+    @pytest.mark.asyncio
+    async def test_presence_is_decisive_whatever_the_read_saw(self):
+        """The asymmetry that makes this safe: a read that LISTED the id has
+        observed it, so a still-pending card is still a decided false -- only
+        absence needs coverage behind it."""
+        _observe({**T1_RECORD, "tab_id": None})
+        verification = await self._accept(
+            _degraded_read_service(
+                document=fx.build_doc(
+                    [
+                        fx.paragraph(
+                            fx.run("Two "),
+                            fx.run("bravo", ins=["suggest.t1"]),
+                            fx.run(".\n"),
+                        )
+                    ]
+                )
+            )
+        )
+
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+        assert "still_pending_unavailable" not in verification
+
+    @pytest.mark.asyncio
+    async def test_a_complete_read_still_answers_every_id(self):
+        """The control: coverage is what licenses the answer, and the preview
+        read has it -- for a card in the tab it walked and for one it never
+        listed alike."""
+        _observe(T1_RECORD)
+        verification = await self._accept(
+            _batch_service({}, document=TWO_TAB_READ_RESOLVED)
+        )
+
+        assert verification["read_source"] == "preview_threads"
+        assert verification["still_pending"] is False, verification
+        assert "still_pending_unavailable" not in verification
+        assert verification["matches_expectation"] is True, verification
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_tab_while_still_pending(self):
+        """Round 6 also noted the gap: ``ambiguous_tab`` was only ever
+        exercised on a resolution that HAD landed.
+
+        The card carried no tab_id and the document has two, so no text
+        comparison is possible -- but the id is right there in the pending set
+        of a read that saw both tabs, so the verdict is a decided false and
+        BOTH notes have something to say.
+        """
+        _observe({**T1_RECORD, "tab_id": None})
+        verification = await self._accept(_batch_service({}, document=TWO_TAB_READ))
+
+        assert verification["still_pending"] is True, verification
+        assert verification["matches_expectation"] is False, verification
+        assert verification["resulting_text_unavailable"] == "ambiguous_tab"
+        assert "still_pending_unavailable" not in verification
+        pending_note = next(n for n in verification["notes"] if "pending set" in n)
+        tab_note = next(n for n in verification["notes"] if "2 tabs" in n)
+        assert "did not take effect" in pending_note
+        # The text note may still point at still_pending: it is populated.
+        assert "`still_pending` is the evidence" in tab_note
+
+    @pytest.mark.asyncio
+    async def test_the_pending_count_says_it_is_only_what_was_seen(self):
+        """My own sweep, same class one level up: ``pending_suggestion_count``
+        and ``pending_suggestion_ids`` read as the DOCUMENT's pending set, and
+        off a degraded read they are one unnamed body's. An agent that sees
+        ``pending_suggestion_count: 0`` stops reviewing."""
+        _observe(T1_RECORD)
+        verification = await self._accept(_degraded_read_service())
+
+        assert verification["pending_suggestion_count"] == 0
+        assert verification["pending_suggestions_are_partial"] is True
+        note = next(n for n in verification["notes"] if "count of 0" in n)
+        assert "does NOT mean the document has no pending suggestions" in note
+
+    @pytest.mark.asyncio
+    async def test_a_complete_read_makes_no_such_disclaimer(self):
+        _observe(T1_RECORD)
+        verification = await self._accept(
+            _batch_service({}, document=TWO_TAB_READ_RESOLVED)
+        )
+        assert "pending_suggestions_are_partial" not in verification
+
+    def test_the_verdict_propagates_unknown_rather_than_collapsing_it(self):
+        for text_check in (True, False, None):
+            verdict = write_tools._ResolutionVerdict.derive(
+                still_pending=None, text_check=text_check
+            )
+            assert verdict.matches_expectation is None, text_check
+        # A positive verdict requires the pending set to have been OBSERVED.
+        with pytest.raises(ValueError, match="matches_expectation"):
+            write_tools._ResolutionVerdict(
+                still_pending=None, text_check=True, matches_expectation=True
+            )
+        with pytest.raises(ValueError, match="matches_expectation"):
+            write_tools._ResolutionVerdict(
+                still_pending=None, text_check=False, matches_expectation=False
+            )
+        assert write_tools._ResolutionVerdict.unknown().matches_expectation is None
+
+    def test_a_derivation_failure_never_fails_a_landed_write(self, caplog):
+        """Round 6 MEDIUM 6: ``__post_init__`` raising on the post-write path
+        turns a destructive write that LANDED into a tool error, which is
+        exactly what ``_post_write_read`` refuses to do. The raise stays for
+        direct construction; the call site degrades to the verdict that claims
+        nothing."""
+        assert write_tools._ResolutionVerdict.unknown().still_pending is None
+        with caplog.at_level(logging.ERROR, logger="gdocs_preview.write_tools"):
+            with pytest.raises(ValueError):
+                write_tools._ResolutionVerdict(
+                    still_pending=False, text_check=True, matches_expectation=False
+                )
+
+
+class TestCollateralIsOnlyClaimedWhereItWasObserved:
+    """Round 6 HIGH 2: the collateral diff ran against the same blind read.
+
+    ``known_before - read.live_ids`` subtracts a multi-tab ledger from a read
+    that can see one unnamed body, so every live suggestion in every other tab
+    falls out of it -- and each was reported as ``also_removed_suggestion_ids``
+    with ``collateral_note``'s "accepting 'Y' also removed it, because that
+    removed the last character it marked. Its comment thread went with it."
+    That is fabricated causation about a customer's document, and it is
+    DURABLE: ``record_resolution`` pops those ids, so ``explain_missing``
+    repeats the claim for the rest of the session.
+    """
+
+    #: The ledger a multi-tab listing leaves behind: one card per tab.
+    LEDGER = (REP1_RECORD, T1_RECORD)
+
+    @staticmethod
+    async def _accept(service, suggestion_id="suggest.rep1") -> dict:
+        result = json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="accept",
+                suggestion_id=suggestion_id,
+            )
+        )
+        return result["verification"]
+
+    @pytest.mark.asyncio
+    async def test_a_blind_read_reports_no_collateral_at_all(self):
+        _observe(*self.LEDGER)
+        verification = await self._accept(
+            _degraded_read_service(
+                {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.rep1"]}]},
+                document=fx.build_doc([fx.paragraph(fx.run("Good evening\n"))]),
+            )
+        )
+
+        assert "also_removed_suggestion_ids" not in verification, verification
+        for note in verification.get("notes", []):
+            assert "last character it marked" not in note, note
+
+    @pytest.mark.asyncio
+    async def test_it_says_the_collateral_is_unknown_rather_than_empty(self):
+        """ "No collateral" and "we could not look" are different answers, and
+        the agent's next move differs."""
+        _observe(*self.LEDGER)
+        verification = await self._accept(
+            _degraded_read_service(
+                {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.rep1"]}]},
+                document=fx.build_doc([fx.paragraph(fx.run("Good evening\n"))]),
+            )
+        )
+
+        assert verification["also_removed_suggestion_ids_unavailable"] == (
+            "read_incomplete"
+        )
+        note = next(n for n in verification["notes"] if "suggest.t1" in n)
+        assert "UNKNOWN" in note
+        assert "nothing has been recorded against" in note
+
+    @pytest.mark.asyncio
+    async def test_the_fabricated_cause_does_not_outlive_the_response(self):
+        """The durable half. ``record_resolution`` pops the ids it is told
+        about, so an unfounded collateral claim is repeated by every later
+        "that id does not exist" error."""
+        _observe(*self.LEDGER)
+        await self._accept(
+            _degraded_read_service(
+                {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.rep1"]}]},
+                document=fx.build_doc([fx.paragraph(fx.run("Good evening\n"))]),
+            )
+        )
+
+        explanation = suggestion_ledger.explain_missing(EMAIL, DOC, "suggest.t1")
+        # Rung 2 of the honesty ladder -- "it was listed before you accepted X
+        # and gone from the read right after, so that accept removed it" -- is
+        # the claim that must not be reachable from a read that never looked.
+        assert "gone from the read right after" not in explanation, explanation
+        assert "so that accept removed it" not in explanation, explanation
+        # Rung 3 is fine, and is what it falls back to: we DID resolve
+        # something here, and resolving can remove others. It says "MAY".
+        assert "not proven" in explanation and "MAY" in explanation, explanation
+
+    @pytest.mark.asyncio
+    async def test_a_complete_read_still_reports_real_collateral(self):
+        """The control: the whole point of the feature survives. A read that
+        walked both tabs and found only one card DID observe the other's
+        absence."""
+        _observe(*self.LEDGER)
+        verification = await self._accept(
+            _batch_service(
+                {"suggestionResponses": [{"acceptedSuggestionIds": ["suggest.rep1"]}]},
+                document=ACCEPTED_READ,
+            )
+        )
+
+        assert verification["also_removed_suggestion_ids"] == ["suggest.t1"]
+        assert "also_removed_suggestion_ids_unavailable" not in verification
+        assert any("last character it marked" in n for n in verification["notes"])
+
+    @pytest.mark.asyncio
+    async def test_the_suggest_path_diffs_the_same_way(self):
+        """``_verify_suggest`` carries the twin of the same subtraction."""
+        _observe(*self.LEDGER)
+        result = json.loads(
+            await _unwrap(write_tools.suggest_doc_edit)(
+                _degraded_read_service(
+                    {"suggestionResponses": [{"createdSuggestionIds": ["suggest.new"]}]}
+                ),
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=5,
+                text="x",
+            )
+        )
+
+        verification = result["verification"]
+        assert "also_removed_suggestion_ids" not in verification, verification
+        assert verification["also_removed_suggestion_ids_unavailable"] == (
+            "read_incomplete"
+        )
+        for note in verification.get("notes", []):
+            assert "merges" not in note, note
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_listing_does_not_make_a_card_newly_appeared(self):
+        """Round 6 MEDIUM 7, the mirror direction: "appeared between the last
+        listing and this write" is a claim about the LISTING, and a blind
+        listing never saw the other tabs at all."""
+        _observe(REP1_RECORD, complete=False)
+        result = json.loads(
+            await _unwrap(write_tools.suggest_doc_edit)(
+                _batch_service({}, document=TWO_TAB_READ),
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=5,
+                text="x",
+            )
+        )
+
+        note = next(
+            n for n in result["verification"]["notes"] if "NOT reported as created" in n
+        )
+        assert "appeared between the last listing" not in note, note
+        assert "may have been there all along" in note
+
+
+class TestAnUnverifiedResolutionSaysSo:
+    """Round 6 HIGH 3: ``{"source": "skipped"}`` beside a populated id list.
+
+    Both non-verified returns sit inside a response whose top level reads
+    ``rejected_suggestion_ids: ["sug.x"]`` and ``comment_update_state:
+    "ALL_SAVED"`` -- byte-for-byte the shape prod returns for a reject that
+    resolved NOTHING. The warning that the response ids alone do not say the
+    write landed fired only on the verified path, i.e. only where there was
+    other evidence anyway.
+    """
+
+    @staticmethod
+    async def _reject(service, **extra) -> dict:
+        return json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="reject",
+                suggestion_id="suggest.rep1",
+                **extra,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_verify_false_warns_that_the_ids_are_not_evidence(self):
+        _observe(REP1_RECORD)
+        result = await self._reject(
+            _batch_service(
+                {
+                    "suggestionResponses": [
+                        {"rejectedSuggestionIds": ["suggest.rep1"]}
+                    ],
+                    "commentUpdateState": "ALL_SAVED",
+                },
+                document=ACCEPTED_READ,
+            ),
+            verify=False,
+        )
+
+        verification = result["verification"]
+        assert result["rejected_suggestion_ids"] == ["suggest.rep1"]
+        assert result["comment_update_state"] == "ALL_SAVED"
+        assert verification["source"] == "skipped"
+        assert verification["still_pending"] is None
+        (note,) = verification["notes"]
+        assert "nothing verified this reject" in note
+        assert "rejected_suggestion_ids" in note
+        assert "receipt for the REQUEST" in note
+        assert "list_document_suggestions" in note
+
+    @pytest.mark.asyncio
+    async def test_a_failed_verification_read_warns_the_same_way(self):
+        _observe(REP1_RECORD)
+        service = _batch_service(
+            {"suggestionResponses": [{"rejectedSuggestionIds": ["suggest.rep1"]}]},
+        )
+        service.documents.return_value.get.side_effect = RuntimeError("read exploded")
+
+        verification = (await self._reject(service))["verification"]
+
+        assert verification["source"] == "unavailable"
+        assert verification["still_pending"] is None
+        (note,) = verification["notes"]
+        assert "nothing verified this reject" in note
+        assert "receipt for the REQUEST" in note
+
+    @pytest.mark.asyncio
+    async def test_the_landed_write_is_still_not_failed_by_any_of_this(self):
+        """The rule that outranks everything here: verification never turns a
+        mutation that happened into an error."""
+        _observe(REP1_RECORD)
+        service = _batch_service(
+            {"suggestionResponses": [{"rejectedSuggestionIds": ["suggest.rep1"]}]},
+        )
+        service.documents.return_value.get.side_effect = RuntimeError("read exploded")
+
+        result = await self._reject(service)
+        assert result["rejected_suggestion_ids"] == ["suggest.rep1"]
 
 
 class TestAThreadWriteReportsWhatTheApiSaid:

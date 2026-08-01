@@ -140,7 +140,15 @@ class TestListSuggestions:
         )
 
         assert result["read_source"] == curated_tools.READ_SOURCE_PREVIEW
-        assert result["tabs"] == [{"tab_id": "t.0", "title": "Tab 1", "index": 0}]
+        assert result["tabs"] == [
+            {
+                "tab_id": "t.0",
+                "title": "Tab 1",
+                "index": 0,
+                "parent_tab_id": None,
+                "nesting_level": 0,
+            }
+        ]
         (s,) = result["suggestions"]
         assert s["suggestion_id"] == "suggest.ins1"
         assert s["author"]["display_name"] == "Alice Reviewer"

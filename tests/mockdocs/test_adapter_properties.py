@@ -46,6 +46,7 @@ from gdocs_preview.analysis import (
 from gdocs_preview.preview_read import suggestion_threads_by_id, tab_documents
 from mockdocs.adapter import (
     PREVIEW_REQUEST_TYPES,
+    SUGGEST_UNSUPPORTED_MESSAGE,
     SUGGEST_UNSUPPORTED_OFFICIAL,
     document_payload,
     segment_offsets,
@@ -558,10 +559,17 @@ def test_suggest_mode_creates_suggestions_edit_mode_mutates_base():
     assert doc.original_text() == "XHello 🎉 world.\n"
 
 
-def test_suggest_mode_rejects_unsupported_request_types():
+def test_suggest_mode_rejects_the_officially_unsupported_request_types():
+    """Prod's message, verbatim, for each of Google's 8.
+
+    Measured against the live API 2026-08-01
+    (``e2e/test_suggest_semantics.py``): the refusal names the request slot
+    and says *why*, which is what distinguishes it from a request that was
+    simply malformed.
+    """
     backend, _ = _backend_with()
     docs = backend.docs_service()
-    for kind in sorted(SUGGEST_UNSUPPORTED_OFFICIAL | PREVIEW_REQUEST_TYPES):
+    for kind in sorted(SUGGEST_UNSUPPORTED_OFFICIAL):
         with pytest.raises(HttpError) as exc:
             docs.documents().batchUpdate(
                 documentId="d1",
@@ -571,6 +579,108 @@ def test_suggest_mode_rejects_unsupported_request_types():
                 },
             ).execute()
         assert exc.value.resp.status == 400
+        assert f"requests[0].{kind}" in str(exc.value)
+        assert SUGGEST_UNSUPPORTED_MESSAGE in str(exc.value)
+
+
+def test_the_preview_thread_operations_run_inside_a_suggest_batch():
+    """Fact 5, resolved. The overlay excluded all 8 preview thread ops from
+    SUGGEST batches on the reasoning that they act on threads rather than
+    content. Prod does not: verified 2026-08-01, every one of them runs, takes
+    effect, and reports ``commentUpdateState: ALL_SAVED``. A mock that refuses
+    what prod accepts makes a real capability unreachable from every scenario
+    built on it -- notably the mixed content-edit + comment batch below.
+    """
+    assert not (PREVIEW_REQUEST_TYPES & SUGGEST_UNSUPPORTED_OFFICIAL)
+    backend, doc = _backend_with()
+    docs = backend.docs_service()
+
+    response = (
+        docs.documents()
+        .batchUpdate(
+            documentId="d1",
+            body={
+                "requests": [
+                    {"insertText": {"location": {"index": 1}, "text": "Oh "}},
+                    {
+                        "insertComment": {
+                            "content": "in a suggest batch",
+                            "range": {"startIndex": 1, "endIndex": 4},
+                        }
+                    },
+                ],
+                "writeControl": {"writeMode": "SUGGEST"},
+            },
+        )
+        .execute()
+    )
+    assert response["suggestionResponses"][0]["createdSuggestionIds"]
+    # 1:1 with the requests: the comment occupies its slot with no ids. (The
+    # mock spells the empty slot out as five empty lists where prod, proto3,
+    # sends a bare ``{}``; a pre-existing difference, and every reader of the
+    # field goes through ``.get(...) or []``.)
+    assert not any(response["suggestionResponses"][1].values())
+    thread = response["replies"][1]["insertComment"]["commentThread"]
+    assert thread["headPost"]["content"] == "in a suggest batch"
+    assert response["commentUpdateState"] == "ALL_SAVED"
+
+    # ... and a resolution op, in a SUGGEST batch, still resolves.
+    (sid,) = doc.registry
+    accepted = (
+        docs.documents()
+        .batchUpdate(
+            documentId="d1",
+            body={
+                "requests": [{"acceptSuggestion": {"suggestionId": sid}}],
+                "writeControl": {"writeMode": "SUGGEST"},
+            },
+        )
+        .execute()
+    )
+    assert accepted["suggestionResponses"][0]["acceptedSuggestionIds"] == [sid]
+    assert doc.original_text() == "Oh Hello 🎉 world.\n"
+
+
+def test_a_suggest_batch_resolves_later_indexes_against_the_inline_space():
+    """The mock matches prod's index resolution, measured 2026-08-01.
+
+    A SUGGEST batch is PROGRESSIVE, like an EDIT batch -- request 1 is
+    addressed against what request 0 left -- but it progresses in the
+    SUGGESTIONS_INLINE space, where a suggested deletion has removed nothing.
+    So an insertion shifts what follows and a deletion does not.
+    """
+    backend, doc = _backend_with(text="0123456789\n")
+    docs = backend.docs_service()
+    docs.documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [
+                {"insertText": {"location": {"index": 1}, "text": "AAAA"}},
+                {"insertText": {"location": {"index": 5}, "text": "B"}},
+            ],
+            "writeControl": {"writeMode": "SUGGEST"},
+        },
+    ).execute()
+    # Pre-batch resolution would have put B at the seed's own index 5, giving
+    # "AAAA0123B456789".
+    assert doc.display_text() == "AAAAB0123456789\n"
+    assert doc.original_text() == "0123456789\n"
+
+    backend2, doc2 = _backend_with(text="0123456789\n")
+    backend2.docs_service().documents().batchUpdate(
+        documentId="d1",
+        body={
+            "requests": [
+                {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 5}}},
+                {"insertText": {"location": {"index": 6}, "text": "Z"}},
+            ],
+            "writeControl": {"writeMode": "SUGGEST"},
+        },
+    ).execute()
+    # The suggested deletion left "0123" in the inline space, so index 6 is
+    # still '5'. Under EDIT semantics the same batch gives "45678Z9".
+    assert doc2.display_text() == "01234Z56789\n"
+    assert doc2.final_text() == "4Z56789\n"
 
 
 def test_indexes_are_utf16_at_the_batch_boundary():

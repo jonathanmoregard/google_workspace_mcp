@@ -240,6 +240,58 @@ class TestHonestyLadder:
         assert "Nothing here verified" in message
         assert "unconfirmed" in message
 
+    def test_the_may_have_rung_does_not_offer_a_write_that_did_not_land(self):
+        """Rung 3 offers our resolutions as possible removers of some OTHER
+        id. One the post-write read contradicted cannot be among them -- and
+        naming it also repeats "you resolved it", which is the claim rungs 1
+        and 2 were fixed for. The last rung holding the old shape."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=False)
+        message = ledger.explain_missing(USER, DOC, "sug.unrelated")
+        assert "MAY have removed it" not in message, message
+        assert "'sug.a'" not in message, message
+
+    def test_the_may_have_rung_hedges_an_unverified_write(self):
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=None)
+        message = ledger.explain_missing(USER, DOC, "sug.unrelated")
+        assert "not proven" in message
+        assert "MAY have removed it" in message
+        assert "Nothing verified those took effect" in message
+
+    def test_an_unverified_resolution_keeps_its_cached_record(self):
+        """``verify=false`` does not call ``observe`` afterwards, so popping
+        the record there erased the only copy of a card that may well still be
+        pending. A retry with verify=true then found nothing and told the
+        agent "this session never listed suggestion X" -- false -- and lost
+        the text comparison for a card the session had."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=None)
+        assert ledger.record_of(USER, DOC, "sug.a") is not None
+        assert ledger.record_of(USER, DOC, "sug.a")["pre_text"] == "morning"
+
+    def test_a_landed_resolution_still_drops_its_record(self):
+        """The control: a confirmed removal must leave the cached set."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=True)
+        assert ledger.record_of(USER, DOC, "sug.a") is None
+
+    def test_a_later_read_refutes_an_unverified_resolution(self):
+        """A read is evidence about the resolutions already on file. An id a
+        complete read still lists as pending was not removed by the call we
+        recorded against it, so that call stops being offered as the cause."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=None)
+        # A later listing still shows it pending: the accept did nothing.
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+
+        message = ledger.explain_missing(USER, DOC, "sug.a")
+        assert "likely cause" not in message, message
+        assert "still listed it as pending" in message
+
+    def test_landed_defaults_to_unknown_not_proven(self):
+        assert ledger.Resolution("sug.a", "accept", "t").landed is None
+
     def test_landed_is_carried_on_the_record(self):
         (resolution,) = ledger.record_resolution(
             USER, DOC, "reject", "sug.a", landed=False
@@ -257,7 +309,7 @@ class TestHonestyLadder:
         assert resolution.cause is None
         assert resolution.direct is False
         assert "''" not in ledger.collateral_note(resolution)
-        assert "merges." in ledger.collateral_note(resolution)
+        assert "absorbs it rather than creating" in ledger.collateral_note(resolution)
 
 
 class TestIsolationAndBounds:

@@ -483,6 +483,50 @@ class TestReadDocument:
         assert "every other tab is missing" in notice
 
     @pytest.mark.asyncio
+    async def test_a_window_in_a_named_tab_is_refused_on_a_degraded_read(self):
+        """The mirror of the listing's tab_id refusal.
+
+        A window is resolved into ONE (tab, segment). The GA fallback has a
+        single unnamed body and no tab ids, so a window named in a tab
+        resolved to nothing and came back ``body_text: ""`` -- "that range is
+        empty" said about a tab the read never saw.
+        """
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        with pytest.raises(UserInputError) as excinfo:
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=5,
+                tab_id="t.0",
+            )
+
+        message = str(excinfo.value)
+        assert "cannot be used on this read" in message
+        assert "single unnamed body" in message
+
+    @pytest.mark.asyncio
+    async def test_a_bare_tab_id_on_a_degraded_read_is_still_only_ignored(self):
+        """The control: without a window, tab_id names no coordinate space to
+        resolve, so it is reported as ignored rather than refused -- the
+        behaviour a healthy read already has."""
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                tab_id="t.0",
+            )
+        )
+        assert "IGNORED" in result["scope_note"]
+
+    @pytest.mark.asyncio
     async def test_a_preview_read_carries_no_degraded_notice(self):
         """The control: the notice is about the read, so a good read must not
         carry it -- an unconditional warning is one an agent learns to skip."""

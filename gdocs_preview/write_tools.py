@@ -819,10 +819,34 @@ class _ThreadWriteVerdict:
             saved=_saved_from_state(comment_update_state),
         )
 
+    @property
+    def unavailable_reason(self) -> str:
+        """Why ``saved`` is null: no state at all, or one we cannot read."""
+        return (
+            "no_comment_update_state"
+            if self.comment_update_state is None
+            else "unrecognized_comment_update_state"
+        )
+
     def note(self, *, what: str, post_id: Optional[str]) -> str:
         """One sentence for a save nothing reported on, and what NOT to do."""
+        # Two different situations reach a null ``saved``, and both used to be
+        # narrated as "this response carries no commentUpdateState" -- printed
+        # directly beside ``comment_update_state: "<the value>"`` in the same
+        # JSON when the API sent a state this build does not model. A response
+        # contradicting itself about a field it is carrying is worse than
+        # either fact alone.
+        opening = (
+            "this response carries no commentUpdateState"
+            if self.comment_update_state is None
+            else (
+                f"this response carries commentUpdateState "
+                f"{self.comment_update_state!r}, which this build does not "
+                "recognise as either saved or failed"
+            )
+        )
         return (
-            f"this response carries no commentUpdateState, which is the only "
+            f"{opening}, which is the only "
             f"thing that reports whether the {what} was persisted, so whether "
             "it saved is UNKNOWN -- not false. "
             + (
@@ -927,6 +951,42 @@ def _unverified_verification(
         "pending_suggestion_count": None,
         "pending_suggestion_ids": None,
         "notes": [_unverified_note(action, suggestion_id, why)],
+    }
+
+
+def _unverified_suggest_verification(
+    source: str, reason: Optional[str]
+) -> dict[str, Any]:
+    """``suggest_doc_edit``'s verification block when no read backed it.
+
+    The twin of :func:`_unverified_verification`, which was written for the
+    resolution path and left this one returning a bare ``{"source",
+    "reason"}`` -- while ``suggest_doc_edit``'s Returns documents
+    ``read_source``, ``created_suggestions`` and ``pending_suggestion_count``
+    unconditionally. The ``unavailable`` half is reachable on the DEFAULT
+    path (``verify=true``, post-write read fails), so a client reading
+    ``verification["created_suggestions"]`` raised ``KeyError`` on a write
+    that had landed.
+
+    ``created_suggestions`` is ``null``, NOT ``[]``: the API's
+    ``created_suggestion_ids`` sit in the response beside this block, and an
+    empty echo list would read as "the write created nothing".
+    """
+    return {
+        "source": source,
+        "reason": reason,
+        "read_source": None,
+        "created_suggestions": None,
+        "pending_suggestion_count": None,
+        "notes": [
+            f"nothing verified this edit: {reason}. created_suggestion_ids is "
+            "the API's receipt for the REQUEST; no read confirmed the "
+            "suggestion is in the document, and none of the echo "
+            "(created_suggestions, the merge check, collateral removals) "
+            "could be computed. Re-read with list_document_suggestions before "
+            "treating the edit as landed -- and do NOT repeat it, since a "
+            "second identical edit that did land leaves two suggestions."
+        ],
     }
 
 
@@ -1227,8 +1287,14 @@ def _missing_suggestion_error(
     cause = suggestion_ledger.explain_missing(
         user_google_email, document_id, suggestion_id
     )
+    # "no longer exists" asserts the id once DID -- a removal. All the API
+    # proved is that it does not resolve now, which a typo satisfies just as
+    # well, and the ledger sentence that follows may itself be saying "most
+    # likely the id is wrong". The two sentences contradicted each other in
+    # the same string. "does not exist" is what was observed; the ledger says
+    # whether it ever did.
     return UserInputError(
-        f"{tool_name}: suggestion {suggestion_id!r} no longer exists in "
+        f"{tool_name}: suggestion {suggestion_id!r} does not exist in "
         f"document {document_id}. {cause} (API said: "
         f"{' '.join(message.split())[:200]})"
     )
@@ -1514,12 +1580,12 @@ async def _verify_suggest(
     withheld from ``also_removed_suggestion_ids`` and from the ledger).
     """
     if not verify:
-        return {"source": "skipped", "reason": "verify=false"}
+        return _unverified_suggest_verification("skipped", "verify=false")
     read, failure = await _post_write_read(
         service, document_id, user_google_email=user_google_email
     )
     if read is None:
-        return {"source": "unavailable", "reason": failure}
+        return _unverified_suggest_verification("unavailable", failure)
 
     # (1) What the API itself said it created. Authorship is proven.
     echoed_ids = [sid for sid in created_ids if sid in read.records]
@@ -2253,7 +2319,7 @@ async def reply_to_doc_thread(
         ),
     }
     if verdict.saved is None:
-        verification["saved_unavailable"] = "no_comment_update_state"
+        verification["saved_unavailable"] = verdict.unavailable_reason
         verification.setdefault("notes", []).append(
             verdict.note(what="reply", post_id=post_id)
         )
@@ -2464,7 +2530,7 @@ async def create_anchored_doc_comment(
         ),
     }
     if verdict.saved is None:
-        verification["saved_unavailable"] = "no_comment_update_state"
+        verification["saved_unavailable"] = verdict.unavailable_reason
         verification.setdefault("notes", []).append(
             verdict.note(what="comment", post_id=post_id)
         )

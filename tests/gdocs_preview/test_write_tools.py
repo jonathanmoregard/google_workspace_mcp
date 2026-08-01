@@ -1130,8 +1130,20 @@ class TestSuggestDocEditVerification:
             )
         )
 
-        assert result["verification"] == {"source": "skipped", "reason": "verify=false"}
+        verification = result["verification"]
+        assert verification["source"] == "skipped"
+        assert verification["reason"] == "verify=false"
         assert _get_calls(service) == []
+        # The documented keys are present and null rather than absent -- the
+        # same rule the resolution path follows. ``created_suggestions`` is
+        # null, NOT [], because created_suggestion_ids sits beside this block
+        # and an empty echo would read as "the write created nothing".
+        assert verification["created_suggestions"] is None
+        assert verification["pending_suggestion_count"] is None
+        assert verification["read_source"] is None
+        (note,) = verification["notes"]
+        assert "nothing verified this edit" in note
+        assert "receipt for the REQUEST" in note
 
     @pytest.mark.asyncio
     async def test_a_failed_verification_read_never_fails_the_write(self):
@@ -1179,7 +1191,7 @@ class TestSuggestDocEditVerification:
 
         verification = result["verification"]
         assert verification["also_removed_suggestion_ids"] == ["suggest.rep1"]
-        assert "merges" in verification["notes"][0]
+        assert "merge" in verification["notes"][0]
 
 
 CONC_DOC = "conc-doc"
@@ -2418,7 +2430,7 @@ class TestMissingSuggestionErrors:
                 suggestion_id="suggest.rep1",
             )
         message = str(excinfo.value)
-        assert "no longer exists" in message
+        assert "does not exist" in message
         assert "You accepted it yourself" in message
         assert "list_document_suggestions" in message
         # The API's own words are preserved, so the taxonomy still sees them.

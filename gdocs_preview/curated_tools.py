@@ -507,6 +507,26 @@ async def get_doc_review_view(
     read = await read_for_review(
         service, document_id, view_mode, user_google_email=user_google_email
     )
+    if (
+        read.source == READ_SOURCE_GA
+        and tab_id is not None
+        and (start_index is not None or end_index is not None)
+    ):
+        # The mirror of the listing's refusal (review_page.build_listing). A
+        # window is resolved into ONE (tab, segment); this read has a single
+        # UNNAMED body and no tab ids, so a named tab resolves to nothing and
+        # the window returns body_text: "" -- "that range is empty" said about
+        # a tab the read never saw. The tab id in hand is normally one an
+        # earlier, healthy response printed.
+        raise UserInputError(
+            f"tab_id={tab_id!r} cannot be used on this read: it degraded to "
+            "the GA documents.get, which returns a single unnamed body with "
+            "no tab ids, so a window named in that tab can only ever come "
+            "back empty -- which would read as 'that range is empty' rather "
+            "than 'this read cannot see that tab'. Re-run without tab_id to "
+            "window the one body this read has, or retry for the Developer "
+            f"Preview read (read_source={read.source!r})."
+        )
     rendered = render_tabs(read.tabs)
     if view_mode == "SUGGESTIONS_INLINE":
         # Same "before" picture as list_document_suggestions; only the inline

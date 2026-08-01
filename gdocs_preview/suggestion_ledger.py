@@ -119,7 +119,12 @@ class Resolution:
     #: answered "You accepted it yourself" -- proven causation, from the one
     #: write this module had evidence did not happen. :func:`explain_missing`
     #: and :func:`collateral_note` now word every branch from this field.
-    landed: Optional[bool] = True
+    #:
+    #: Defaults to ``None`` -- unknown -- so a future direct construction that
+    #: forgets it inherits "nothing checked" rather than "proven". The same
+    #: reason ``still_pending`` is ``Optional[bool]``: on this module's ladder
+    #: the safe default is the claim that asserts least.
+    landed: Optional[bool] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -218,6 +223,17 @@ def observe(
         sid = (record or {}).get("suggestion_id")
         if sid:
             records[str(sid)] = _compact(record)
+    # A read is also evidence ABOUT the resolutions already on file. An id
+    # this read still lists as pending was not removed by whatever we recorded
+    # against it, so an unverified resolution (``landed=None``) is refuted
+    # here rather than left to be offered as a cause forever. Only ``None`` is
+    # refutable: a ``True`` record was confirmed by its own post-write read,
+    # and a card back under the same id after that is new information the
+    # ledger has no way to attribute.
+    for sid in records:
+        resolution = entry.resolutions.get(sid)
+        if resolution is not None and resolution.landed is None:
+            resolution.landed = False
     entry.records = records
     entry.observed = True
     entry.complete = complete
@@ -300,7 +316,16 @@ def record_resolution(
             )
     for resolution in recorded:
         entry.resolutions[resolution.suggestion_id] = resolution
-        entry.records.pop(resolution.suggestion_id, None)
+        if resolution.landed:
+            # Only drop the cached record when the id really did leave. The
+            # verified paths call :func:`observe` immediately after, which
+            # replaces the set anyway; the verify-less ones do NOT, so popping
+            # there erased the only copy of a card that may well still be
+            # pending. A retry with verify=true then found no record, and
+            # ``_note_suggestion_not_listed`` told the agent "this session
+            # never listed suggestion X" -- false, and it cost the text
+            # comparison (``expected_text: null``) for a card the session had.
+            entry.records.pop(resolution.suggestion_id, None)
     while len(entry.resolutions) > MAX_RESOLUTIONS:
         entry.resolutions.pop(next(iter(entry.resolutions)))
     return recorded
@@ -309,11 +334,21 @@ def record_resolution(
 def collateral_note(resolution: Resolution) -> str:
     """One sentence naming a collaterally removed suggestion, for a response."""
     if resolution.action == "suggest_doc_edit":
+        # The merge is the LIKELY explanation, not the observation. All this
+        # write saw is "listed before, absent after", and a second reviewer
+        # resolving their own card in that window produces exactly the same
+        # diff -- so stating the merge as the fact asserted an adjacency and
+        # an authorship nothing here checked. Observation first, mechanism
+        # second, alternative named: the ladder this module documents.
         merged = f" into {resolution.cause!r}" if resolution.cause else ""
         return (
             f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
-            f"before this edit and absent right after it -- an adjacent "
-            f"same-author suggestion merges{merged}."
+            f"before this edit and absent right after it. The likely cause is "
+            f"a merge -- editing inside or beside an existing same-author "
+            f"suggestion absorbs it{merged} rather than creating a new card -- "
+            f"but this was observed, not proven: another editor resolving it "
+            f"in the same window looks identical from here. Check the author "
+            f"before treating it as your own."
         )
     cause = (
         repr(resolution.cause) if resolution.cause else "the suggestion you resolved"
@@ -432,17 +467,42 @@ def explain_missing(
         )
 
     if entry.resolutions:
-        others = ", ".join(
-            f"{r.suggestion_id!r} ({r.action}, {r.at})"
+        # Only resolutions that LANDED can have removed anything. One that the
+        # post-write read contradicted (``landed is False``) is proof of the
+        # opposite, and offering it here as a possible remover -- while also
+        # saying "you resolved it" -- is the same over-claim the rungs above
+        # were fixed for, one rung down. Unverified ones (``None``) may have
+        # removed something, and are offered with that said out loud.
+        landed = [
+            r for r in list(entry.resolutions.values())[-3:] if r.direct and r.landed
+        ]
+        unverified = [
+            r
             for r in list(entry.resolutions.values())[-3:]
-            if r.direct
-        )
-        if others:
+            if r.direct and r.landed is None
+        ]
+
+        def _names(resolutions: list[Resolution]) -> str:
+            return ", ".join(
+                f"{r.suggestion_id!r} ({r.action}, {r.at})" for r in resolutions
+            )
+
+        if landed:
             return (
                 "No record of it being removed, so this is not proven -- but "
-                f"you resolved {others} on this document in this session, and "
+                f"you resolved {_names(landed)} on this document in this "
+                "session, and resolving a suggestion also deletes any other "
+                "suggestion whose last marked character disappears with it. "
+                f"One of those MAY have removed it. {reread}"
+            )
+        if unverified:
+            return (
+                "No record of it being removed, so this is not proven -- but "
+                f"you issued {_names(unverified)} on this document in this "
+                "session. Nothing verified those took effect, so it is not "
+                "even certain they removed anything; if they did land, "
                 "resolving a suggestion also deletes any other suggestion "
-                "whose last marked character disappears with it. One of those "
+                "whose last marked character disappears with it. One of them "
                 f"MAY have removed it. {reread}"
             )
 

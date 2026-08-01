@@ -288,19 +288,67 @@ def pending_thread_ids(threads: dict[str, dict[str, Any]]) -> frozenset[str]:
     )
 
 
+def anchor_tab_ids(payload: dict[str, Any]) -> dict[str, Optional[str]]:
+    """``anchorId`` -> the id of the tab whose body the anchor lives in.
+
+    A ``CommentThread`` carries NO tab field (verified against prod
+    2026-08-01: the whole thread object is ``commentId``, ``anchorId``,
+    ``headPost``, ``replies``, ``status``, ``plainTextQuote``). Its
+    ``anchorId`` is the join key: every tab's ``documentTab.commentAnchors``
+    is a map of the anchors living in THAT tab, and the maps are disjoint --
+    a three-tab document with one comment per tab answered with one anchor
+    in each map and nothing repeated.
+
+    A duplicate anchor id across two tabs has never been observed and there
+    is no mechanism for it (an anchor range cannot span tabs), but it maps to
+    ``None`` rather than to whichever tab was walked first: an ambiguous
+    attribution reported as a fact is the failure mode this join exists to
+    avoid.
+    """
+    resolved: dict[str, Optional[str]] = {}
+
+    def walk(nodes: Any) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            tab_id = (node.get("tabProperties") or {}).get("tabId")
+            anchors = (node.get("documentTab") or {}).get("commentAnchors")
+            if isinstance(anchors, dict):
+                for anchor_id in anchors:
+                    if anchor_id in resolved and resolved[anchor_id] != tab_id:
+                        resolved[anchor_id] = None
+                    else:
+                        resolved[anchor_id] = tab_id
+            walk(node.get("childTabs"))
+
+    walk(payload.get("tabs"))
+    return resolved
+
+
 def comment_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalized ``CommentThread`` list: every thread and reply carries its
     id and author (the Docs-side comment surface, richer than Drive's:
-    anchor id, per-post ids, People resource names)."""
+    anchor id, per-post ids, People resource names).
+
+    ``tab_id`` is joined on from the tabs (:func:`anchor_tab_ids`), because
+    the thread object itself has none. ``None`` means this read could not
+    place the comment -- an unanchored thread, an anchor in no tab's map, or
+    a payload with no tabs at all -- and is never the default tab.
+    """
+    anchors = anchor_tab_ids(payload)
     threads = []
     for raw in payload.get("comments") or []:
         if not isinstance(raw, dict):
             continue
         head = normalize_post(raw.get("headPost"))
+        anchor_id = raw.get("anchorId")
         threads.append(
             {
                 "comment_id": raw.get("commentId"),
-                "anchor_id": raw.get("anchorId"),
+                "anchor_id": anchor_id,
+                "tab_id": anchors.get(anchor_id) if anchor_id else None,
                 "status": raw.get("status"),
                 "quoted_text": raw.get("plainTextQuote"),
                 "content": head["content"],
@@ -332,19 +380,42 @@ class TabDocument:
     ``documents.get`` returns. Indexes are untouched -- verified against the
     live API: ``tabs[0].documentTab.body`` is identical to the GA read's
     ``body`` for a single-tab document.
+
+    ``parent_tab_id``/``nesting_level`` carry the tree position the flatten
+    would otherwise throw away. They are not decoration: ``index`` is a
+    tab's position **among its siblings**, so a document whose first tab has
+    a child answers with TWO tabs at ``index: 0`` (measured against prod
+    2026-08-01), and without the parent nothing in the inventory says which
+    of them is nested. A top-level tab has ``parent_tab_id: None`` and
+    ``nesting_level: 0``; the GA fallback's single implicit tab has ``None``
+    for both, because that read cannot see the tab tree at all.
     """
 
     tab_id: Optional[str]
     title: Optional[str]
     index: Optional[int]
     document: dict[str, Any] = field(default_factory=dict)
+    parent_tab_id: Optional[str] = None
+    nesting_level: Optional[int] = None
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return {"tab_id": self.tab_id, "title": self.title, "index": self.index}
+        return {
+            "tab_id": self.tab_id,
+            "title": self.title,
+            "index": self.index,
+            "parent_tab_id": self.parent_tab_id,
+            "nesting_level": self.nesting_level,
+        }
 
 
-def _tab_document(tab: dict[str, Any], envelope: dict[str, Any]) -> TabDocument:
+def _tab_document(
+    tab: dict[str, Any],
+    envelope: dict[str, Any],
+    *,
+    parent_tab_id: Optional[str],
+    nesting_level: int,
+) -> TabDocument:
     properties = tab.get("tabProperties") or {}
     document_tab = tab.get("documentTab") or {}
     document: dict[str, Any] = {
@@ -359,6 +430,12 @@ def _tab_document(tab: dict[str, Any], envelope: dict[str, Any]) -> TabDocument:
         title=properties.get("title"),
         index=properties.get("index"),
         document=document,
+        # Taken from the WALK, not from tabProperties: proto3 omits
+        # ``nestingLevel: 0`` and a top-level tab carries no ``parentTabId``
+        # at all, so the fields are absent exactly where they would have to
+        # be read as defaults. The position in the tree cannot be omitted.
+        parent_tab_id=parent_tab_id,
+        nesting_level=nesting_level,
     )
 
 
@@ -369,6 +446,12 @@ def tab_documents(payload: dict[str, Any]) -> list[TabDocument]:
     parent, so every tab of a nested document is analysed. A payload without
     ``tabs`` (the GA read, or the fallback path) yields a single implicit tab
     with ``tab_id=None`` -- one code path for both reads.
+
+    Nesting is real and reachable through the API: ``addDocumentTab`` with
+    ``tabProperties.parentTabId`` creates a child tab (verified against prod
+    2026-08-01), and the read then returns it under its parent's
+    ``childTabs``. Each tab keeps its own index space, so flattening changes
+    no index.
     """
     tabs = payload.get("tabs")
     if not isinstance(tabs, list):
@@ -380,16 +463,19 @@ def tab_documents(payload: dict[str, Any]) -> list[TabDocument]:
 
     flattened: list[TabDocument] = []
 
-    def walk(nodes: list[Any]) -> None:
+    def walk(nodes: list[Any], parent_tab_id: Optional[str], depth: int) -> None:
         for node in nodes:
             if not isinstance(node, dict):
                 continue
-            flattened.append(_tab_document(node, payload))
+            tab = _tab_document(
+                node, payload, parent_tab_id=parent_tab_id, nesting_level=depth
+            )
+            flattened.append(tab)
             children = node.get("childTabs")
             if isinstance(children, list):
-                walk(children)
+                walk(children, tab.tab_id, depth + 1)
 
-    walk(tabs)
+    walk(tabs, None, 0)
     return flattened
 
 

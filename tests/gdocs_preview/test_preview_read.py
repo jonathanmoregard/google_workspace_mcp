@@ -274,7 +274,13 @@ class TestTabDocuments:
     def test_single_tab_is_reshaped_into_a_ga_document(self):
         (tab,) = preview_read.tab_documents(fx.TABS_PAYLOAD)
         assert tab.tab_id == "t.0"
-        assert tab.metadata == {"tab_id": "t.0", "title": "Tab 1", "index": 0}
+        assert tab.metadata == {
+            "tab_id": "t.0",
+            "title": "Tab 1",
+            "index": 0,
+            "parent_tab_id": None,
+            "nesting_level": 0,
+        }
         assert tab.document["documentId"] == "doc-fixture-1"
         assert tab.document["title"] == "Fixture Doc"
         # The content is the GA shape analysis.py already walks.
@@ -306,6 +312,147 @@ class TestTabDocuments:
         (tab,) = preview_read.tab_documents(fx.DOC_PLAIN_INSERTION)
         assert tab.tab_id is None
         assert tab.document is fx.DOC_PLAIN_INSERTION
+        # It cannot see the tab tree AT ALL, so it claims no position in one.
+        assert tab.parent_tab_id is None
+        assert tab.nesting_level is None
+        # It cannot see the tab tree AT ALL, so it claims no position in one.
+        assert tab.parent_tab_id is None
+        assert tab.nesting_level is None
+
+    def test_a_nested_tab_reports_its_parent_and_depth(self):
+        """``index`` alone cannot tell a child from a sibling.
+
+        Measured against prod 2026-08-01: ``index`` is the position among
+        SIBLINGS, so a document whose first tab has a child answers with two
+        tabs at ``index: 0``. Without the parent, the flattened inventory
+        presents the nested tab as a second top-level tab that collides with
+        the first.
+        """
+        payload = fx.build_tabs_payload(
+            [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)]
+        )
+        payload["tabs"][0]["childTabs"] = [
+            {
+                "tabProperties": {"tabId": "t.child", "title": "Child", "index": 0},
+                "documentTab": {"body": fx.DOC_SECOND_TAB["body"]},
+                "childTabs": [
+                    {
+                        "tabProperties": {
+                            "tabId": "t.grandchild",
+                            "title": "Grandchild",
+                            "index": 0,
+                        },
+                        "documentTab": {"body": fx.DOC_SECOND_TAB["body"]},
+                    }
+                ],
+            }
+        ]
+        tabs = preview_read.tab_documents(payload)
+        assert [t.tab_id for t in tabs] == [
+            "t.0",
+            "t.child",
+            "t.grandchild",
+            "t.second",
+        ]
+        assert [t.parent_tab_id for t in tabs] == [None, "t.0", "t.child", None]
+        assert [t.nesting_level for t in tabs] == [0, 1, 2, 0]
+        # The collision the hierarchy fields are here to resolve.
+        assert [t.index for t in tabs] == [0, 0, 0, 1]
+
+    def test_nesting_is_read_off_the_walk_not_off_tabproperties(self):
+        """proto3 omits ``nestingLevel: 0`` and a top-level tab carries no
+        ``parentTabId``, so the fields are absent exactly where they would
+        have to be read as defaults. The walk cannot omit a position."""
+        payload = fx.build_tabs_payload([("t.0", fx.DOC_PLAIN_INSERTION)])
+        assert "nestingLevel" not in payload["tabs"][0]["tabProperties"]
+        assert "parentTabId" not in payload["tabs"][0]["tabProperties"]
+        (tab,) = preview_read.tab_documents(payload)
+        assert tab.nesting_level == 0
+        assert tab.parent_tab_id is None
+
+
+class TestCommentTabAttribution:
+    """A ``CommentThread`` carries no tab field; its ``anchorId`` does.
+
+    Verified against prod 2026-08-01: a three-tab document with one comment
+    per tab answered with thread keys ``{anchorId, commentId, headPost,
+    plainTextQuote, status}`` and NOTHING naming a tab -- while each tab's
+    ``documentTab.commentAnchors`` held exactly its own anchor.
+    """
+
+    @staticmethod
+    def _payload_with_anchors():
+        payload = fx.build_tabs_payload(
+            [("t.0", fx.DOC_PLAIN_INSERTION), ("t.second", fx.DOC_SECOND_TAB)],
+            comments=[
+                {
+                    "commentId": "c1",
+                    "anchorId": "kix.a1",
+                    "status": "OPEN",
+                    "headPost": {"postId": "c1", "content": "in the first tab"},
+                },
+                {
+                    "commentId": "c2",
+                    "anchorId": "kix.a2",
+                    "status": "OPEN",
+                    "headPost": {"postId": "c2", "content": "in the nested tab"},
+                },
+            ],
+        )
+        payload["tabs"][0]["documentTab"]["commentAnchors"] = {
+            "kix.a1": {"anchorId": "kix.a1", "ranges": [{"endIndex": 5}]}
+        }
+        payload["tabs"][0]["childTabs"] = [
+            {
+                "tabProperties": {"tabId": "t.child", "title": "Child", "index": 0},
+                "documentTab": {
+                    "body": fx.DOC_SECOND_TAB["body"],
+                    "commentAnchors": {
+                        "kix.a2": {
+                            "anchorId": "kix.a2",
+                            "ranges": [{"startIndex": 1, "endIndex": 5}],
+                        }
+                    },
+                },
+            }
+        ]
+        return payload
+
+    def test_a_comment_is_placed_by_its_anchor_including_in_a_child_tab(self):
+        threads = preview_read.comment_threads(self._payload_with_anchors())
+        assert {t["comment_id"]: t["tab_id"] for t in threads} == {
+            "c1": "t.0",
+            "c2": "t.child",
+        }
+
+    def test_an_unplaceable_comment_is_null_never_the_default_tab(self):
+        payload = self._payload_with_anchors()
+        payload["comments"].append(
+            {"commentId": "c3", "status": "OPEN", "headPost": {"postId": "c3"}}
+        )
+        payload["comments"].append(
+            {
+                "commentId": "c4",
+                "anchorId": "kix.gone",
+                "status": "OPEN",
+                "headPost": {"postId": "c4"},
+            }
+        )
+        threads = {
+            t["comment_id"]: t["tab_id"] for t in preview_read.comment_threads(payload)
+        }
+        assert threads["c3"] is None, "an unanchored thread has no tab to claim"
+        assert threads["c4"] is None, "an anchor in no tab's map places nothing"
+
+    def test_an_anchor_in_two_tabs_is_ambiguous_not_first_wins(self):
+        payload = self._payload_with_anchors()
+        payload["tabs"][1]["documentTab"]["commentAnchors"] = {
+            "kix.a1": {"anchorId": "kix.a1", "ranges": [{"endIndex": 5}]}
+        }
+        assert preview_read.anchor_tab_ids(payload)["kix.a1"] is None
+
+    def test_a_payload_without_tabs_places_nothing(self):
+        assert preview_read.anchor_tab_ids(fx.DOC_PLAIN_INSERTION) == {}
 
 
 class TestPendingThreadIds:

@@ -1466,12 +1466,23 @@ async def suggest_doc_edit(
         )
     else:
         # Replacement: delete then insert at start_index, mirroring
-        # modify_doc_text's replacement path. In SUGGEST mode the deleted
-        # text stays in the document (marked), so no index shifting.
-        # UNCERTAIN (pending enrollment): EDIT-mode batches resolve indexes
-        # against the pre-batch document; whether SUGGEST-mode shares that
-        # semantics is transcribed-not-verified. The preview e2e replacement
-        # scenario pins reality on the first enrolled run.
+        # modify_doc_text's replacement path.
+        #
+        # VERIFIED 2026-08-01 (docs/findings/suggest-semantics.md,
+        # e2e/test_suggest_semantics.py). A SUGGEST batch resolves each
+        # request's indexes PROGRESSIVELY -- against the document as the
+        # earlier requests in the same batch left it, exactly like EDIT mode,
+        # not against the pre-batch document as this comment used to claim of
+        # EDIT. What makes the shape below correct is the other half of the
+        # finding: the space it progresses in is SUGGESTIONS_INLINE, and a
+        # SUGGESTED deletion leaves its characters there (marked), so
+        # request 0 shifts nothing and request 1's start_index still means
+        # start_index. Over "0123456789", [delete(1,5), insert@1 "X"] gives
+        # inline "X0123456789" and accepted "X456789".
+        #
+        # The corollary is the reason no third request may be appended here
+        # without re-deriving its index: a suggested INSERTION *is* in the
+        # inline space immediately and does shift everything after it.
         mode = "replacement"
         requests.append(
             {

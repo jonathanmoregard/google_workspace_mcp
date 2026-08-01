@@ -36,10 +36,27 @@ def run(
     return {"text": text, "ins": ins or [], "dels": dels or [], "styles": styles or []}
 
 
-def paragraph(*runs: dict[str, Any], bullet: bool = False) -> dict[str, Any]:
+def paragraph(
+    *runs: dict[str, Any],
+    bullet: bool = False,
+    para_styles: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """Spec for a paragraph. The caller includes the trailing newline in the
-    final run's text, mirroring real Docs payloads."""
-    return {"kind": "paragraph", "runs": list(runs), "bullet": bullet}
+    final run's text, mirroring real Docs payloads.
+
+    ``para_styles`` puts ``suggestedParagraphStyleChanges`` on the paragraph
+    WITHOUT touching any run -- which is exactly the shape prod returns for an
+    alignment / line-spacing / indent suggestion (measured 2026-08-02, see
+    ``docs/findings/coverage.md``). A named-style change like HEADING_2 does
+    additionally write ``suggestedTextStyleChanges`` on the run; pass
+    ``run(..., styles=[sid])`` alongside to build that case.
+    """
+    return {
+        "kind": "paragraph",
+        "runs": list(runs),
+        "bullet": bullet,
+        "para_styles": list(para_styles or ()),
+    }
 
 
 def table(rows: list[list[list[dict[str, Any]]]]) -> dict[str, Any]:
@@ -90,6 +107,14 @@ def _build_paragraph(spec: dict[str, Any], index: int) -> tuple[dict[str, Any], 
     }
     if spec.get("bullet"):
         para["bullet"] = {"listId": "kix.list0", "nestingLevel": 0}
+    if spec.get("para_styles"):
+        para["suggestedParagraphStyleChanges"] = {
+            sid: {
+                "paragraphStyle": {"alignment": "CENTER", "direction": "LEFT_TO_RIGHT"},
+                "paragraphStyleSuggestionState": {"alignmentSuggested": True},
+            }
+            for sid in spec["para_styles"]
+        }
     start = elements[0].get("startIndex", 0) if elements else index
     structural = _omit_zero_start(
         {
@@ -397,6 +422,34 @@ DOC_SECOND_TAB = build_doc(
     ]
 )
 
+# 14b. A pending suggestion that leaves NO content mark: alignment, via
+#      ``updateParagraphStyle``. Transcribed from prod 2026-08-02
+#      (docs/findings/coverage.md): the paragraph carries
+#      ``suggestedParagraphStyleChanges`` and every run is untouched, so
+#      ``analysis.extract_suggestions`` finds nothing at all here while the
+#      payload's top-level ``suggestions`` array lists the card as OPEN.
+DOC_PARAGRAPH_STYLE_ONLY = build_doc(
+    [
+        paragraph(run("Alpha line one.\n"), para_styles=["suggest.para1"]),
+        paragraph(run("Bravo line two.\n")),
+    ]
+)
+
+# 14c. The same document with a plain text insertion beside the invisible
+#      card, which is the realistic review state: one suggestion this layer
+#      models and one it does not.
+DOC_TEXT_PLUS_PARAGRAPH_STYLE = build_doc(
+    [
+        paragraph(
+            run("Alpha "),
+            run("brave ", ins=["suggest.ins1"]),
+            run("line one.\n"),
+            para_styles=["suggest.para1"],
+        ),
+        paragraph(run("Bravo line two.\n")),
+    ]
+)
+
 # 15. Thread objects as the live API returns them (top-level ``suggestions``
 #     / ``comments`` in the tabs read). Shapes verified 2026-07-30: a
 #     suggestion head post has no ``content``, a comment head post does.
@@ -432,6 +485,38 @@ SUGGESTION_THREADS = [
         ],
     }
 ]
+
+#: The thread the API files for an alignment suggestion. ``summaryText`` is
+#: Google's own label and is the only place the KIND is named -- the document
+#: content says nothing about this card at all. Transcribed from prod
+#: 2026-08-02.
+PARAGRAPH_STYLE_THREAD = {
+    "suggestionId": "suggest.para1",
+    "headPost": {
+        "postId": "AAAApost9",
+        "author": {
+            "displayName": "Alice Reviewer",
+            "me": False,
+            "user": "users/123",
+        },
+        "createTime": "2026-08-02T09:00:00.000Z",
+        "updateTime": "2026-08-02T09:00:00.000Z",
+        "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+    },
+    "status": "OPEN",
+    "summaryText": "Format: alignment",
+    "summaryHtml": "<div>Format: alignment</div>",
+    "replies": [],
+}
+
+#: The SAME thread after a reject. Measured against prod 2026-08-02: the
+#: thread SURVIVES with ``status: "REJECTED"`` while every content mark it
+#: put on the document disappears. So the thread array is not the pending
+#: set, and anything subtracting from it has to filter.
+PARAGRAPH_STYLE_THREAD_REJECTED = {
+    **PARAGRAPH_STYLE_THREAD,
+    "status": "REJECTED",
+}
 
 COMMENT_THREADS = [
     {

@@ -1077,6 +1077,152 @@ def build_review_view(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Pending suggestions this layer does not model
+# ---------------------------------------------------------------------------
+#
+# :mod:`gdocs_preview.analysis` extracts suggestions by walking CONTENT
+# MARKS -- ``suggestedInsertionIds`` / ``suggestedDeletionIds`` /
+# ``suggestedTextStyleChanges`` on a paragraph element. Measured against prod
+# 2026-08-02 (``docs/findings/coverage.md``), a reviewer can create pending
+# suggestions that leave NO such mark:
+#
+#   updateParagraphStyle (alignment / line spacing / indent) ->
+#       paragraph.suggestedParagraphStyleChanges
+#   createParagraphBullets                                   ->
+#       paragraph.bullet.suggestedInsertionId + suggestedBulletChanges
+#   updateTableRowStyle                                      ->
+#       tableRow.suggestedTableRowStyleChanges
+#   updateTableCellStyle                                     ->
+#       tableCell.suggestedTableCellStyleChanges
+#
+# Each of those IS a pending suggestion: the API answers HTTP 200, files a
+# thread under ``suggestions[]`` with ``status: "OPEN"`` and its own
+# ``summaryText`` ("Format: alignment"), and Docs shows it in the sidebar.
+# The analysis layer returned ``suggestion_count: 0`` for a document
+# containing one. That is not a scope decision, it is a false count: this
+# package's whole claim is that no response asserts more than its evidence
+# supports and that nothing goes missing without the response saying so.
+#
+# The fix is deliberately NOT to model them. Modelling a table row insert or
+# a paragraph style delta means an address, a pre/post projection and a
+# resolution check for each -- a large feature, and the wrong one, because
+# almost nothing a reviewer decides needs the delta. What the reviewer needs
+# is to know the card is there. The API already says so, in a field this
+# package already parses, so the honest answer costs a set subtraction.
+
+#: ``*_unavailable`` reason (same vocabulary as ``still_pending_unavailable``
+#: and ``comments_unavailable``): the suggestion threads exist only on the
+#: Developer Preview read, so a degraded read cannot count what it did not
+#: model any more than it can name the author of what it did.
+UNREPORTED_UNAVAILABLE_DEGRADED = "read_degraded"
+
+#: Reported per unmodelled card. ``summary_text`` is Google's own label and
+#: is what names the KIND ("Format: alignment", "Add row", "Format cell:
+#: background color"), which is the whole point of listing them rather than
+#: emitting a bare integer.
+UNREPORTED_FIELDS = ("suggestion_id", "summary_text", "author", "status")
+
+
+def unreported_suggestions(
+    threads: dict[str, dict[str, Any]], reported_ids: Iterable[str]
+) -> list[dict[str, Any]]:
+    """Pending suggestions the API lists that this response does not describe.
+
+    ``threads`` is :func:`gdocs_preview.preview_read.suggestion_threads_by_id`
+    off the preview read and ``reported_ids`` is every suggestion the analysis
+    layer DID model for the whole document -- not the page, and not the
+    window. A page is a subset by construction and a window is a subset by
+    request; subtracting either would report the rest of the document as
+    unmodelled.
+
+    Resolved threads are excluded (:func:`~gdocs_preview.preview_read.thread_is_pending`):
+    a rejected suggestion keeps its thread, so the raw subtraction counts
+    every card the document has ever had.
+    """
+    from gdocs_preview.preview_read import pending_thread_ids
+
+    seen = {str(i) for i in reported_ids or ()}
+    cards = []
+    for sid in sorted(pending_thread_ids(threads) - seen):
+        thread = threads[sid]
+        card = {key: thread.get(key) for key in UNREPORTED_FIELDS}
+        card["suggestion_id"] = sid
+        card["author"] = author_display_name(thread.get("author"))
+        cards.append(card)
+    return cards
+
+
+def unreported_notice(cards: Sequence[dict[str, Any]]) -> str:
+    """Why a count is not enough, said in words.
+
+    A bare integer beside ``suggestion_count`` reads as a rounding detail. The
+    sentence has to (a) name what is missing, using Google's own labels, and
+    (b) say that these ids ARE actionable -- accept/reject works on a
+    suggestion id whether or not this package models its content -- so the
+    agent's next move is obvious rather than "the tool is broken".
+    """
+    labels = sorted({str(c.get("summary_text") or "(no label)") for c in cards})
+    return (
+        f"{len(cards)} pending suggestion(s) in this document are NOT included "
+        "in `suggestion_count` and are not described anywhere in this "
+        "response. The Docs API lists them as pending in its own suggestion "
+        "thread array; this tool's analysis layer reads a document's content "
+        "marks, and these kinds leave none. Measured against the live API: "
+        "paragraph style (alignment, line spacing, indent, heading applied "
+        "without a font change), list/bullet formatting, table ROW style and "
+        "table CELL style. Google's labels for the ones here: "
+        + "; ".join(labels)
+        + ". Their ids are in `unreported_suggestions` and they are fully "
+        "actionable: `manage_document_suggestion` accepts or rejects by id "
+        "regardless. What is unavailable is their text, address and "
+        "before/after -- open the document to read those. Do NOT report a "
+        "review as complete on `suggestion_count` alone while this count is "
+        "non-zero."
+    )
+
+
+def unreported_unavailable_notice() -> str:
+    return (
+        "`unreported_suggestion_count` is unavailable on this read. It is "
+        "computed by subtracting the suggestions this tool modelled from the "
+        "API's own suggestion-thread array, and that array exists only on the "
+        "Developer Preview read. So this response cannot say whether the "
+        "document holds pending suggestions of a kind it does not model "
+        "(paragraph style, bullets, table row/cell style) -- reporting 0 here "
+        "would be an absence claim from a read that never looked."
+    )
+
+
+def attach_unreported(
+    result: dict[str, Any],
+    *,
+    threads: dict[str, dict[str, Any]],
+    reported_ids: Iterable[str],
+    complete: bool,
+) -> dict[str, Any]:
+    """Add the unmodelled-suggestion accounting to a response body, in place.
+
+    ``complete`` is the read's own coverage flag
+    (:class:`gdocs_preview.preview_read.ReviewRead`). It gates the whole block
+    for the same reason it gates every other absence claim in this package: on
+    a degraded read ``threads`` is empty, so the subtraction yields zero and
+    would publish "nothing is missing" off a read that carries no thread array
+    at all. The response says it cannot tell instead.
+    """
+    if not complete:
+        result["unreported_suggestion_count"] = None
+        result["unreported_suggestions_unavailable"] = UNREPORTED_UNAVAILABLE_DEGRADED
+        result["notice_unreported"] = unreported_unavailable_notice()
+        return result
+    cards = unreported_suggestions(threads, reported_ids)
+    result["unreported_suggestion_count"] = len(cards)
+    if cards:
+        result["unreported_suggestions"] = cards
+        result["notice_unreported"] = unreported_notice(cards)
+    return result
+
+
 def known_suggestion_ids(records: Iterable[dict[str, Any]]) -> list[str]:
     """Ids in document order -- the cheapest complete answer to 'what is here?'."""
     out: list[str] = []

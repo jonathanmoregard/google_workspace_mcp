@@ -238,6 +238,56 @@ def suggestion_threads_by_id(payload: dict[str, Any]) -> dict[str, dict[str, Any
     return threads
 
 
+#: ``SuggestionThread.status`` values that mean the suggestion is no longer
+#: pending.
+#:
+#: **The thread array is not the pending set.** Measured against prod
+#: 2026-08-02 (``docs/findings/coverage.md``): rejecting a suggestion leaves
+#: its thread in ``suggestions[]`` with ``status: "REJECTED"`` while every
+#: content mark it put on the document disappears. So the top-level array is
+#: every suggestion thread the document has ever had, open and resolved, and
+#: anything derived from it has to say which it means.
+#:
+#: The test below is NEGATIVE -- a thread counts as pending unless its status
+#: is one of these -- because the two error directions are not symmetric.
+#: Over-reporting says "there may be something here to look at", and the
+#: caller can check: every record carries its raw ``status``. Under-reporting
+#: says "there is nothing here", which is the sentence a reviewer stops on,
+#: and is the exact failure :func:`pending_thread_ids` exists to prevent. An
+#: unrecognised future status is therefore surfaced, not swallowed.
+RESOLVED_THREAD_STATUSES = frozenset({"ACCEPTED", "REJECTED"})
+
+
+def thread_is_pending(thread: dict[str, Any]) -> bool:
+    """Is this normalized suggestion thread still pending?
+
+    See :data:`RESOLVED_THREAD_STATUSES` for why the test is negative.
+    """
+    status = thread.get("status")
+    if status is None:
+        return True
+    return str(status).strip().upper() not in RESOLVED_THREAD_STATUSES
+
+
+def pending_thread_ids(threads: dict[str, dict[str, Any]]) -> frozenset[str]:
+    """The suggestion ids the API itself reports as still pending.
+
+    This is the API's OWN inventory of the document's open suggestions, and
+    it is complete in a way :func:`gdocs_preview.analysis.extract_suggestions`
+    is not: the analysis layer walks content marks, so a suggestion whose only
+    trace is a container this module does not walk -- paragraph style, bullets,
+    table row/cell style -- exists here and nowhere else
+    (``docs/findings/coverage.md``).
+
+    Empty for a GA read, which carries no ``suggestions`` array at all, so an
+    empty result is only an absence claim when the read that produced
+    ``threads`` was the preview read.
+    """
+    return frozenset(
+        sid for sid, thread in (threads or {}).items() if thread_is_pending(thread)
+    )
+
+
 def comment_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalized ``CommentThread`` list: every thread and reply carries its
     id and author (the Docs-side comment surface, richer than Drive's:

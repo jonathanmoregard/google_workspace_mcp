@@ -1024,3 +1024,214 @@ class TestCapabilities:
         )
         assert result["preview"]["availability"] == "unknown"
         assert result["preview"]["evidence"]["reason"] == "permission_or_scope"
+
+
+class TestSuggestionsThisLayerDoesNotModel:
+    """A pending suggestion with no content mark must not vanish.
+
+    Measured against prod 2026-08-02 (docs/findings/coverage.md): an
+    ``updateParagraphStyle`` alignment / line-spacing / indent suggestion,
+    ``createParagraphBullets``, ``updateTableRowStyle`` and
+    ``updateTableCellStyle`` all return HTTP 200, file an OPEN thread and
+    put NOTHING on any paragraph element. Before this block both read tools
+    answered such a document with ``suggestion_count: 0`` / an empty
+    ``suggestion_ids`` and no other sign that anything existed -- an
+    incomplete answer that looked complete, which is the failure this whole
+    package exists to prevent.
+    """
+
+    def _payload(self, document, threads):
+        return fx.build_tabs_payload([("t.0", document)], suggestions=threads)
+
+    @pytest.mark.asyncio
+    async def test_the_listing_counts_and_names_what_it_cannot_describe(self):
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        # The modelled card is still exactly one, and still described.
+        assert result["suggestion_count"] == 1
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["suggest.ins1"]
+        # ...and the invisible one is now a number, an id and a sentence.
+        assert result["unreported_suggestion_count"] == 1
+        (card,) = result["unreported_suggestions"]
+        assert card["suggestion_id"] == "suggest.para1"
+        assert card["summary_text"] == "Format: alignment"
+        assert card["author"] == "Alice Reviewer"
+        assert "Format: alignment" in result["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_a_document_whose_only_suggestion_is_invisible(self):
+        """The worst case: ``suggestion_count: 0`` on a document under
+        review. Nothing else in the response contradicted it."""
+        service = _docs_get_service(
+            self._payload(fx.DOC_PARAGRAPH_STYLE_ONLY, [fx.PARAGRAPH_STYLE_THREAD])
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["suggestion_count"] == 0
+        assert result["unreported_suggestion_count"] == 1
+        assert "Do NOT report a review as complete" in result["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_a_page_is_not_what_the_count_is_taken_against(self):
+        """The subtraction uses the whole modelled set, never the page.
+
+        A page is a subset by construction, so subtracting one would report
+        the rest of the document as unmodelled.
+        """
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                page_size=1,
+            )
+        )
+        assert result["returned_count"] == 1
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_filter_does_not_narrow_the_unreported_count(self):
+        """It is a property of the DOCUMENT, like ``suggestion_count``."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                author="Alice Reviewer",
+            )
+        )
+        assert result["matched_count"] == 1
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_clean_document_says_zero_rather_than_omitting_the_key(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+        assert result["unreported_suggestion_count"] == 0
+        assert "unreported_suggestions" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_review_view_reports_it_too(self):
+        """``suggestion_ids`` is the view's version of the same claim, and it
+        was equally short: these cards render no marker anywhere."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["suggestion_ids"] == ["suggest.ins1"]
+        assert result["unreported_suggestion_count"] == 1
+        assert result["unreported_suggestions"][0]["suggestion_id"] == "suggest.para1"
+
+    @pytest.mark.asyncio
+    async def test_a_window_does_not_narrow_the_review_views_count(self):
+        """The window narrows what the tool CAN show; it does not change what
+        the document holds. Subtracting the windowed ``suggestion_ids`` would
+        report every card outside the window as unmodelled."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=25,
+                end_index=40,
+            )
+        )
+        assert result["suggestion_ids"] == []
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_listing_says_it_cannot_tell(self):
+        """The thread array exists only on the preview read, so ``0`` here
+        would be an absence claim from a read that never looked."""
+        service = _ga_only_service(fx.DOC_PARAGRAPH_STYLE_ONLY)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert result["unreported_suggestion_count"] is None
+        assert result["unreported_suggestions_unavailable"] == "read_degraded"
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_review_view_says_it_cannot_tell(self):
+        service = _ga_only_service(fx.DOC_PARAGRAPH_STYLE_ONLY)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert result["unreported_suggestion_count"] is None
+        assert result["unreported_suggestions_unavailable"] == "read_degraded"
+
+    @pytest.mark.asyncio
+    async def test_a_resolved_card_stops_being_counted(self):
+        """Rejecting leaves the thread behind with ``status: "REJECTED"``
+        (prod, 2026-08-02) and strips the content mark. Counting the raw
+        thread array would report every card the document ever had."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_PLAIN_INSERTION,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD_REJECTED],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+        assert result["suggestion_count"] == 1
+        assert result["unreported_suggestion_count"] == 0

@@ -4312,3 +4312,67 @@ class TestTheRangeEchoIsLabelledAsRequested:
         assert verification["anchored_text"] == "he qu"
         doc = _unwrap(write_tools.create_anchored_doc_comment).__doc__
         assert "requested_range is the range this call ASKED for" in doc
+
+
+class TestASuggestionWithNoContentMarkIsStillPending:
+    """The pending set was the MODELLED set, and they are not the same.
+
+    ``_PostWriteRead.records`` comes from walking the document's content
+    marks. Measured against prod 2026-08-02 (docs/findings/coverage.md), a
+    paragraph-style, bullet or table row/cell-style suggestion leaves none:
+    the card exists only as an OPEN thread in the payload's top-level
+    ``suggestions`` array. ``pending_state`` asked ``id in self.records``, so
+    such a card was reported ``False`` -- "gone", "the resolution landed" --
+    from a COMPLETE read that was listing it as OPEN in the very same
+    payload. That is fail-open verification on the one destructive path this
+    package has, and the read had the contradicting evidence in hand.
+    """
+
+    def _read(self, threads):
+        payload = fx.build_tabs_payload(
+            [("t.0", fx.DOC_PARAGRAPH_STYLE_ONLY)], suggestions=threads
+        )
+        tabs = preview_read.tab_documents(payload)
+        return preview_read.ReviewRead(
+            tabs=[(t.tab_id, t.document) for t in tabs],
+            tab_metadata=[t.metadata for t in tabs],
+            threads=preview_read.suggestion_threads_by_id(payload),
+            source=preview_read.READ_SOURCE_PREVIEW,
+            complete=True,
+        )
+
+    def test_the_analysis_layer_really_does_not_model_it(self):
+        """The premise, asserted rather than assumed."""
+        read = self._read([fx.PARAGRAPH_STYLE_THREAD])
+        post = write_tools._PostWriteRead(read)
+        assert post.records == {}
+        assert post.pending_thread_ids == frozenset({"suggest.para1"})
+
+    def test_an_open_thread_the_records_do_not_carry_is_pending(self):
+        post = write_tools._PostWriteRead(self._read([fx.PARAGRAPH_STYLE_THREAD]))
+        assert post.pending_state("suggest.para1", None) == (True, None)
+
+    def test_a_rejected_thread_is_not_pending(self):
+        """The other direction has to keep working: once the reject lands the
+        thread stays behind with ``status: "REJECTED"``, and reporting THAT
+        as still pending would be a false alarm on every resolved card."""
+        post = write_tools._PostWriteRead(
+            self._read([fx.PARAGRAPH_STYLE_THREAD_REJECTED])
+        )
+        assert post.pending_state("suggest.para1", None) == (False, None)
+
+    def test_an_id_in_neither_place_is_still_gone_on_a_complete_read(self):
+        post = write_tools._PostWriteRead(self._read([fx.PARAGRAPH_STYLE_THREAD]))
+        assert post.pending_state("suggest.never-existed", None) == (False, None)
+
+    def test_a_degraded_read_still_answers_unknown_not_false(self):
+        """A GA read carries no thread array either, so the widened check must
+        not turn its blindness into a confident absence."""
+        read = preview_read.ReviewRead(
+            tabs=[(None, fx.DOC_PARAGRAPH_STYLE_ONLY)],
+            source=preview_read.READ_SOURCE_GA,
+            degraded_reason="not enrolled",
+        )
+        post = write_tools._PostWriteRead(read)
+        assert post.pending_thread_ids == frozenset()
+        assert post.pending_state("suggest.para1", None) == (None, "read_incomplete")

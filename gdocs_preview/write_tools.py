@@ -68,7 +68,11 @@ from gdocs_preview.analysis import (
     extract_suggestions_from_tabs,
     segment_base_texts,
 )
-from gdocs_preview.preview_read import normalize_author, read_for_review
+from gdocs_preview.preview_read import (
+    normalize_author,
+    pending_thread_ids,
+    read_for_review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +201,20 @@ class _PostWriteRead:
         self.records: dict[str, dict[str, Any]] = {
             r["suggestion_id"]: r for r in analysed["suggestions"]
         }
+        #: The API's OWN pending set, which is wider than ``records``.
+        #: ``records`` comes from walking the document's content marks, and a
+        #: paragraph-style, bullet or table row/cell-style suggestion leaves
+        #: none (``docs/findings/coverage.md``, measured 2026-08-02). Rejecting
+        #: such a card and re-reading therefore found it absent from
+        #: ``records`` -- because it was never IN ``records`` -- and
+        #: :meth:`pending_state` answered ``False``: "the reject landed" said
+        #: about a suggestion still sitting OPEN in the document, on the one
+        #: destructive path this package has, and derived from a read that had
+        #: the contradicting evidence in hand. An id the API lists as pending
+        #: is pending, whether or not this package can describe it.
+        self.pending_thread_ids: frozenset[str] = pending_thread_ids(
+            getattr(read, "threads", None) or {}
+        )
         #: Every tab this read saw, whether or not it holds a suggestion.
         #: This is the inventory :func:`resolve_range_scope` refuses against,
         #: and it must not be re-derived from ``records``: a multi-tab
@@ -280,8 +298,14 @@ class _PostWriteRead:
         that did not cover the document cannot even name the space it failed
         to look in, so the answer is UNKNOWN rather than a ``False`` nobody
         checked.
+
+        Presence is asked of BOTH the modelled records and the API's own
+        pending threads (:attr:`pending_thread_ids`), because ``records`` is
+        the narrower set: it is built by walking content marks, and the kinds
+        that leave none were invisible to this method entirely -- reported
+        ``False``, "gone", from a read that was listing them as OPEN.
         """
-        if suggestion_id in self.records:
+        if suggestion_id in self.records or suggestion_id in self.pending_thread_ids:
             return True, None
         if self.complete:
             return False, None

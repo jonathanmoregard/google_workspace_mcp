@@ -306,3 +306,49 @@ class TestTabDocuments:
         (tab,) = preview_read.tab_documents(fx.DOC_PLAIN_INSERTION)
         assert tab.tab_id is None
         assert tab.document is fx.DOC_PLAIN_INSERTION
+
+
+class TestPendingThreadIds:
+    """The API's own pending set, which is wider than what analysis models.
+
+    Measured against prod 2026-08-02 (docs/findings/coverage.md): the
+    top-level ``suggestions`` array is every suggestion thread the document
+    has ever had, not the pending ones -- a rejected card keeps its thread
+    with ``status: "REJECTED"`` while its content marks disappear.
+    """
+
+    def test_an_open_thread_is_pending(self):
+        assert preview_read.thread_is_pending({"status": "OPEN"}) is True
+
+    @pytest.mark.parametrize(
+        "status", ["REJECTED", "ACCEPTED", "rejected", " accepted "]
+    )
+    def test_a_resolved_thread_is_not_pending(self, status):
+        assert preview_read.thread_is_pending({"status": status}) is False
+
+    def test_a_status_this_code_does_not_know_is_reported_not_swallowed(self):
+        """The test is negative on purpose.
+
+        Over-reporting says "there may be something to look at" and the
+        caller can check the raw status; under-reporting says "there is
+        nothing here", which is what a reviewer stops on.
+        """
+        assert preview_read.thread_is_pending({"status": "SOME_FUTURE_STATE"}) is True
+        assert preview_read.thread_is_pending({"status": None}) is True
+        assert preview_read.thread_is_pending({}) is True
+
+    def test_pending_ids_exclude_resolved_threads(self):
+        payload = fx.build_tabs_payload(
+            [("t.0", fx.DOC_PLAIN_INSERTION)],
+            suggestions=[*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD_REJECTED],
+        )
+        threads = preview_read.suggestion_threads_by_id(payload)
+        assert set(threads) == {"suggest.ins1", "suggest.para1"}
+        assert preview_read.pending_thread_ids(threads) == frozenset({"suggest.ins1"})
+
+    def test_a_ga_read_has_no_threads_and_therefore_no_pending_ids(self):
+        """Empty is not an absence claim here -- it is 'this read has none'."""
+        threads = preview_read.suggestion_threads_by_id(fx.DOC_PLAIN_INSERTION)
+        assert threads == {}
+        assert preview_read.pending_thread_ids(threads) == frozenset()
+        assert preview_read.pending_thread_ids({}) == frozenset()

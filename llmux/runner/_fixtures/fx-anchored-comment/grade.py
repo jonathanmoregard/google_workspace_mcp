@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 DOCUMENT_ID = "fx-doc-comment"
-EXPECTED_FINAL = "Q3 revenue grew 40% year over year.\nWe expect similar growth in Q4.\n"
+EXPECTED_FINAL = (
+    "Q3 revenue grew 40% year over year.\nWe expect similar growth in Q4.\n"
+)
 ANCHOR = "40%"
 
 

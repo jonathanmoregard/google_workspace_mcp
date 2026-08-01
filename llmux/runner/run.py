@@ -172,7 +172,9 @@ class RunResult:
         escaped = [
             call.name
             for call in self.transcript.tool_calls
-            if call.server is None and not call.is_harness and call.answered
+            if call.server is None
+            and not call.is_harness
+            and call.answered
             and not call.failed
         ]
         if escaped:
@@ -749,8 +751,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("tool probe: asking one agent what tools it can see ...", flush=True)
         clean, leaked, probe_error = preflight_toolprobe()
         if probe_error:
-            print(f"  ! the probe itself could not run ({probe_error}); "
-                  "continuing -- every run's system/init is still checked")
+            print(
+                f"  ! the probe itself could not run ({probe_error}); "
+                "continuing -- every run's system/init is still checked"
+            )
         elif clean:
             print("  clean: the agent sees the mock MCP server and nothing else")
         else:
@@ -788,7 +792,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         from llmux.runner.analyze import write_report
 
-        report_paths = write_report(results, reports_dir, stamp=stamp, corpus=str(corpus))
+        report_paths = write_report(
+            results, reports_dir, stamp=stamp, corpus=str(corpus)
+        )
     except Exception as exc:  # noqa: BLE001 - see comment above
         import traceback
 

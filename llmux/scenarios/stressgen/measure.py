@@ -233,8 +233,12 @@ def score_profile(scenario_dir: Path, spec: dict[str, Any]) -> dict[str, Any]:
     rows: dict[str, float] = {}
     rows["oracle"] = _graded(seed, expected, dict(decisions))["score"]
     rows["do_nothing"] = _graded(seed, expected, {})["score"]
-    rows["accept_all"] = _graded(seed, expected, {s: "accept" for s in all_ids})["score"]
-    rows["reject_all"] = _graded(seed, expected, {s: "reject" for s in all_ids})["score"]
+    rows["accept_all"] = _graded(seed, expected, {s: "accept" for s in all_ids})[
+        "score"
+    ]
+    rows["reject_all"] = _graded(seed, expected, {s: "reject" for s in all_ids})[
+        "score"
+    ]
     rows["resolve_all_as_intended_never_defer"] = _graded(
         seed,
         expected,
@@ -351,12 +355,19 @@ def markdown(rows: list[dict[str, Any]]) -> str:
     lines.append("## Score calibration")
     lines.append("")
     keys = sorted({k for row in rows for k in row["scores"]})
-    lines.append("| strategy | " + " | ".join(r["context"]["scenario_id"].replace("stress-", "") for r in rows) + " |")
+    lines.append(
+        "| strategy | "
+        + " | ".join(r["context"]["scenario_id"].replace("stress-", "") for r in rows)
+        + " |"
+    )
     lines.append("| --- | " + " | ".join("---:" for _ in rows) + " |")
-    for key in ["oracle", "do_nothing", "accept_all", "reject_all",
-                "resolve_all_as_intended_never_defer"] + [
-        k for k in keys if k.startswith("oracle_with_")
-    ]:
+    for key in [
+        "oracle",
+        "do_nothing",
+        "accept_all",
+        "reject_all",
+        "resolve_all_as_intended_never_defer",
+    ] + [k for k in keys if k.startswith("oracle_with_")]:
         cells = [f"{row['scores'].get(key, float('nan')):.3f}" for row in rows]
         lines.append(f"| `{key}` | " + " | ".join(cells) + " |")
     lines.append("")
@@ -375,9 +386,15 @@ def markdown(rows: list[dict[str, Any]]) -> str:
             f"{w['leave_pending']}."
         )
         lines.append("")
-        lines.append("- edit kinds: " + ", ".join(f"{k} {v}" for k, v in w["edit_kinds"].items()))
-        lines.append("- reviewers: " + ", ".join(f"{k} {v}" for k, v in w["reviewers"].items()))
-        lines.append("- sizes: " + ", ".join(f"{k} {v}" for k, v in w["edit_sizes"].items()))
+        lines.append(
+            "- edit kinds: " + ", ".join(f"{k} {v}" for k, v in w["edit_kinds"].items())
+        )
+        lines.append(
+            "- reviewers: " + ", ".join(f"{k} {v}" for k, v in w["reviewers"].items())
+        )
+        lines.append(
+            "- sizes: " + ", ".join(f"{k} {v}" for k, v in w["edit_sizes"].items())
+        )
         lines.append("")
     return "\n".join(lines)
 

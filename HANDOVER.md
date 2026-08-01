@@ -4,8 +4,8 @@ Written for an AI agent picking this repo up cold. It assumes you can read
 code, so it points at files rather than restating them; everything below that
 is load-bearing is stated outright.
 
-Verified against the tree at commit `433218a` on branch `docs-preview`,
-2026-07-31.
+Verified against the tree at commit `df64924` on branch `docs-preview`,
+2026-08-01 (rounds 1-4 of the cross-vendor review loop applied).
 
 ---
 
@@ -198,8 +198,15 @@ start; verified live 2026-07-31).
 **`verify`** (on `suggest_doc_edit` and `manage_document_suggestion`,
 default `true`) buys exactly **one** extra `documents.get` after the write and
 turns the response into evidence rather than a receipt. `verify=false` returns
-`verification.source: "skipped"`, `still_pending: null`, and a note saying the
-response ids alone do not say the write landed. Set it false only for a batch
+`verification.source: "skipped"`, `still_pending: null`,
+`still_pending_unavailable: "not_verified"`, and a note saying the response ids
+alone do not say the write landed. It keeps the **full documented key set**,
+nulled (`_unverified_verification`) — the block used to carry five keys while
+the docstring documented `matches_expectation` and friends unconditionally, so
+a client reading them raised `KeyError` on the one path where nothing checked
+the write. `pending_suggestion_count` is `null`, not `0`: a count is a claim
+about the document. `resolved_suggestion` is echoed, since it comes from this
+session's own listing rather than from a read. Set it false only for a batch
 you will verify at the end — collateral removals (§4.5) then go unreported.
 
 `reply_to_doc_thread` and `create_anchored_doc_comment` have no `verify`
@@ -222,7 +229,16 @@ Classification lives in `gdocs_preview/preview_status.py`:
 | any other 404, or 403 | `unknown` — proves nothing about enrollment |
 | 200 | `available` |
 
-The verdict is cached process-wide; later probe-free calls report it.
+The verdict is cached **per caller** (`user_google_email`, bounded to
+`MAX_USERS`, oldest-touched evicted), and later probe-free calls by that same
+caller report it. It was one process-global verdict, which crossed tenants in
+the server's default multi-user mode: the probe-free branch makes no API call,
+so caller B was answered entirely out of caller A's probe — including
+`evidence.message`, which is the failed call's error text, and
+`HttpError.__str__` embeds the request URI and therefore **A's document id**.
+An unrecorded caller now gets `unknown`, which costs a probe rather than a
+wrong belief (and enrollment being per-project vs per-account is still open —
+§7).
 
 ### 3.4 Why `fields="summary"` is the default
 
@@ -437,10 +453,53 @@ success (`_execute_preview_batch_update(..., enforce_comment_update=True)`).
   honesty ladder — *resolved directly* (proven) → *collateral* (observed, not
   proven; a concurrent editor could have done it) → *may have been removed* →
   *never seen*.
+  Rung 1 additionally needs the resolution to have **landed**. Calling
+  accept/reject is not evidence that it worked — an HTTP 200 that resolves
+  nothing is a shape prod returns — so every `Resolution` carries `landed`,
+  set from the same derived `still_pending` the response reports. On `False`
+  (the post-write read still listed the id) the answer says the call did not
+  remove it and points away from this session; on `None` (`verify=false`, or
+  the post-write read failed) it offers the resolution as the likely cause
+  rather than a proven one. `collateral_note` **and the collateral rung of
+  `explain_missing`** are worded off the same field — the collateral rung is
+  causation too, and it went on asserting the GC rule for a round after the
+  direct rung was fixed.
+  `record_resolution` separates `suggestion_id` (the id an action was aimed
+  at) from `cause` (the id collateral is explained by). They coincide for
+  accept/reject and must not for a merge: `_verify_suggest` passed the
+  just-CREATED id as `suggestion_id`, filing a "how it went away" record for a
+  card that had just arrived, so a later lookup of it answered "You
+  suggest_doc_edited it yourself".
+  **Every rung** reads `landed`, including *may have been removed* — a
+  resolution the read contradicted is not offered as a possible remover of
+  anything, and an unverified one is offered with that said. And a read is
+  evidence about the resolutions already on file: `observe()` flips a
+  `landed=None` record to `False` when a later read still lists that id as
+  pending. `record_resolution` only drops its cached record when the removal
+  was confirmed — the verify-less paths never call `observe()` afterwards, so
+  dropping there erased the only copy of a still-pending card and the next
+  attempt was told "this session never listed" it.
+  The merge sentence states the **observation** before the mechanism, in both
+  places it is written: all a write sees is "listed before, absent after", and
+  a second reviewer resolving their own card in that window is
+  indistinguishable from here.
+  `observe()` **merges rather than replaces on a degraded read**. A degraded
+  read cannot attest an absence, so replacing turned "this read did not look
+  there" into "we never saw this": a complete listing caching A and B,
+  followed by a resolution whose post-write read degraded, dropped B — and the
+  next verification of B said "this session never listed" it. A complete read
+  still replaces, because it *is* authoritative about absence.
 - Also-created-since: a card that merely **appeared between the last listing
   and this write** — which is what a second reviewer looks like — is reported
   under `appeared_since_last_read`, never under `created_suggestions`, which
   claims authorship. Check the author before resolving or replying to one.
+  "Appeared since" is a claim about the **listing**, so both halves of that
+  subtraction are gated on `before.complete`: a card of *ours* is promoted to
+  `created_suggestions` only when the prior listing could see the whole
+  document. After a degraded listing every pre-existing card of ours in the
+  tabs it could not see is "new" to the diff without anything having happened,
+  and it used to be claimed by the write. The API's own
+  `createdSuggestionIds` is proof and is unaffected either way.
 
 ### 4.6 A degraded read reports UNKNOWN, never a guess
 
@@ -463,9 +522,13 @@ Concretely, on a degraded read:
   `replies`) are `null`, with `author_source: "unavailable"` — **never
   guessed** — and both field modes carry `degraded_notice` + `null_fields`,
   because the nulls are a property of the read, not of the document;
-- an `author` or `status` filter is **refused**, not answered with an empty
-  page: `matched_count: 0` there means "this read cannot see authors", not
-  "there are none";
+- an `author`, `status` **or `tab_id`** filter is **refused**, not answered
+  with an empty page: `matched_count: 0` there means "this read cannot see
+  authors", not "there are none". `tab_id` belongs to that list for the same
+  reason and was missing from it — the GA payload is one *unnamed* body, so
+  every record carries `tab_id: null` and any named tab matched nothing,
+  answering `matched_count: 0` with `tabs_present: []` about a read that
+  cannot see tabs at all;
 - `still_pending` is `null` with `still_pending_unavailable` ∈
   {`segment_not_in_read`, `read_incomplete`}, `matches_expectation` is `null`,
   and `also_removed_suggestion_ids` is withheld in favour of
@@ -474,6 +537,12 @@ Concretely, on a degraded read:
   the resolution.
 - **Counts are partial.** `suggestion_count` on a degraded read is the count
   of what that read could see, and `read_source` says which read it was.
+- `get_doc_review_view` carries its own `degraded_notice` plus
+  `comments_unavailable: "read_degraded"`. Its losses differ from the
+  listing's: comment threads exist only on the preview read, so `comments: []`
+  there is a fact about the read, and `tabs: []` plus the prose are one
+  unnamed body's. Both were unqualified absence claims on the tool an agent
+  actually reads a document with.
 
 ### 4.7 Miscellaneous, cheap to get wrong
 
@@ -510,7 +579,7 @@ Concretely, on a degraded read:
 | [`write_tools.py`](gdocs_preview/write_tools.py) | The 4 write tools + the whole post-write verification layer (`_ResolutionVerdict`, `_PostWriteRead`, the unavailable-reason vocabulary and its notes). |
 | [`curated_tools.py`](gdocs_preview/curated_tools.py) | The 2 read tools + the capabilities probe. Thin API-call wrappers over `preview_read` and `analysis`. |
 | [`suggestion_ledger.py`](gdocs_preview/suggestion_ledger.py) | Process-wide memory of what our own writes did, keyed by `(user_email, document_id)`, bounded to `MAX_DOCUMENTS` (oldest-touched evicted). Turns "does not exist" into a cause (§4.5). |
-| [`preview_status.py`](gdocs_preview/preview_status.py) | Process-wide preview-availability verdict + the error classifier (§3.3). |
+| [`preview_status.py`](gdocs_preview/preview_status.py) | Preview-availability verdict **keyed by `user_google_email`** (§3.3) + the error classifier. |
 
 Importing `gdocs_preview` registers all 7 tools via decorator side effects.
 

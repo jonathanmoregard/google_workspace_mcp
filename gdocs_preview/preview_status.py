@@ -1,4 +1,4 @@
-"""Process-wide Developer Preview availability state for docs_preview.
+"""Per-caller Developer Preview availability state for docs_preview.
 
 The preview batchUpdate surface (acceptSuggestion, insertComment, ...) is
 only usable after Workspace Developer Preview enrollment, and enrollment
@@ -6,6 +6,25 @@ cannot be verified offline. This module keeps the last-known availability
 verdict (populated by the ``check_docs_review_capabilities`` probe) so that
 side-effect-free capability reports can reuse real evidence instead of
 re-probing.
+
+**Keyed by ``user_google_email``**, for the same reason
+:mod:`gdocs_preview.suggestion_ledger` is. This was one process-global dict,
+and the server's DEFAULT transport mode is multi-user (``main.py``: anything
+without ``--single-user``). Two things then crossed between tenants on a
+probe-free ``check_docs_review_capabilities``, which makes no API call and
+answers purely from here:
+
+* **The evidence.** ``evidence["message"]`` is the failed call's error text,
+  and ``HttpError.__str__`` embeds the request URI -- i.e. the DOCUMENT ID.
+  Caller B's capability report handed back caller A's document id verbatim.
+* **The verdict.** B was told ``available`` on the strength of A's probe,
+  labelled ``source: "probe"``, having probed nothing. Whether enrollment
+  propagates per-project or per-account is still an open UNCERTAIN item
+  (``docs/preview-api-reference.md``), so even the verdict alone was a claim
+  this module had no evidence for on B's behalf.
+
+An unknown caller gets ``unknown`` -- which is the honest answer, and the one
+that costs a probe rather than a wrong belief.
 """
 
 from __future__ import annotations
@@ -42,7 +61,14 @@ _INITIAL_STATE: dict[str, Any] = {
     "checked_at": None,
 }
 
-_state = dict(_INITIAL_STATE)
+#: Callers tracked at once, per process. Eviction is oldest-touched-first,
+#: matching :data:`gdocs_preview.suggestion_ledger.MAX_DOCUMENTS`. An evicted
+#: caller falls back to ``unknown``, i.e. to re-probing -- never to somebody
+#: else's verdict.
+MAX_USERS = 64
+
+#: user_google_email -> state. Insertion order is the LRU order.
+_states: dict[str, dict[str, Any]] = {}
 
 
 def classify_preview_error(status: Optional[int], message: str) -> tuple[str, str]:
@@ -76,25 +102,46 @@ def classify_preview_error(status: Optional[int], message: str) -> tuple[str, st
     return "unknown", f"unexpected_http_{status}"
 
 
-def record(availability: str, evidence: dict[str, Any], source: str) -> None:
-    """Record a preview-availability observation (process-wide)."""
-    _state.update(
+def record(
+    availability: str,
+    evidence: dict[str, Any],
+    source: str,
+    *,
+    user_google_email: str,
+) -> None:
+    """Record a preview-availability observation for ONE caller.
+
+    ``user_google_email`` is keyword-only and has no default: the evidence
+    carries the caller's own document ids and error text, and a call site that
+    cannot say whose observation this is must not be able to file it where
+    another caller will read it back as their own.
+    """
+    key = user_google_email or ""
+    state = _states.pop(key, None) or dict(_INITIAL_STATE)
+    state.update(
         availability=availability,
         evidence=dict(evidence),
         source=source,
         checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     )
+    while len(_states) >= MAX_USERS:
+        _states.pop(next(iter(_states)))
+    _states[key] = state  # re-insert: dict order is the LRU order
 
 
-def get_status() -> dict[str, Any]:
-    """Copy of the current preview-availability state."""
-    status = dict(_state)
+def get_status(user_google_email: str) -> dict[str, Any]:
+    """Copy of ``user_google_email``'s preview-availability state.
+
+    A caller nothing has been recorded for gets the initial ``unknown`` --
+    not the last verdict some other caller happened to produce.
+    """
+    state = _states.get(user_google_email or "")
+    status = dict(state) if state is not None else dict(_INITIAL_STATE)
     if status["evidence"] is not None:
         status["evidence"] = dict(status["evidence"])
     return status
 
 
 def reset() -> None:
-    """Reset to the initial unknown state (used by tests)."""
-    _state.clear()
-    _state.update(_INITIAL_STATE)
+    """Forget every caller's state (used by tests)."""
+    _states.clear()

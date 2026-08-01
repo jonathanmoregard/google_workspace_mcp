@@ -60,6 +60,22 @@ SETTINGS = settings(
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
 )
 
+#: For the properties that only mean anything on a document which HAS a
+#: mergeable pair. They reach that subset with ``assume(mergeable_pairs(doc))``,
+#: which discards most generated documents -- so Hypothesis' filter_too_much
+#: health check fires on an unlucky generation run (observed: 9 kept, 50
+#: filtered) and reddens a suite whose properties all hold. Suppressed here
+#: rather than in SETTINGS so every other property keeps the check.
+FILTERED_SETTINGS = settings(
+    max_examples=200,
+    deadline=None,
+    suppress_health_check=[
+        HealthCheck.too_slow,
+        HealthCheck.data_too_large,
+        HealthCheck.filter_too_much,
+    ],
+)
+
 
 # ---------------------------------------------------------------------------
 # §11.1 structural invariants
@@ -300,7 +316,7 @@ def test_l9_merge_preserves_rendering(doc):
         ]
 
 
-@SETTINGS
+@FILTERED_SETTINGS
 @given(doc=any_docs())
 def test_merge_migrates_threads(doc):
     """§10 recommended policy: the absorbed thread is concatenated onto the

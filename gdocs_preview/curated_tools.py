@@ -216,7 +216,9 @@ async def list_document_suggestions(
             has_more, next_page_token), read_source, tabs and the
             per-suggestion records described above.
     """
-    read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+    read = await read_for_review(
+        service, document_id, "SUGGESTIONS_INLINE", user_google_email=user_google_email
+    )
     analysis = extract_suggestions_from_tabs(read.tabs, read.threads)
     # Feed the ledger the WHOLE set, never the page: it is the "before"
     # picture that lets a later accept/reject name the suggestions its own
@@ -297,11 +299,17 @@ async def check_docs_review_capabilities(
         the request type was not even parsed);
       - other 400 -> ``available`` (request type recognized, failed only on
         the bogus suggestion id);
+      - 404 naming a missing suggestion/comment/reply -> ``available`` (the
+        request type was parsed and resolved far enough to look the
+        subresource up; this is what prod actually returns for the probe);
       - 200 -> ``available`` (per preview docs, suggestion/comment updates
         can no-op with a commentUpdateState instead of erroring);
-      - 403/404 -> ``unknown`` (permission/scope or missing document --
-        proves nothing about enrollment).
-    The verdict is cached process-wide, so later probe-free calls report it.
+      - 403, or any other 404 -> ``unknown`` (permission/scope or missing
+        document -- proves nothing about enrollment).
+    The verdict is cached PER CALLER (keyed by user_google_email), so later
+    probe-free calls by the same caller report it and a caller with no
+    evidence of their own gets ``unknown`` rather than somebody else's
+    verdict.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -335,8 +343,12 @@ async def check_docs_review_capabilities(
                     "http_status": 200,
                     "reason": "probe_request_accepted",
                     "comment_update_state": (response or {}).get("commentUpdateState"),
+                    # The probe IS a batchUpdate: the strongest evidence about
+                    # the write surface there is.
+                    "surface": "write",
                 },
                 source="probe",
+                user_google_email=user_google_email,
             )
         except HttpError as error:
             status = getattr(getattr(error, "resp", None), "status", None)
@@ -352,16 +364,25 @@ async def check_docs_review_capabilities(
                 {
                     "http_status": status,
                     "reason": reason,
+                    # ``HttpError.__str__`` embeds the request URI, so this
+                    # carries the probed DOCUMENT ID. Filed under the caller
+                    # who probed; no other caller can read it back.
                     "message": message[:500],
+                    "surface": "write",
                 },
                 source="probe",
+                user_google_email=user_google_email,
             )
 
     report = {
         "service": "docs_preview",
         "scopes": list(DOCS_PREVIEW_SCOPES),
         "tools": _tool_inventory(),
-        "preview": preview_status.get_status(),
+        # This caller's own evidence, or ``unknown``. It used to be whatever
+        # verdict any caller in the process last produced, evidence string
+        # included -- and this branch makes no API call, so a multi-user
+        # deployment answered B entirely out of A's probe.
+        "preview": preview_status.get_status(user_google_email),
         "probe_performed": bool(probe),
     }
     return json.dumps(report, indent=2, ensure_ascii=False)
@@ -487,7 +508,39 @@ async def get_doc_review_view(
         raise UserInputError(
             f"Invalid view_mode '{view_mode}'. Must be one of: {', '.join(VIEW_MODES)}."
         )
-    read = await read_for_review(service, document_id, view_mode)
+    read = await read_for_review(
+        service, document_id, view_mode, user_google_email=user_google_email
+    )
+    windowed = start_index is not None or end_index is not None
+    # Normalised first so a blank value gets the blank-filter message from
+    # build_review_view rather than this one, and so `tab_id="  "` is not
+    # quoted back as if it named a tab.
+    named_space = [
+        name
+        for name, value in (("tab_id", tab_id), ("segment_id", segment_id))
+        if review_page.normalize_filter_value(value, name) is not None
+    ]
+    if read.source == READ_SOURCE_GA and named_space and windowed:
+        # The mirror of the listing's refusal (review_page.build_listing). A
+        # window is resolved into ONE (tab, segment); this read has a single
+        # UNNAMED body and no ids for either, so a named space resolves to
+        # nothing and the window returns body_text: "" -- "that range is
+        # empty" said about a place the read never saw. The id in hand is
+        # normally one an earlier, healthy response printed.
+        #
+        # ``segment_id`` is here for the same reason as ``tab_id`` and was
+        # missed the first time: the GA read carries the body only, so a
+        # window in a header or footnote matches nothing just as silently.
+        names = " and ".join(named_space)
+        raise UserInputError(
+            f"{names} cannot be used on this read: it degraded to "
+            "the GA documents.get, which returns a single unnamed body with "
+            "no tab or segment ids, so a window named in that space can only "
+            "ever come back empty -- which would read as 'that range is "
+            "empty' rather than 'this read cannot see there'. Re-run without "
+            f"{names} to window the one body this read has, or retry for the "
+            f"Developer Preview read (read_source={read.source!r})."
+        )
     rendered = render_tabs(read.tabs)
     if view_mode == "SUGGESTIONS_INLINE":
         # Same "before" picture as list_document_suggestions; only the inline
@@ -522,4 +575,13 @@ async def get_doc_review_view(
         result["comments_omitted"] = len(read.comments)
     if read.degraded_reason:
         result["degraded_reason"] = read.degraded_reason
+    if read.source == READ_SOURCE_GA:
+        # The listing has said this since the fallback existed; the tool an
+        # agent actually reads the document with said nothing. ``comments:
+        # []`` and ``tabs: []`` are absence claims, and on this read they are
+        # facts about the read. Keyed as well as narrated, because the machine
+        # flag is what a client can branch on and the prose is what the model
+        # reads -- the listing pairs them the same way.
+        result["degraded_notice"] = review_page.degraded_review_notice()
+        result["comments_unavailable"] = "read_degraded"
     return json.dumps(result, indent=2, ensure_ascii=False)

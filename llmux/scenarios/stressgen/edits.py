@@ -208,7 +208,10 @@ HEDGE_WEAKENING = (
     ("proves", "indicates"),
     ("is correct", "seems correct to us"),
     ("cannot be picked up quickly", "is hard to pick up quickly"),
-    ("This is correct and not to the point", "We think this is correct but beside the point"),
+    (
+        "This is correct and not to the point",
+        "We think this is correct but beside the point",
+    ),
 )
 
 HEDGE_STRENGTHENING = (
@@ -309,7 +312,10 @@ JARGON = (
 
 PASSIVE_TO_ACTIVE = (
     ("It has been replicated", "Researchers have replicated it"),
-    ("has been demonstrated in the open literature", "researchers have demonstrated in published work"),
+    (
+        "has been demonstrated in the open literature",
+        "researchers have demonstrated in published work",
+    ),
     ("is judged to present", "presents"),
     ("are reported at", "sit at"),
     ("is reported", "we report"),
@@ -342,7 +348,10 @@ THROAT_CLEARING = (
     ("it is important to remember that a well-monitored race", "a well-monitored race"),
     ("We want to be careful not to overclaim in the other direction. ", ""),
     ("We would add one caution. ", ""),
-    ("We flag this without a recommendation attached, because ", "We do not attach a recommendation, because "),
+    (
+        "We flag this without a recommendation attached, because ",
+        "We do not attach a recommendation, because ",
+    ),
     ("The honest summary of this model is that it", "This model"),
     ("The other thing we would say to people", "To people"),
     ("We would gently push back on the framing", "We would push back on the framing"),
@@ -380,7 +389,9 @@ _AUXILIARY = re.compile(
 )
 
 
-def _hedge_insert_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _hedge_insert_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     for match in _AUXILIARY.finditer(text):
         at = match.end() - 1  # the space after the verb
         for hedge in HEDGE_INSERTS:
@@ -476,7 +487,9 @@ _OPTIONAL_THAT = re.compile(
 )
 
 
-def _optional_that_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _optional_that_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     """Strike the optional ``that`` after a reporting verb."""
     for match in _OPTIONAL_THAT.finditer(text):
         yield (match.end() - 5, match.end(), "")
@@ -494,13 +507,17 @@ def _filler_finder(document: Document, text: str) -> Iterator[tuple[int, int, st
             yield (match.start(), match.end(), "")
 
 
-def _word_choice_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _word_choice_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     for old, new in WORD_CHOICE:
         for match in re.finditer(r"\b" + re.escape(old) + r"\b", text):
             yield (match.start(), match.end(), new)
 
 
-def _intensifier_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _intensifier_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     """Delete an intensifier and the space after it, mid-sentence only."""
     pattern = r"\b(?:" + "|".join(INTENSIFIERS) + r") "
     for match in re.finditer(pattern, text):
@@ -530,7 +547,11 @@ def _transition_finder(document: Document, text: str) -> Iterator[tuple[int, int
             continue  # opens a numbered list item, not a following sentence
         opener = match.group(0)
         for transition in TRANSITIONS:
-            yield (match.start(), match.end(), transition + opener[0].lower() + opener[1:])
+            yield (
+                match.start(),
+                match.end(),
+                transition + opener[0].lower() + opener[1:],
+            )
 
 
 def _numeric_sentence_ends(text: str) -> Iterator[int]:
@@ -564,7 +585,9 @@ def _number_finder(document: Document, text: str) -> Iterator[tuple[int, int, st
             yield (match.start(), match.end(), new)
 
 
-def _terminology_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _terminology_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     for variant, house in document.term_pairs:
         for match in re.finditer(anchored(variant), text):
             yield (match.start(), match.end(), house)
@@ -576,7 +599,9 @@ def _rewrite_finder(document: Document, text: str) -> Iterator[tuple[int, int, s
         yield (at, at + len(original), rewritten)
 
 
-def _cut_sentence_finder(document: Document, text: str) -> Iterator[tuple[int, int, str]]:
+def _cut_sentence_finder(
+    document: Document, text: str
+) -> Iterator[tuple[int, int, str]]:
     """Cut a whole sentence, taking the space that joins it to its neighbour."""
     for sentence in document.cuttable:
         at = text.index(sentence)
@@ -585,48 +610,135 @@ def _cut_sentence_finder(document: Document, text: str) -> Iterator[tuple[int, i
 
 
 KINDS: tuple[Kind, ...] = (
-    Kind("hedge_weaken", "replace", 9.0, _phrase_finder(HEDGE_WEAKENING),
-         "softens a claim (will -> may, shows -> suggests)"),
-    Kind("hedge_strengthen", "replace", 2.0, _phrase_finder(HEDGE_STRENGTHENING),
-         "removes a hedge the author did not need"),
-    Kind("cut_intensifier", "delete", 9.0, _intensifier_finder,
-         "cuts an intensifier (clearly, very, genuinely)"),
-    Kind("tighten_wordy", "replace", 10.0, _phrase_finder(WORDINESS),
-         "tightens a wordy construction (in order to -> to)"),
-    Kind("uk_us_spelling", "replace", 9.0, _phrase_finder(BRITISH_TO_AMERICAN),
-         "normalises British spelling to house style"),
-    Kind("number_format", "replace", 5.0, _number_finder,
-         "fixes number and unit formatting"),
-    Kind("jargon_replace", "replace", 5.0, _phrase_finder(JARGON),
-         "replaces jargon with plain wording"),
-    Kind("terminology", "replace", 4.0, _terminology_finder,
-         "makes a term consistent with the rest of the piece"),
-    Kind("passive_to_active", "replace", 4.0, _phrase_finder(PASSIVE_TO_ACTIVE),
-         "turns a passive construction active"),
-    Kind("cut_throat_clearing", "replace", 4.0, _phrase_finder(THROAT_CLEARING),
-         "cuts throat-clearing at the start of a sentence"),
-    Kind("split_run_on", "replace", 4.0, _run_on_finder,
-         "splits a run-on sentence in two"),
-    Kind("word_choice", "replace", 8.0, _word_choice_finder,
-         "swaps a word for a plainer one"),
-    Kind("cut_optional_that", "delete", 6.0, _optional_that_finder,
-         "strikes the optional 'that' after a reporting verb"),
-    Kind("that_which", "replace", 5.0, _that_which_finder,
-         "turns a restrictive 'which' into 'that'"),
-    Kind("cut_filler", "delete", 5.0, _filler_finder,
-         "strikes a filler phrase"),
-    Kind("insert_citation", "insert", 5.0, _citation_finder,
-         "adds a citation to a numeric claim"),
-    Kind("insert_caveat", "insert", 4.0, _caveat_finder,
-         "adds a caveat to a numeric claim"),
-    Kind("insert_hedge", "insert", 5.0, _hedge_insert_finder,
-         "hedges a claim in place (is -> is probably)"),
-    Kind("add_transition", "insert", 3.0, _transition_finder,
-         "adds a connective between two sentences"),
-    Kind("cut_sentence", "delete", 2.0, _cut_sentence_finder,
-         "cuts a whole sentence"),
-    Kind("rewrite_claim", "replace", 2.0, _rewrite_finder,
-         "rewrites a whole claim"),
+    Kind(
+        "hedge_weaken",
+        "replace",
+        9.0,
+        _phrase_finder(HEDGE_WEAKENING),
+        "softens a claim (will -> may, shows -> suggests)",
+    ),
+    Kind(
+        "hedge_strengthen",
+        "replace",
+        2.0,
+        _phrase_finder(HEDGE_STRENGTHENING),
+        "removes a hedge the author did not need",
+    ),
+    Kind(
+        "cut_intensifier",
+        "delete",
+        9.0,
+        _intensifier_finder,
+        "cuts an intensifier (clearly, very, genuinely)",
+    ),
+    Kind(
+        "tighten_wordy",
+        "replace",
+        10.0,
+        _phrase_finder(WORDINESS),
+        "tightens a wordy construction (in order to -> to)",
+    ),
+    Kind(
+        "uk_us_spelling",
+        "replace",
+        9.0,
+        _phrase_finder(BRITISH_TO_AMERICAN),
+        "normalises British spelling to house style",
+    ),
+    Kind(
+        "number_format",
+        "replace",
+        5.0,
+        _number_finder,
+        "fixes number and unit formatting",
+    ),
+    Kind(
+        "jargon_replace",
+        "replace",
+        5.0,
+        _phrase_finder(JARGON),
+        "replaces jargon with plain wording",
+    ),
+    Kind(
+        "terminology",
+        "replace",
+        4.0,
+        _terminology_finder,
+        "makes a term consistent with the rest of the piece",
+    ),
+    Kind(
+        "passive_to_active",
+        "replace",
+        4.0,
+        _phrase_finder(PASSIVE_TO_ACTIVE),
+        "turns a passive construction active",
+    ),
+    Kind(
+        "cut_throat_clearing",
+        "replace",
+        4.0,
+        _phrase_finder(THROAT_CLEARING),
+        "cuts throat-clearing at the start of a sentence",
+    ),
+    Kind(
+        "split_run_on",
+        "replace",
+        4.0,
+        _run_on_finder,
+        "splits a run-on sentence in two",
+    ),
+    Kind(
+        "word_choice",
+        "replace",
+        8.0,
+        _word_choice_finder,
+        "swaps a word for a plainer one",
+    ),
+    Kind(
+        "cut_optional_that",
+        "delete",
+        6.0,
+        _optional_that_finder,
+        "strikes the optional 'that' after a reporting verb",
+    ),
+    Kind(
+        "that_which",
+        "replace",
+        5.0,
+        _that_which_finder,
+        "turns a restrictive 'which' into 'that'",
+    ),
+    Kind("cut_filler", "delete", 5.0, _filler_finder, "strikes a filler phrase"),
+    Kind(
+        "insert_citation",
+        "insert",
+        5.0,
+        _citation_finder,
+        "adds a citation to a numeric claim",
+    ),
+    Kind(
+        "insert_caveat",
+        "insert",
+        4.0,
+        _caveat_finder,
+        "adds a caveat to a numeric claim",
+    ),
+    Kind(
+        "insert_hedge",
+        "insert",
+        5.0,
+        _hedge_insert_finder,
+        "hedges a claim in place (is -> is probably)",
+    ),
+    Kind(
+        "add_transition",
+        "insert",
+        3.0,
+        _transition_finder,
+        "adds a connective between two sentences",
+    ),
+    Kind("cut_sentence", "delete", 2.0, _cut_sentence_finder, "cuts a whole sentence"),
+    Kind("rewrite_claim", "replace", 2.0, _rewrite_finder, "rewrites a whole claim"),
 )
 
 KIND_BY_NAME = {k.name: k for k in KINDS}

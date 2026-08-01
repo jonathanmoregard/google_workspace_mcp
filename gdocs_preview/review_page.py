@@ -684,6 +684,39 @@ def _degraded_notice() -> str:
     )
 
 
+def degraded_review_notice() -> str:
+    """The review view's own version of :func:`_degraded_notice`.
+
+    ``list_document_suggestions`` has said this in words since the degraded
+    read existed; ``get_doc_review_view`` -- the tool an agent actually reads a
+    document with -- said nothing at all. It returned ``comments: []``,
+    ``tabs: []`` and one unnamed body's prose, qualified only by
+    ``read_source`` and a raw exception string in ``degraded_reason``. An
+    empty ``comments`` array is an ABSENCE CLAIM about a customer's document,
+    and on this read it is a property of the read: comment threads exist only
+    on the preview payload. A reviewer who reads it as "no one has commented"
+    stops reviewing.
+
+    The losses differ from the listing's, so the sentence does too: the
+    listing loses the thread-derived FIELDS of records it can still see, while
+    this tool loses the comment threads outright and, on a multi-tab document,
+    every tab but one.
+    """
+    return (
+        "This read degraded to the GA documents.get. Two things in this "
+        "response are properties of that read, not of the document. (1) "
+        "`comments` is EMPTY because comment threads exist only on the "
+        "Developer Preview read -- this does not mean the document has no "
+        "comments, and suggestion authorship and thread status are missing "
+        "for the same reason. (2) The GA payload returns one unnamed body "
+        "with no tab ids, so `tabs` is empty and `body_text`, `paragraphs`, "
+        "`paragraph_count` and `suggestion_ids` describe THAT body alone; on "
+        "a multi-tab document every other tab is missing from this response "
+        "and this read cannot say how many there were. Retry for the preview "
+        "read before concluding a review is finished."
+    )
+
+
 def build_listing(
     analysis: dict[str, Any],
     *,
@@ -721,18 +754,39 @@ def build_listing(
     fields = validate_fields(fields, LIST_FIELD_MODES)
     author = normalize_filter_value(author, "author")
     status = normalize_filter_value(status, "status")
+    # Normalised BEFORE the degraded check, so a blank ``tab_id`` gets the
+    # blank-filter message rather than the degraded-read one. ``filter_records``
+    # normalises again; the function is idempotent.
+    tab_id = normalize_filter_value(tab_id, "tab_id")
     degraded = read_source == ga_source
     if degraded:
+        # ``tab_id`` belongs here for exactly the reason ``author`` and
+        # ``status`` do, and was missing. The GA payload is one UNNAMED body:
+        # every record carries ``tab_id: None``, so any named tab matches
+        # nothing and the answer comes back success-shaped -- matched_count:
+        # 0, tabs_present: [] -- asserting "no suggestions in that tab" from a
+        # read that cannot see tabs at all. The id the caller passes is
+        # typically one THIS SERVER printed on an earlier, healthy response.
         blocked = [
             name
-            for name, value in (("author", author), ("status", status))
+            for name, value in (
+                ("author", author),
+                ("status", status),
+                ("tab_id", tab_id),
+            )
             if value is not None
         ]
         if blocked:
+            names = " and ".join(blocked)
+            missing = (
+                "no tab ids -- it returns a single unnamed body"
+                if blocked == ["tab_id"]
+                else "no suggestion threads"
+            )
             raise ValueError(
-                f"{' and '.join(blocked)} cannot be filtered on this read: it "
-                "degraded to the GA documents.get, which carries no suggestion "
-                f"threads, so {' and '.join(blocked)} is null on every record "
+                f"{names} cannot be filtered on this read: it "
+                f"degraded to the GA documents.get, which carries {missing}, "
+                f"so {names} is null on every record "
                 "and the filter can only ever match nothing. An empty page "
                 "here would read as 'there are no such suggestions' when the "
                 "truth is 'this read cannot see them'. Re-run without the "

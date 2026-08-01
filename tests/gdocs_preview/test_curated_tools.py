@@ -509,6 +509,25 @@ class TestReadDocument:
         assert "single unnamed body" in message
 
     @pytest.mark.asyncio
+    async def test_a_window_in_a_named_segment_is_refused_too(self):
+        """``segment_id`` is the sibling of the same hole: the GA read carries
+        the body only, so a window in a header or footnote matches nothing
+        just as silently."""
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        with pytest.raises(UserInputError) as excinfo:
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=1,
+                end_index=5,
+                segment_id="kix.h1",
+            )
+        assert "segment_id cannot be used on this read" in str(excinfo.value)
+
+    @pytest.mark.asyncio
     async def test_a_bare_tab_id_on_a_degraded_read_is_still_only_ignored(self):
         """The control: without a window, tab_id names no coordinate space to
         resolve, so it is reported as ignored rather than refused -- the

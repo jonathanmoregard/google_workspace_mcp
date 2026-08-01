@@ -426,7 +426,10 @@ async def _update_comment_impl(
 
     modified = comment.get("modifiedTime", "")
 
-    return f"Comment updated successfully!\\nComment ID: {comment_id}\\nModified: {modified}\\nContent: {comment_content}"
+    return (
+        f"Comment updated successfully!\nComment ID: {comment_id}\n"
+        f"Modified: {modified}\nContent: {comment_content}"
+    )
 
 
 async def _delete_comment_impl(

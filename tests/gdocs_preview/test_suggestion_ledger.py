@@ -314,6 +314,30 @@ class TestHonestyLadder:
         # the diff knows the set behind it was not a whole-document read.
         assert ledger.snapshot(USER, DOC).complete is False
 
+    def test_the_echo_cache_never_widens_the_last_read_set(self):
+        """The merge keeps a card's TEXT; it must not keep the card as
+        evidence about the document.
+
+        ``records`` (what we can echo) and ``last_read_ids`` (what the last
+        read actually listed) were one dict. Once a degraded read merged into
+        it, a card another editor had already removed stayed in the set -- so
+        the next resolution's before/after diff reported it as ITS collateral
+        ("accepting A also removed it"), and a later lookup of it said it was
+        present in a read that never listed it.
+        """
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        # Another editor removes B; the next read degrades and sees only A.
+        ledger.observe(USER, DOC, [RECORD_A], complete=False)
+
+        # The echo survives -- that is the round-4 fix.
+        assert ledger.record_of(USER, DOC, "sug.b") is not None
+        # But B is NOT offered as something the last read saw, so it cannot
+        # enter a before/after diff as our collateral.
+        assert ledger.snapshot(USER, DOC).ids == {"sug.a"}
+        # And it is not claimed to have been in the last read.
+        message = ledger.explain_missing(USER, DOC, "sug.b")
+        assert "WAS present in the last read" not in message, message
+
     def test_a_complete_read_still_replaces_the_whole_set(self):
         """The control: a read that saw everything IS authoritative about
         absence, and a card gone from it is gone."""

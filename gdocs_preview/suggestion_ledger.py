@@ -157,8 +157,24 @@ class Snapshot:
 
 @dataclass
 class _Entry:
-    #: suggestion id -> compact record, as of the most recent read.
+    #: suggestion id -> compact record. An ECHO CACHE, not a picture of the
+    #: document: a degraded read merges into it rather than replacing it,
+    #: because such a read cannot attest that the ids it did not list are
+    #: gone. Answers "what did the card I am about to resolve say?"
+    #: (:func:`record_of`), which is a question about text we once saw.
     records: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The ids the MOST RECENT read actually listed -- and nothing else.
+    #:
+    #: These two were one dict, and it could not answer both questions once
+    #: the merge landed. "Which ids did the last read see?" drives every
+    #: before/after diff and the "WAS present in the last read" answer, and a
+    #: merged cache made both of them wrong in the other direction: a card
+    #: another editor had removed stayed in the set, so the next resolution
+    #: reported it as ITS collateral ("accepting A also removed it") and a
+    #: later lookup of it said it was present in a read that never listed it.
+    #: Splitting them keeps the echo (which may be older than the last read)
+    #: away from the evidence (which may not be).
+    last_read_ids: frozenset[str] = frozenset()
     #: suggestion id -> how it went away.
     resolutions: dict[str, Resolution] = field(default_factory=dict)
     #: True once any read has been observed, so "we have never looked" is
@@ -234,6 +250,10 @@ def observe(
         resolution = entry.resolutions.get(sid)
         if resolution is not None and resolution.landed is None:
             resolution.landed = False
+    # The evidence half: exactly what THIS read listed. Every before/after
+    # diff and every "was it in the last read" answer is taken from here, so
+    # neither can be widened by the echo cache below.
+    entry.last_read_ids = frozenset(records)
     if complete:
         entry.records = records
     else:
@@ -257,7 +277,11 @@ def snapshot(user_google_email: str, document_id: str) -> Optional[Snapshot]:
     entry = _entries.get(_key(user_google_email, document_id))
     if entry is None or not entry.observed:
         return None
-    return Snapshot(ids=frozenset(entry.records), complete=entry.complete)
+    # ``last_read_ids``, NOT ``records``: the caller is about to subtract this
+    # set from a post-write read, and an id the last read did not list has no
+    # business in that difference. Taking it from the (merged) echo cache made
+    # a card another editor had already removed reappear as OUR collateral.
+    return Snapshot(ids=entry.last_read_ids, complete=entry.complete)
 
 
 def record_of(
@@ -393,10 +417,17 @@ def collateral_note(resolution: Resolution) -> str:
             f"suggestion does remove any other whose last marked character "
             f"goes with it, and so does another editor."
         )
+    # Rung 2 is "observed, not proven" (see the module docstring), and this
+    # branch stated the mechanism as fact while its suggest_doc_edit twin was
+    # already worded from the evidence. The diff is the whole of what we know.
     return (
-        f"suggestion {resolution.suggestion_id!r} is gone: {resolution.action}ing "
-        f"{cause} also removed it, because that removed the last character it "
-        f"marked. Its comment thread went with it."
+        f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+        f"before this call and absent right after it. The likely cause is the "
+        f"{resolution.action} of {cause} -- resolving a suggestion also "
+        f"deletes any other whose last marked character disappears with it, "
+        f"and the comment thread goes with it -- but that was observed, not "
+        f"proven: another editor removing it in the same window looks the "
+        f"same from here."
     )
 
 
@@ -463,6 +494,18 @@ def explain_missing(
                 f"indistinguishable from here. {reread}"
             )
         cause = repr(resolution.cause) if resolution.cause else "another suggestion"
+        if resolution.landed:
+            # Observation first, mechanism second, alternative named -- the
+            # same rung-2 wording its collateral_note twin carries.
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after. The "
+                f"likely cause is that {resolution.action}: resolving a "
+                f"suggestion also deletes any other suggestion whose last "
+                f"marked character disappears with it. That was observed, not "
+                f"proven -- another editor removing it inside the same window "
+                f"is indistinguishable from here. {reread}"
+            )
         if resolution.landed is False:
             # The collateral rung is causation too, and it rests entirely on
             # the resolution having happened. It did not: the read right after
@@ -485,12 +528,8 @@ def explain_missing(
                 f"delete any other whose last marked character disappears with "
                 f"it, and so does another editor. {reread}"
             )
-        return (
-            f"It was still listed before you {resolution.action}ed {cause} at "
-            f"{resolution.at} and gone from the read right after, so that "
-            f"{resolution.action} removed it: {resolution.action}ing a "
-            f"suggestion also deletes any other suggestion whose last marked "
-            f"character disappears with it. {reread}"
+        raise AssertionError(  # pragma: no cover - the three cases are total
+            f"unhandled landed value {resolution.landed!r}"
         )
 
     if entry.resolutions:
@@ -533,7 +572,9 @@ def explain_missing(
                 f"MAY have removed it. {reread}"
             )
 
-    if suggestion_id in entry.records:
+    if suggestion_id in entry.last_read_ids:
+        # ``last_read_ids``, not ``records``: the sentence is about the LAST
+        # read, and the echo cache can hold a card several reads old.
         return (
             "It WAS present in the last read of this document, so it was "
             "removed between that read and this call -- most likely by another "

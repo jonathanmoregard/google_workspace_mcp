@@ -1549,7 +1549,11 @@ class TestManageSuggestionVerification:
         assert verification["also_removed_suggestion_ids"] == ["suggest.del1"]
         (note,) = verification["notes"]
         assert "suggest.del1" in note and "suggest.rep1" in note
-        assert "last character it marked" in note
+        assert "last marked character" in note
+        # Rung 2 is observed-not-proven: a concurrent editor removing it in
+        # the same window is indistinguishable from the GC rule firing.
+        assert "observed, not proven" in note
+        assert "another editor" in note
 
     @pytest.mark.asyncio
     async def test_resolved_suggestion_is_null_when_it_was_never_listed(self):
@@ -4024,7 +4028,8 @@ class TestCollateralIsOnlyClaimedWhereItWasObserved:
 
         assert verification["also_removed_suggestion_ids"] == ["suggest.t1"]
         assert "also_removed_suggestion_ids_unavailable" not in verification
-        assert any("last character it marked" in n for n in verification["notes"])
+        assert any("last marked character" in n for n in verification["notes"])
+        assert any("observed, not proven" in n for n in verification["notes"])
 
     @pytest.mark.asyncio
     async def test_the_suggest_path_diffs_the_same_way(self):

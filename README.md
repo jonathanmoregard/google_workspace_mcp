@@ -4,7 +4,16 @@
 
 A fork of **[taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)** adding one service: **`docs_preview`** — 7 tools that let an agent work with Google Docs **comments** and **edit suggestions** the way a human reviewer does. Built for [the client](https://example.org), who publish web pages out of Google Docs and run heavy review over them.
 
-**[HANDOVER.md](HANDOVER.md) is the documentation for everything below.** It covers setup (including the Developer Preview enrollment that gates half the surface), each tool's contract, the load-bearing Docs API facts, testing, and the known gaps. Everything after this section is upstream's README, unmodified.
+### → **[HANDOVER.md](HANDOVER.md) is the documentation for this fork. Start there.**
+
+It covers setup (including the Developer Preview enrollment that gates half the surface), every tool's contract and non-obvious parameters, the load-bearing Docs API facts the design rests on, the testing story, and an honest list of known gaps and open questions. Everything in this README after the fork sections is upstream's, unmodified.
+
+| | |
+|:---|:---|
+| **[HANDOVER.md](HANDOVER.md)** | Setup, tools, API facts, testing, known gaps — the fork's manual |
+| [`docs/preview-api-reference.md`](docs/preview-api-reference.md) | What the Developer Preview API actually does, transcribed and marked where still UNCERTAIN |
+| [`e2e/README.md`](e2e/README.md) | Running the real-API end-to-end suite |
+| [`docs/plans/`](docs/plans/) | Why the surface is shaped the way it is |
 
 ### What the fork adds
 

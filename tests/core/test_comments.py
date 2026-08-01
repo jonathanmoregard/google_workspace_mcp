@@ -67,7 +67,7 @@ async def test_read_comments_includes_quoted_text():
     assert "Quoted text: the specific text that was highlighted" in result
     assert "Needs a citation here." in result
 
-    parts = result.split("\\n")
+    parts = result.split("\n")
     bob_section_started = False
     for part in parts:
         if "Author: Bob" in part:
@@ -186,10 +186,66 @@ class TestReadCommentsImplPagination:
             mock_service, "document", "doc1", max_comments=5
         )
 
-        assert "Found 5 comments" in result
+        # It stopped at the cap with a page still waiting, so the response may
+        # not report 5 as though it were the file's comment count.
+        assert "Found 5 comments" not in result, result
+        assert "Showing the first 5 comments" in result
+        assert "There are MORE" in result
         calls = mock_service.comments.return_value.list.call_args_list
         assert calls[0].kwargs["pageSize"] == 5  # min(100, 5)
         assert calls[1].kwargs["pageSize"] == 2  # min(100, 5-3)
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_listing_says_it_is_a_page(self):
+        """ "Found N comments in <file>" reads as the FILE's comment count.
+
+        At the cap it is the cap instead, so an agent that stops because the
+        number looks small stops early, and one that diffs it against a later
+        read sees changes that never happened. The count is only ever what
+        this call returned; whether that is all of them is a separate fact and
+        has to be stated, not implied.
+        """
+        page = [_make_comment(f"c{i}") for i in range(2)]
+        mock_service = _mock_service_pages([(page, "more-remain")])
+
+        result = await _read_comments_impl(
+            mock_service, "document", "doc1", max_comments=2
+        )
+
+        assert "Showing the first 2 comments" in result
+        assert "There are MORE" in result
+        assert "not the number the file has" in result
+        # And it names the lever, so the caller can actually get the rest.
+        assert "max_comments" in result
+        assert "WORKSPACE_MCP_COMMENTS_MAX" in result
+
+    @pytest.mark.asyncio
+    async def test_an_exhausted_listing_still_reports_a_plain_count(self):
+        """The control: when Drive returns no further page, the set IS the
+        file's, and the response must not hedge a complete answer."""
+        page = [_make_comment(f"c{i}") for i in range(2)]
+        mock_service = _mock_service_pages([(page, None)])
+
+        result = await _read_comments_impl(
+            mock_service, "document", "doc1", max_comments=100
+        )
+
+        assert "Found 2 comments in document doc1" in result
+        assert "There are MORE" not in result
+
+    @pytest.mark.asyncio
+    async def test_exactly_the_cap_with_nothing_left_is_not_truncated(self):
+        """The boundary: hitting the cap is not the same as being cut off.
+        Drive said there is no next page, so this is the whole set."""
+        page = [_make_comment(f"c{i}") for i in range(3)]
+        mock_service = _mock_service_pages([(page, None)])
+
+        result = await _read_comments_impl(
+            mock_service, "document", "doc1", max_comments=3
+        )
+
+        assert "Found 3 comments" in result
+        assert "There are MORE" not in result
 
 
 class TestCommentToolsFactory:

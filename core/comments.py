@@ -105,7 +105,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             document_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Document (optional max_comments to limit results)."""
+            """List comments on a Google Document.
+
+            Returns at most ``max_comments`` (default: the
+            WORKSPACE_MCP_COMMENTS_MAX env var, else 100). When more
+            exist, the response says so in words and names the limit
+            it used -- the count is what this call returned, never a
+            count of what the file holds.
+            """
             return await _read_comments_impl(
                 service, app_name, document_id, max_comments=max_comments
             )
@@ -146,7 +153,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             spreadsheet_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Spreadsheet (optional max_comments to limit results)."""
+            """List comments on a Google Spreadsheet.
+
+            Returns at most ``max_comments`` (default: the
+            WORKSPACE_MCP_COMMENTS_MAX env var, else 100). When more
+            exist, the response says so in words and names the limit
+            it used -- the count is what this call returned, never a
+            count of what the file holds.
+            """
             return await _read_comments_impl(
                 service, app_name, spreadsheet_id, max_comments=max_comments
             )
@@ -187,7 +201,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             presentation_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Presentation (optional max_comments to limit results)."""
+            """List comments on a Google Presentation.
+
+            Returns at most ``max_comments`` (default: the
+            WORKSPACE_MCP_COMMENTS_MAX env var, else 100). When more
+            exist, the response says so in words and names the limit
+            it used -- the count is what this call returned, never a
+            count of what the file holds.
+            """
             return await _read_comments_impl(
                 service, app_name, presentation_id, max_comments=max_comments
             )
@@ -277,10 +298,31 @@ async def _read_comments_impl(
         if not page_token or len(comments) >= max_comments:
             break
 
+    # Did we stop because we ran out of comments, or because we ran out of
+    # budget? Drive still had a page to give us iff a token survived the loop.
+    truncated = bool(page_token)
+
     if not comments:
         return f"No comments found in {app_name} {file_id}"
 
-    output = [f"Found {len(comments)} comments in {app_name} {file_id}:\\n"]
+    # "Found N comments in <file>" reads as the file's comment count, and on a
+    # truncated read it is the cap instead -- so a caller that stops when the
+    # number looks small stops early, and one that diffs it against a later
+    # read sees changes that never happened. The count is only ever "what this
+    # call returned"; whether that is all of them is a separate fact, and it
+    # has to be stated rather than implied by a number.
+    plural = "" if len(comments) == 1 else "s"
+    if truncated:
+        header = (
+            f"Showing the first {len(comments)} comment{plural} in {app_name} "
+            f"{file_id}. There are MORE -- this is a page, not the whole set, "
+            f"and {len(comments)} is the limit this call used, not the number "
+            f"the file has. Raise it with max_comments, or set "
+            f"WORKSPACE_MCP_COMMENTS_MAX (currently {max_comments}):\n"
+        )
+    else:
+        header = f"Found {len(comments)} comment{plural} in {app_name} {file_id}:\n"
+    output = [header]
 
     for comment in comments:
         author = comment.get("author", {}).get("displayName", "Unknown")
@@ -314,7 +356,7 @@ async def _read_comments_impl(
 
         output.append("")  # Empty line between comments
 
-    return "\\n".join(output)
+    return "\n".join(output)
 
 
 async def _create_comment_impl(
@@ -344,7 +386,10 @@ async def _create_comment_impl(
     author = comment.get("author", {}).get("displayName", "Unknown")
     created = comment.get("createdTime", "")
 
-    return f"Comment created successfully!\\nComment ID: {comment_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {comment_content}"
+    return (
+        f"Comment created successfully!\nComment ID: {comment_id}\n"
+        f"Author: {author}\nCreated: {created}\nContent: {comment_content}"
+    )
 
 
 async def _reply_to_comment_impl(
@@ -372,7 +417,10 @@ async def _reply_to_comment_impl(
     author = reply.get("author", {}).get("displayName", "Unknown")
     created = reply.get("createdTime", "")
 
-    return f"Reply posted successfully!\\nReply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {reply_content}"
+    return (
+        f"Reply posted successfully!\nReply ID: {reply_id}\n"
+        f"Author: {author}\nCreated: {created}\nContent: {reply_content}"
+    )
 
 
 async def _resolve_comment_impl(
@@ -400,7 +448,10 @@ async def _resolve_comment_impl(
     author = reply.get("author", {}).get("displayName", "Unknown")
     created = reply.get("createdTime", "")
 
-    return f"Comment {comment_id} has been resolved successfully.\\nResolve reply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}"
+    return (
+        f"Comment {comment_id} has been resolved successfully.\n"
+        f"Resolve reply ID: {reply_id}\nAuthor: {author}\nCreated: {created}"
+    )
 
 
 async def _update_comment_impl(

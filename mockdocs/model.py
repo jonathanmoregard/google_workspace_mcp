@@ -60,6 +60,17 @@ from mockdocs.graphemes import split_graphemes
 
 #: SPEC §6 / open question §13.2. Zero means "abut or overlap only". The
 #: value is a real product decision (L8), not a rendering tweak.
+#:
+#: **MEASURED against prod 2026-08-01, not guessed** (docs/findings/merge.md,
+#: e2e/test_merge_semantics.py): a SUGGEST edit that touches an existing
+#: same-author suggestion joins it; one unchanged character between them is
+#: enough to keep two cards. Identical for all four insert/delete orderings,
+#: so §13.2's suspicion that insert-then-insert and insert-then-delete might
+#: differ does NOT hold. Not a time window either -- 130 s between the two
+#: batches still joins.
+#:
+#: What prod does with that tolerance is not §6's merge, though. See
+#: :meth:`MockDoc._merge` for the divergence this mock knowingly keeps.
 MERGE_TOLERANCE = 0
 
 #: §8: single-line label truncation width.
@@ -803,6 +814,35 @@ class MockDoc:
             sid = survivor
 
     def _merge(self, survivor: str, absorbed: str) -> None:
+        """§6's merge -- and a KNOWN, deliberate divergence from prod.
+
+        Measured 2026-08-01 (docs/findings/merge.md,
+        e2e/test_merge_semantics.py): the live API does not merge existing
+        suggestions at all. It **absorbs a new edit at creation time** into an
+        abutting/overlapping same-author suggestion -- no second id is ever
+        minted, the PRE-EXISTING id survives, and the write reports it under
+        ``updatedSummarySuggestionIds`` with no ``createdSuggestionIds``. Two
+        suggestions that already exist stay two forever, even when a later
+        edit pushes them into contact or spans both.
+
+        Three consequences of that, all of which this method gets wrong on
+        purpose:
+
+        - survivor selection here is greatest ``touched_at`` (§6), i.e. the
+          NEW id wins; prod keeps the older one;
+        - :meth:`_merge_around` runs to a fixpoint, so an edit touching two
+          cards collapses all three; prod joins exactly one and leaves the
+          other untouched (and *which* one is nondeterministic);
+        - the thread migration below (§10's *recommended* column, open
+          question §13.3) answers a question prod never asks: nothing is
+          absorbed, so no thread is ever orphaned.
+
+        Left as-is deliberately. Making the model prod-faithful failed 51
+        tests, mostly the checked-in llmux scenario ground truth, and would
+        strand the ``ix-merge-absorb`` interference case whose premise prod
+        turns out never to satisfy. docs/findings/merge.md § "What changes in
+        the repo" records the measurement and the decision.
+        """
         for _, _, c in self.iter_chars():
             if absorbed in c.ins:
                 c.ins.discard(absorbed)
@@ -813,8 +853,10 @@ class MockDoc:
         surv = self.registry[survivor]
         gone = self.registry.pop(absorbed)
         # §10: migrate the absorbed thread onto the survivor, ordered by
-        # createdAt. Docs appears to drop it; the spec argues migration is
-        # correct and it costs one array concat. Open question §13.3.
+        # createdAt -- the spec's *recommended* column. §13.3 is RESOLVED
+        # vacuously: prod never absorbs a suggestion, so it never orphans a
+        # thread (docs/findings/merge.md Q2). This line is therefore the
+        # right behaviour for a model that does absorb.
         surv.thread = sorted(surv.thread + gone.thread, key=lambda p: p.created_at)
         surv.touched_at = self._tick()
         self.merge_log.append((survivor, absorbed))

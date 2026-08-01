@@ -590,11 +590,26 @@ class BatchUpdateApplier:
         caller reads the response -- and a tool that fed it straight back to
         acceptSuggestion would get a 400.
 
-        UNCERTAIN: whether the live API renames or reports the pre-merge id
-        is unverified (it is downstream of the also-unverified question of
-        whether it merges at all -- spec §14). Reporting only live ids is the
-        defensible reading of "suggestions affected by each update", and it
-        avoids the mock manufacturing an ergonomics bug that may not exist.
+        RESOLVED 2026-08-01 (docs/findings/merge.md Q3,
+        e2e/test_merge_semantics.py): **the live API never renames anything,
+        because it never mints the second id.** An edit abutting or
+        overlapping an existing same-author suggestion is absorbed into it at
+        creation time; the response carries no ``createdSuggestionIds`` at
+        all, only ``updatedSummarySuggestionIds: [<the pre-existing id>]``.
+        Verbatim, for a SUGGEST insert touching a pending insertion::
+
+            {"replies": [{}],
+             "suggestionResponses": [
+               {"updatedSummarySuggestionIds": ["suggest.e79qrxxlopy"]}],
+             "commentUpdateState": "ALL_SAVED"}
+
+        So this rewrite compensates for a mock-only problem: §6's merge
+        destroys an id the mock has already reported. Reporting only live ids
+        stays the right call -- it is what keeps the mock from manufacturing
+        an ergonomics bug prod does not have -- but the shape still differs
+        (the mock names the survivor under ``createdSuggestionIds``, prod
+        names it under ``updatedSummarySuggestionIds``). That is downstream of
+        the merge divergence recorded on :meth:`MockDoc._merge`.
         """
         rename: dict[str, str] = {}
         for survivor, absorbed in self.doc.merge_log[self._merge_watermark :]:

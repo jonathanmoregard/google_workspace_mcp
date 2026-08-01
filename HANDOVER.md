@@ -4,8 +4,8 @@ Written for an AI agent picking this repo up cold. It assumes you can read
 code, so it points at files rather than restating them; everything below that
 is load-bearing is stated outright.
 
-Verified against the tree at commit `433218a` on branch `docs-preview`,
-2026-07-31.
+Verified against the tree at commit `eca0ded` on branch `docs-preview`,
+2026-08-01 (round 1 of the cross-vendor review loop applied).
 
 ---
 
@@ -222,7 +222,16 @@ Classification lives in `gdocs_preview/preview_status.py`:
 | any other 404, or 403 | `unknown` — proves nothing about enrollment |
 | 200 | `available` |
 
-The verdict is cached process-wide; later probe-free calls report it.
+The verdict is cached **per caller** (`user_google_email`, bounded to
+`MAX_USERS`, oldest-touched evicted), and later probe-free calls by that same
+caller report it. It was one process-global verdict, which crossed tenants in
+the server's default multi-user mode: the probe-free branch makes no API call,
+so caller B was answered entirely out of caller A's probe — including
+`evidence.message`, which is the failed call's error text, and
+`HttpError.__str__` embeds the request URI and therefore **A's document id**.
+An unrecorded caller now gets `unknown`, which costs a probe rather than a
+wrong belief (and enrollment being per-project vs per-account is still open —
+§7).
 
 ### 3.4 Why `fields="summary"` is the default
 
@@ -437,10 +446,25 @@ success (`_execute_preview_batch_update(..., enforce_comment_update=True)`).
   honesty ladder — *resolved directly* (proven) → *collateral* (observed, not
   proven; a concurrent editor could have done it) → *may have been removed* →
   *never seen*.
+  Rung 1 additionally needs the resolution to have **landed**. Calling
+  accept/reject is not evidence that it worked — an HTTP 200 that resolves
+  nothing is a shape prod returns — so every `Resolution` carries `landed`,
+  set from the same derived `still_pending` the response reports. On `False`
+  (the post-write read still listed the id) the answer says the call did not
+  remove it and points away from this session; on `None` (`verify=false`, or
+  the post-write read failed) it offers the resolution as the likely cause
+  rather than a proven one. `collateral_note` is worded off the same field.
 - Also-created-since: a card that merely **appeared between the last listing
   and this write** — which is what a second reviewer looks like — is reported
   under `appeared_since_last_read`, never under `created_suggestions`, which
   claims authorship. Check the author before resolving or replying to one.
+  "Appeared since" is a claim about the **listing**, so both halves of that
+  subtraction are gated on `before.complete`: a card of *ours* is promoted to
+  `created_suggestions` only when the prior listing could see the whole
+  document. After a degraded listing every pre-existing card of ours in the
+  tabs it could not see is "new" to the diff without anything having happened,
+  and it used to be claimed by the write. The API's own
+  `createdSuggestionIds` is proof and is unaffected either way.
 
 ### 4.6 A degraded read reports UNKNOWN, never a guess
 
@@ -474,6 +498,12 @@ Concretely, on a degraded read:
   the resolution.
 - **Counts are partial.** `suggestion_count` on a degraded read is the count
   of what that read could see, and `read_source` says which read it was.
+- `get_doc_review_view` carries its own `degraded_notice` plus
+  `comments_unavailable: "read_degraded"`. Its losses differ from the
+  listing's: comment threads exist only on the preview read, so `comments: []`
+  there is a fact about the read, and `tabs: []` plus the prose are one
+  unnamed body's. Both were unqualified absence claims on the tool an agent
+  actually reads a document with.
 
 ### 4.7 Miscellaneous, cheap to get wrong
 
@@ -510,7 +540,7 @@ Concretely, on a degraded read:
 | [`write_tools.py`](gdocs_preview/write_tools.py) | The 4 write tools + the whole post-write verification layer (`_ResolutionVerdict`, `_PostWriteRead`, the unavailable-reason vocabulary and its notes). |
 | [`curated_tools.py`](gdocs_preview/curated_tools.py) | The 2 read tools + the capabilities probe. Thin API-call wrappers over `preview_read` and `analysis`. |
 | [`suggestion_ledger.py`](gdocs_preview/suggestion_ledger.py) | Process-wide memory of what our own writes did, keyed by `(user_email, document_id)`, bounded to `MAX_DOCUMENTS` (oldest-touched evicted). Turns "does not exist" into a cause (§4.5). |
-| [`preview_status.py`](gdocs_preview/preview_status.py) | Process-wide preview-availability verdict + the error classifier (§3.3). |
+| [`preview_status.py`](gdocs_preview/preview_status.py) | Preview-availability verdict **keyed by `user_google_email`** (§3.3) + the error classifier. |
 
 Importing `gdocs_preview` registers all 7 tools via decorator side effects.
 

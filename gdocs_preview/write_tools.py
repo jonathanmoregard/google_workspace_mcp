@@ -317,7 +317,7 @@ class _PostWriteRead:
 
 
 async def _post_write_read(
-    service: Any, document_id: str
+    service: Any, document_id: str, *, user_google_email: str
 ) -> tuple[Optional[_PostWriteRead], Optional[str]]:
     """Read the document back once, in SUGGESTIONS_INLINE view.
 
@@ -328,7 +328,12 @@ async def _post_write_read(
     reason -- there is no failure mode here worth failing the tool over.
     """
     try:
-        read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+        read = await read_for_review(
+            service,
+            document_id,
+            "SUGGESTIONS_INLINE",
+            user_google_email=user_google_email,
+        )
         return _PostWriteRead(read), None
     except Exception as error:  # noqa: BLE001 - see docstring
         logger.info(
@@ -892,16 +897,33 @@ def _concurrent_note(
     collateral on the resolution path, running in the opposite direction.
     """
     names = ", ".join(repr(sid) for sid in suggestion_ids)
-    unknown = any(
-        (read.records[sid].get("author") or {}).get("me") is None
-        for sid in suggestion_ids
-    )
-    why = (
-        "this read carries no authors (read_source="
-        f"{read.source!r}), so authorship could not be established"
-        if unknown
-        else "the suggestion thread names a different author"
-    )
+    #: ``None`` is unknown authorship, not "not mine" (see :func:`_is_ours`).
+    me_flags = {
+        (read.records[sid].get("author") or {}).get("me") for sid in suggestion_ids
+    }
+    if None in me_flags:
+        why = (
+            "this read carries no authors (read_source="
+            f"{read.source!r}), so authorship could not be established"
+        )
+    elif me_flags == {True}:
+        # Ours by author, but not shown to be ours by THIS call: the only
+        # thing that put it in this set is a subtraction against a listing
+        # that could not see every tab. Saying "a different author" here --
+        # which is what this sentence used to say about everything in it --
+        # would be a second false claim replacing the first.
+        why = (
+            "the thread names you as its author, but the API did not report "
+            "this call creating it, and the listing it is 'new' against was "
+            "degraded"
+        )
+    elif me_flags == {False}:
+        why = "the suggestion thread names a different author"
+    else:
+        why = (
+            "these threads name more than one author and the API reported "
+            "this call creating none of them"
+        )
     appeared = (
         f"{names} appeared between the last listing and this write"
         if listing_was_complete
@@ -1027,6 +1049,7 @@ async def _execute_preview_batch_update(
     document_id: str,
     requests: list[dict],
     *,
+    user_google_email: str,
     write_mode: Optional[str] = None,
     enforce_comment_update: bool = False,
 ) -> dict:
@@ -1061,9 +1084,12 @@ async def _execute_preview_batch_update(
             {
                 "http_status": status,
                 "reason": reason,
+                # Carries this document's id, via HttpError's URI. Filed under
+                # the caller who produced it and read back by nobody else.
                 "message": message[:500],
             },
             source="tool_call",
+            user_google_email=user_google_email,
         )
         if (availability, reason) == ("unavailable", "not_enrolled"):
             raise UserInputError(
@@ -1077,6 +1103,7 @@ async def _execute_preview_batch_update(
         "available",
         {"http_status": 200, "reason": "preview_request_succeeded"},
         source="tool_call",
+        user_google_email=user_google_email,
     )
     response = response or {}
     if (
@@ -1323,7 +1350,12 @@ async def suggest_doc_edit(
     )
     before = suggestion_ledger.snapshot(user_google_email, document_id)
     response = await _execute_preview_batch_update(
-        service, "suggest_doc_edit", document_id, requests, write_mode="SUGGEST"
+        service,
+        "suggest_doc_edit",
+        document_id,
+        requests,
+        write_mode="SUGGEST",
+        user_google_email=user_google_email,
     )
 
     created_ids: list[str] = []
@@ -1416,7 +1448,9 @@ async def _verify_suggest(
     """
     if not verify:
         return {"source": "skipped", "reason": "verify=false"}
-    read, failure = await _post_write_read(service, document_id)
+    read, failure = await _post_write_read(
+        service, document_id, user_google_email=user_google_email
+    )
     if read is None:
         return {"source": "unavailable", "reason": failure}
 
@@ -1435,9 +1469,20 @@ async def _verify_suggest(
         for sid in read.records:
             if sid not in before.ids and sid not in echoed_ids:
                 appeared.append(sid)
+    # Promoting an appeared card to "created by this call" rests on the SAME
+    # premise as the note below: that the last listing could see where the
+    # card lives. It did not check. A degraded listing carries one unnamed
+    # body and no tab ids, so every pre-existing card of OURS in every other
+    # tab is "new" to the subtraction without anything having happened -- and
+    # being ours, it went straight into ``created_suggestions``, whose
+    # docstring says this call made it. The API's own ``createdSuggestionIds``
+    # is unaffected: that is proof, and it stays in ``echoed_ids`` either way.
+    # This is the mirror of the guard 20 lines down, which the other branch
+    # already applies.
+    listing_was_complete = bool(before and before.complete)
     others: list[str] = []
     for sid in appeared:
-        if _is_ours(read.records[sid]):
+        if _is_ours(read.records[sid]) and listing_was_complete:
             echoed_ids.append(sid)
         else:
             others.append(sid)
@@ -1462,7 +1507,7 @@ async def _verify_suggest(
                 # ``others`` came out of a subtraction against ``before``, so
                 # the sentence describing it may only claim what THAT read
                 # could see.
-                listing_was_complete=bool(before and before.complete),
+                listing_was_complete=listing_was_complete,
             )
         )
     if not echoed_ids:
@@ -1516,6 +1561,10 @@ async def _verify_suggest(
             "suggest_doc_edit",
             echoed_ids[0] if echoed_ids else "",
             vanished,
+            # The edit itself landed: the batchUpdate returned and this read
+            # is the one that saw its result. What is uncertain about a merge
+            # is which id absorbed which, and that is carried by ``cause``.
+            landed=True,
         )
         verification["also_removed_suggestion_ids"] = vanished
         verification.setdefault("notes", []).extend(
@@ -1667,7 +1716,11 @@ async def manage_document_suggestion(
     )
     try:
         response = await _execute_preview_batch_update(
-            service, "manage_document_suggestion", document_id, requests
+            service,
+            "manage_document_suggestion",
+            document_id,
+            requests,
+            user_google_email=user_google_email,
         )
     except HttpError as error:
         explained = _missing_suggestion_error(
@@ -1780,8 +1833,10 @@ async def _verify_resolution(
     if not verify:
         # Still remember the resolution: a later "does not exist" for this id
         # must be explainable even when the caller opted out of the read.
+        # ``landed=None``, because that is exactly what opting out bought --
+        # the request was accepted, nothing observed its effect.
         suggestion_ledger.record_resolution(
-            user_google_email, document_id, action, suggestion_id
+            user_google_email, document_id, action, suggestion_id, landed=None
         )
         return {
             "source": "skipped",
@@ -1791,10 +1846,13 @@ async def _verify_resolution(
             "notes": [_unverified_note(action, suggestion_id, "verify=false")],
         }
 
-    read, failure = await _post_write_read(service, document_id)
+    read, failure = await _post_write_read(
+        service, document_id, user_google_email=user_google_email
+    )
     if read is None:
+        # Same as verify=false: the write was accepted and nothing looked.
         suggestion_ledger.record_resolution(
-            user_google_email, document_id, action, suggestion_id
+            user_google_email, document_id, action, suggestion_id, landed=None
         )
         return {
             "source": "unavailable",
@@ -1954,8 +2012,21 @@ async def _verify_resolution(
         ((before.ids - read.live_ids) - {suggestion_id}) if before is not None else (),
         _ledger_records(user_google_email, document_id, before),
     )
+    # The ledger is told the SAME verdict the response carries. ``still_pending``
+    # is the derived one (:class:`_ResolutionVerdict`), so "landed" here cannot
+    # disagree with what this call reported to the agent: True only when the
+    # read confirmed the id left the pending set, False when it was still
+    # there, None when this read could not say. Filing an unlanded resolution
+    # as a proven one made every later "does not exist" for the id answer "You
+    # accepted it yourself" -- causation asserted from the one piece of
+    # evidence that contradicted it.
     resolutions = suggestion_ledger.record_resolution(
-        user_google_email, document_id, action, suggestion_id, collateral
+        user_google_email,
+        document_id,
+        action,
+        suggestion_id,
+        collateral,
+        landed=(None if verdict.still_pending is None else not verdict.still_pending),
     )
     if collateral:
         verification["also_removed_suggestion_ids"] = collateral
@@ -2065,6 +2136,7 @@ async def reply_to_doc_thread(
             document_id,
             requests,
             enforce_comment_update=True,
+            user_google_email=user_google_email,
         )
     except HttpError as error:
         explained = (
@@ -2262,6 +2334,7 @@ async def create_anchored_doc_comment(
         document_id,
         requests,
         enforce_comment_update=True,
+        user_google_email=user_google_email,
     )
 
     # Verified 2026-07-30 against the real API: the batchUpdate Response

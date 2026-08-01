@@ -75,14 +75,14 @@ class TestObservation:
 class TestHonestyLadder:
     def test_proven_when_we_resolved_that_very_id(self):
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
-        ledger.record_resolution(USER, DOC, "accept", "sug.a")
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=True)
         message = ledger.explain_missing(USER, DOC, "sug.a")
         assert "You accepted it yourself" in message
         assert "MAY" not in message
 
     def test_collateral_states_the_observation_then_the_rule(self):
         ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
-        ledger.record_resolution(USER, DOC, "accept", "sug.a", ["sug.b"])
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", ["sug.b"], landed=True)
         message = ledger.explain_missing(USER, DOC, "sug.b")
         assert "still listed before you accepted 'sug.a'" in message
         assert "gone from the read right after" in message
@@ -90,7 +90,7 @@ class TestHonestyLadder:
 
     def test_may_have_been_removed_never_asserts_a_cause(self):
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
-        ledger.record_resolution(USER, DOC, "accept", "sug.a")
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=True)
         message = ledger.explain_missing(USER, DOC, "sug.unrelated")
         assert "not proven" in message
         assert "MAY have removed it" in message
@@ -115,7 +115,9 @@ class TestHonestyLadder:
 
     def test_merge_collateral_reads_as_a_merge_not_a_gc(self):
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
-        ledger.record_resolution(USER, DOC, "suggest_doc_edit", "sug.new", ["sug.a"])
+        ledger.record_resolution(
+            USER, DOC, "suggest_doc_edit", "sug.new", ["sug.a"], landed=True
+        )
         message = ledger.explain_missing(USER, DOC, "sug.a")
         assert "merges into the new one" in message
         assert "'sug.new'" in message
@@ -145,12 +147,60 @@ class TestHonestyLadder:
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
         assert ledger.snapshot(USER, DOC).complete is True
 
+    def test_a_resolution_that_did_not_land_is_never_answered_as_proven(self):
+        """The rung-1 answer is causation, and it needs the write to have
+        worked. An HTTP 200 that resolves NOTHING is a shape prod returns:
+        ``manage_document_suggestion`` derives ``still_pending: true`` for it
+        and used to file the id as resolved anyway, so every later "does not
+        exist" was answered "You accepted it yourself" -- the one explanation
+        this module has evidence against, pointing the agent away from the
+        real cause."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=False)
+        message = ledger.explain_missing(USER, DOC, "sug.a")
+        assert "You accepted it yourself" not in message, message
+        assert "still listed it as pending" in message
+        assert "did not remove it" in message
+        assert "another editor" in message
+
+    def test_an_unverified_resolution_is_offered_as_likely_not_proven(self):
+        """``verify=false`` and a failed post-write read both buy the same
+        thing: the request was accepted and nothing observed its effect. The
+        memory is still worth keeping -- it just may not be stated as fact."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=None)
+        message = ledger.explain_missing(USER, DOC, "sug.a")
+        assert "You accepted it yourself" not in message, message
+        assert "nothing here verified" in message
+        assert "rather than a proven one" in message
+
+    def test_collateral_of_a_write_that_did_not_land_is_not_blamed_on_it(self):
+        """The GC rule explains a removal caused by OUR resolution. If that
+        resolution did not take effect, it cannot be what removed the
+        neighbour, and the note may not say it was."""
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        resolutions = ledger.record_resolution(
+            USER, DOC, "accept", "sug.a", ["sug.b"], landed=False
+        )
+        (collateral,) = [r for r in resolutions if not r.direct]
+        note = ledger.collateral_note(collateral)
+        assert "also removed it" not in note, note
+        assert "did NOT take effect" in note
+        assert "another editor" in note
+
+    def test_landed_is_carried_on_the_record(self):
+        (resolution,) = ledger.record_resolution(
+            USER, DOC, "reject", "sug.a", landed=False
+        )
+        assert resolution.landed is False
+        assert resolution.as_dict()["landed"] is False
+
     def test_collateral_without_a_known_cause_names_none(self):
         """The API can omit createdSuggestionIds; the note must not invent
         an id to blame."""
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
         (resolution,) = ledger.record_resolution(
-            USER, DOC, "suggest_doc_edit", "", ["sug.a"]
+            USER, DOC, "suggest_doc_edit", "", ["sug.a"], landed=True
         )
         assert resolution.cause is None
         assert resolution.direct is False
@@ -161,7 +211,7 @@ class TestHonestyLadder:
 class TestIsolationAndBounds:
     def test_users_do_not_see_each_others_resolutions(self):
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
-        ledger.record_resolution(USER, DOC, "accept", "sug.a")
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=True)
         assert "has not read this document" in ledger.explain_missing(
             OTHER, DOC, "sug.a"
         )
@@ -188,7 +238,7 @@ class TestIsolationAndBounds:
 
     def test_resolution_count_is_bounded(self):
         for n in range(ledger.MAX_RESOLUTIONS + 5):
-            ledger.record_resolution(USER, DOC, "accept", f"sug.{n}")
+            ledger.record_resolution(USER, DOC, "accept", f"sug.{n}", landed=True)
         entry = ledger._entries[(USER, DOC)]
         assert len(entry.resolutions) == ledger.MAX_RESOLUTIONS
         assert "sug.0" not in entry.resolutions

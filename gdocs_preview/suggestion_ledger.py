@@ -23,7 +23,14 @@ in the accept/reject response so the error never has to happen at all.
 **Honesty ladder.** :func:`explain_missing` answers with the strongest
 evidence it actually has, and never more:
 
-1. *resolved directly* -- we called accept/reject on that very id. Proven.
+1. *resolved directly* -- we called accept/reject on that very id, **and the
+   read right after confirmed it left the pending set**. Proven. Calling it is
+   not the same evidence as its having worked: an HTTP 200 that resolves
+   nothing is a shape prod returns, so :attr:`Resolution.landed` carries the
+   post-write verdict and this rung is only reached on ``True``. On ``None``
+   (nothing verified it) the answer offers the resolution as the likely cause;
+   on ``False`` (the read still listed the id) it says the call did not remove
+   it and points away from this session.
 2. *collateral* -- the id was in the read taken before our resolution and
    absent from the read taken immediately after it. **Observed, not proven**:
    a concurrent editor could have removed it inside that window, so the
@@ -99,6 +106,20 @@ class Resolution:
     #: alongside our write (observed) -- ``cause`` names that write's id when
     #: the API reported one.
     direct: bool = True
+    #: Did the write this record came from actually take effect? ``True``: the
+    #: post-write read confirmed the id had left the pending set. ``False``:
+    #: that read still listed it, so the call did NOT remove it. ``None``:
+    #: nothing checked it (``verify=false``, or the post-write read failed).
+    #:
+    #: Recording a resolution is not the same claim as its having landed, and
+    #: the two were one field. An HTTP 200 that resolves NOTHING is a shape
+    #: prod really returns, so ``manage_document_suggestion`` derives
+    #: ``still_pending: true`` / ``matches_expectation: false`` and then filed
+    #: the id as resolved anyway; every later "does not exist" for it was
+    #: answered "You accepted it yourself" -- proven causation, from the one
+    #: write this module had evidence did not happen. :func:`explain_missing`
+    #: and :func:`collateral_note` now word every branch from this field.
+    landed: Optional[bool] = True
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +128,7 @@ class Resolution:
             "at": self.at,
             "cause": self.cause,
             "direct": self.direct,
+            "landed": self.landed,
         }
 
 
@@ -226,6 +248,8 @@ def record_resolution(
     action: str,
     suggestion_id: str,
     collateral: Iterable[str] = (),
+    *,
+    landed: Optional[bool],
 ) -> list[Resolution]:
     """Remember that ``action`` on ``suggestion_id`` removed those ids.
 
@@ -235,17 +259,32 @@ def record_resolution(
     a cause -- an edit whose own id the API never reported still removed
     something, and inventing an id for it would be a lie.
 
+    ``landed`` is :attr:`Resolution.landed` and has **no default**: a call
+    site that does not say whether its write took effect cannot record a
+    causal claim other code will repeat back to an agent for the rest of the
+    session. It is the caller's own post-write verdict -- ``True`` only when
+    a read confirmed the id left the pending set.
+
     Returns every :class:`Resolution` recorded by this call, the directly
     resolved one first, so the caller can render the same facts into its
     response.
     """
     entry = _entry(user_google_email, document_id)
     at = _now()
-    recorded = [Resolution(suggestion_id, action, at)] if suggestion_id else []
+    recorded = (
+        [Resolution(suggestion_id, action, at, landed=landed)] if suggestion_id else []
+    )
     for sid in collateral:
         if sid and sid != suggestion_id:
             recorded.append(
-                Resolution(sid, action, at, cause=suggestion_id or None, direct=False)
+                Resolution(
+                    sid,
+                    action,
+                    at,
+                    cause=suggestion_id or None,
+                    direct=False,
+                    landed=landed,
+                )
             )
     for resolution in recorded:
         entry.resolutions[resolution.suggestion_id] = resolution
@@ -267,6 +306,27 @@ def collateral_note(resolution: Resolution) -> str:
     cause = (
         repr(resolution.cause) if resolution.cause else "the suggestion you resolved"
     )
+    if resolution.landed is False:
+        # The garbage-collection rule explains a removal caused by OUR
+        # resolution. This one did not happen: the read taken right after it
+        # still listed the id we acted on. Whatever removed this card, it was
+        # not the write we are reporting on.
+        return (
+            f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+            f"before this call and absent right after it. Your "
+            f"{resolution.action} of {cause} did NOT take effect (that id is "
+            f"still pending), so it did not remove this one -- most likely "
+            f"another editor did, in the same window."
+        )
+    if resolution.landed is None:
+        return (
+            f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+            f"before this call and absent right after it. This session did "
+            f"not verify whether your {resolution.action} of {cause} landed, "
+            f"so the cause is unconfirmed -- {resolution.action}ing a "
+            f"suggestion does remove any other whose last marked character "
+            f"goes with it, and so does another editor."
+        )
     return (
         f"suggestion {resolution.suggestion_id!r} is gone: {resolution.action}ing "
         f"{cause} also removed it, because that removed the last character it "
@@ -295,6 +355,26 @@ def explain_missing(
 
     resolution = entry.resolutions.get(suggestion_id)
     if resolution is not None and resolution.direct:
+        if resolution.landed is False:
+            # We called it, and the read right after proved it did nothing.
+            # Answering "you resolved it yourself" here hands the agent the
+            # one explanation this module has evidence AGAINST, and sends it
+            # away from the real cause.
+            return (
+                f"You called {resolution.action} on it at {resolution.at}, but "
+                f"the read taken right after still listed it as pending, so "
+                f"that call did not remove it. Whatever removed it since is "
+                f"not something this session did -- most likely another "
+                f"editor. {reread}"
+            )
+        if resolution.landed is None:
+            return (
+                f"You called {resolution.action} on it at {resolution.at} and "
+                f"the API accepted the request, but nothing here verified the "
+                f"resolution landed, so this is the likely cause rather than a "
+                f"proven one: {resolution.action}ing a suggestion removes it. "
+                f"{reread}"
+            )
         return (
             f"You {resolution.action}ed it yourself at {resolution.at}; "
             f"resolving a suggestion removes it. {reread}"

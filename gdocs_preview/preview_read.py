@@ -394,7 +394,9 @@ async def fetch_ga_document(
     return await asyncio.to_thread(api_call.execute)
 
 
-async def read_for_review(service: Any, document_id: str, view_mode: str) -> ReviewRead:
+async def read_for_review(
+    service: Any, document_id: str, view_mode: str, *, user_google_email: str
+) -> ReviewRead:
     """Read a document with its comment/suggestion threads, degrading to the
     GA read when the Developer Preview surface is unavailable.
 
@@ -458,6 +460,7 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
         "available",
         {"http_status": 200, "reason": "preview_read_succeeded"},
         source="tool_call",
+        user_google_email=user_google_email,
     )
     return ReviewRead(
         tabs=[(tab.tab_id, tab.document) for tab in tabs],

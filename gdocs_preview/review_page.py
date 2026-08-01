@@ -684,6 +684,39 @@ def _degraded_notice() -> str:
     )
 
 
+def degraded_review_notice() -> str:
+    """The review view's own version of :func:`_degraded_notice`.
+
+    ``list_document_suggestions`` has said this in words since the degraded
+    read existed; ``get_doc_review_view`` -- the tool an agent actually reads a
+    document with -- said nothing at all. It returned ``comments: []``,
+    ``tabs: []`` and one unnamed body's prose, qualified only by
+    ``read_source`` and a raw exception string in ``degraded_reason``. An
+    empty ``comments`` array is an ABSENCE CLAIM about a customer's document,
+    and on this read it is a property of the read: comment threads exist only
+    on the preview payload. A reviewer who reads it as "no one has commented"
+    stops reviewing.
+
+    The losses differ from the listing's, so the sentence does too: the
+    listing loses the thread-derived FIELDS of records it can still see, while
+    this tool loses the comment threads outright and, on a multi-tab document,
+    every tab but one.
+    """
+    return (
+        "This read degraded to the GA documents.get. Two things in this "
+        "response are properties of that read, not of the document. (1) "
+        "`comments` is EMPTY because comment threads exist only on the "
+        "Developer Preview read -- this does not mean the document has no "
+        "comments, and suggestion authorship and thread status are missing "
+        "for the same reason. (2) The GA payload returns one unnamed body "
+        "with no tab ids, so `tabs` is empty and `body_text`, `paragraphs`, "
+        "`paragraph_count` and `suggestion_ids` describe THAT body alone; on "
+        "a multi-tab document every other tab is missing from this response "
+        "and this read cannot say how many there were. Retry for the preview "
+        "read before concluding a review is finished."
+    )
+
+
 def build_listing(
     analysis: dict[str, Any],
     *,

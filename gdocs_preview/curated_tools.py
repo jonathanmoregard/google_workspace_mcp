@@ -216,7 +216,9 @@ async def list_document_suggestions(
             has_more, next_page_token), read_source, tabs and the
             per-suggestion records described above.
     """
-    read = await read_for_review(service, document_id, "SUGGESTIONS_INLINE")
+    read = await read_for_review(
+        service, document_id, "SUGGESTIONS_INLINE", user_google_email=user_google_email
+    )
     analysis = extract_suggestions_from_tabs(read.tabs, read.threads)
     # Feed the ledger the WHOLE set, never the page: it is the "before"
     # picture that lets a later accept/reject name the suggestions its own
@@ -337,6 +339,7 @@ async def check_docs_review_capabilities(
                     "comment_update_state": (response or {}).get("commentUpdateState"),
                 },
                 source="probe",
+                user_google_email=user_google_email,
             )
         except HttpError as error:
             status = getattr(getattr(error, "resp", None), "status", None)
@@ -352,16 +355,24 @@ async def check_docs_review_capabilities(
                 {
                     "http_status": status,
                     "reason": reason,
+                    # ``HttpError.__str__`` embeds the request URI, so this
+                    # carries the probed DOCUMENT ID. Filed under the caller
+                    # who probed; no other caller can read it back.
                     "message": message[:500],
                 },
                 source="probe",
+                user_google_email=user_google_email,
             )
 
     report = {
         "service": "docs_preview",
         "scopes": list(DOCS_PREVIEW_SCOPES),
         "tools": _tool_inventory(),
-        "preview": preview_status.get_status(),
+        # This caller's own evidence, or ``unknown``. It used to be whatever
+        # verdict any caller in the process last produced, evidence string
+        # included -- and this branch makes no API call, so a multi-user
+        # deployment answered B entirely out of A's probe.
+        "preview": preview_status.get_status(user_google_email),
         "probe_performed": bool(probe),
     }
     return json.dumps(report, indent=2, ensure_ascii=False)
@@ -487,7 +498,9 @@ async def get_doc_review_view(
         raise UserInputError(
             f"Invalid view_mode '{view_mode}'. Must be one of: {', '.join(VIEW_MODES)}."
         )
-    read = await read_for_review(service, document_id, view_mode)
+    read = await read_for_review(
+        service, document_id, view_mode, user_google_email=user_google_email
+    )
     rendered = render_tabs(read.tabs)
     if view_mode == "SUGGESTIONS_INLINE":
         # Same "before" picture as list_document_suggestions; only the inline
@@ -522,4 +535,13 @@ async def get_doc_review_view(
         result["comments_omitted"] = len(read.comments)
     if read.degraded_reason:
         result["degraded_reason"] = read.degraded_reason
+    if read.source == READ_SOURCE_GA:
+        # The listing has said this since the fallback existed; the tool an
+        # agent actually reads the document with said nothing. ``comments:
+        # []`` and ``tabs: []`` are absence claims, and on this read they are
+        # facts about the read. Keyed as well as narrated, because the machine
+        # flag is what a client can branch on and the prose is what the model
+        # reads -- the listing pairs them the same way.
+        result["degraded_notice"] = review_page.degraded_review_notice()
+        result["comments_unavailable"] = "read_degraded"
     return json.dumps(result, indent=2, ensure_ascii=False)

@@ -932,7 +932,7 @@ class TestPreviewGating:
         assert "check_docs_review_capabilities" in message
         assert "suggest_doc_edit" in message
 
-        status = preview_status.get_status()
+        status = preview_status.get_status(EMAIL)
         assert status["availability"] == "unavailable"
         assert status["evidence"]["reason"] == "not_enrolled"
         assert status["source"] == "tool_call"
@@ -953,7 +953,7 @@ class TestPreviewGating:
                 suggestion_id="nope",
             )
 
-        status = preview_status.get_status()
+        status = preview_status.get_status(EMAIL)
         assert status["availability"] == "available"
         assert status["evidence"]["reason"] == "preview_request_type_recognized"
         assert status["source"] == "tool_call"
@@ -974,7 +974,7 @@ class TestPreviewGating:
                 text="hello",
             )
 
-        status = preview_status.get_status()
+        status = preview_status.get_status(EMAIL)
         assert status["availability"] == "unknown"
         assert status["evidence"]["reason"] == "permission_or_scope"
 
@@ -995,7 +995,7 @@ class TestPreviewGating:
             verify=False,
         )
 
-        status = preview_status.get_status()
+        status = preview_status.get_status(EMAIL)
         assert status["availability"] == "available"
         assert status["evidence"]["reason"] == "preview_request_succeeded"
         assert status["source"] == "tool_call"
@@ -1292,6 +1292,56 @@ class TestAConcurrentReviewersCardIsNotClaimedAsOurs:
         assert "appeared_since_last_read" not in verification
 
     @pytest.mark.asyncio
+    async def test_a_degraded_listing_cannot_license_an_authorship_claim(self):
+        """Source (2) is a subtraction, and both directions of it are bounded
+        by what the read on that side could see.
+
+        The "somebody else's card" branch already refused to describe itself
+        against a degraded listing. The OURS branch did not check at all: a
+        card of ours in any tab the degraded listing could not see is absent
+        from ``before.ids``, ``me: true``, and went straight into
+        ``created_suggestions`` -- the field whose docstring says this call
+        made it. Nothing about that write created it; the previous read was
+        simply blind. The API's own ``createdSuggestionIds`` is proof and is
+        unaffected.
+        """
+        backend = FakeBackend(me="mockuser")
+        backend.seed(CONC_SEED)
+        # Ours, and already in the document before this call runs.
+        preexisting = _other_editor_suggests(
+            backend, editor="mockuser", text="OLD ", at=0
+        )
+        # The last listing degraded: one unnamed body, no tab ids, complete=False.
+        suggestion_ledger.observe(EMAIL, CONC_DOC, [], complete=False)
+
+        fn = _unwrap(write_tools.suggest_doc_edit)
+        result = json.loads(
+            await fn(
+                backend.docs_service(),
+                user_google_email=EMAIL,
+                document_id=CONC_DOC,
+                start_index=11,
+                text="bold ",
+            )
+        )
+
+        verification = result["verification"]
+        created = {s["suggestion_id"] for s in verification["created_suggestions"]}
+        assert preexisting not in created, "pre-existing card claimed by this write"
+        # What the API actually reported is still echoed, unchanged.
+        assert created == set(result["created_suggestion_ids"])
+        assert created, "the write's own suggestion must still be echoed"
+        # And it is still reported -- just not as ours-by-this-call.
+        appeared = {
+            s["suggestion_id"] for s in verification["appeared_since_last_read"]
+        }
+        assert preexisting in appeared
+        note = " ".join(verification["notes"])
+        assert "may have been there all along" in note
+        assert "names you as its author" in note
+        assert "different author" not in note, note
+
+    @pytest.mark.asyncio
     async def test_the_merge_note_does_not_delete_the_authorship_note(self):
         """Both are true of one write, so both have to survive it.
 
@@ -1530,9 +1580,14 @@ class TestManageSuggestionVerification:
 
         assert result["verification"]["source"] == "skipped"
         assert _get_calls(service) == []
-        assert "You accepted it yourself" in suggestion_ledger.explain_missing(
-            EMAIL, DOC, "suggest.rep1"
-        )
+        # Remembered -- but offered as the likely cause, not a proven one.
+        # ``verify=false`` bought exactly one thing: nothing looked at the
+        # document, so nothing here saw the resolution take effect.
+        explanation = suggestion_ledger.explain_missing(EMAIL, DOC, "suggest.rep1")
+        assert "accept" in explanation
+        assert "nothing here verified" in explanation
+        assert "rather than a proven one" in explanation
+        assert "You accepted it yourself" not in explanation, explanation
 
     @pytest.mark.asyncio
     async def test_accepting_a_deletion_verifies_the_text_is_gone(self):
@@ -3548,6 +3603,28 @@ class TestAStillPendingSuggestionIsNeverAMatch:
         )
         assert verification["still_pending"] is True, verification
         assert verification["matches_expectation"] is False, verification
+
+    @pytest.mark.asyncio
+    async def test_a_resolution_that_did_not_land_is_not_filed_as_one(self):
+        """The verdict this call reported and the memory it left behind have
+        to be the same claim.
+
+        ``still_pending: true`` says the write did not take effect. The ledger
+        was told "resolved" regardless, so a later "does not exist" for that
+        id came back "You accepted it yourself at <t>; resolving a suggestion
+        removes it" -- causation asserted from the single piece of evidence
+        that contradicts it, sending the agent away from the real cause.
+        """
+        verification = await self._resolve(
+            "accept", self.INSERTION_RECORD, self.INSERTION_UNCHANGED
+        )
+        assert verification["still_pending"] is True
+
+        explanation = suggestion_ledger.explain_missing(
+            EMAIL, DOC, self.INSERTION_RECORD["suggestion_id"]
+        )
+        assert "You accepted it yourself" not in explanation, explanation
+        assert "still listed it as pending" in explanation
 
     @pytest.mark.asyncio
     async def test_the_note_says_the_pending_set_is_what_decided_it(self):

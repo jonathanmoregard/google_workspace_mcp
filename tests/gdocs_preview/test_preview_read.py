@@ -184,7 +184,10 @@ class TestFetch:
         ):
             with patch.object(preview_read, "fetch_ga_document", _ga):
                 read = await preview_read.read_for_review(
-                    service, "doc-1", "SUGGESTIONS_INLINE"
+                    service,
+                    "doc-1",
+                    "SUGGESTIONS_INLINE",
+                    user_google_email="reviewer@example.com",
                 )
 
         assert read.source == preview_read.READ_SOURCE_GA
@@ -214,7 +217,10 @@ class TestAnEmptyTabsArrayIsNotAnEmptyDocument:
         with patch.object(preview_read, "fetch_document_with_threads", _fetch):
             with patch.object(preview_read, "fetch_ga_document", _ga):
                 read = await preview_read.read_for_review(
-                    service, "doc-1", "SUGGESTIONS_INLINE"
+                    service,
+                    "doc-1",
+                    "SUGGESTIONS_INLINE",
+                    user_google_email="reviewer@example.com",
                 )
 
         assert read.source == preview_read.READ_SOURCE_GA

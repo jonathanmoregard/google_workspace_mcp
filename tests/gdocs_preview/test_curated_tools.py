@@ -428,6 +428,48 @@ class TestListSuggestions:
 
 class TestReadDocument:
     @pytest.mark.asyncio
+    async def test_a_degraded_read_qualifies_its_empty_comments(self):
+        """``comments: []`` is an absence claim about a customer's document.
+
+        On the GA fallback it is a fact about the READ -- comment threads
+        exist only on the preview payload -- and this tool said nothing:
+        ``read_source`` plus a raw exception string in ``degraded_reason``,
+        while ``list_document_suggestions`` has built a whole notice for the
+        same read since the fallback existed. A reviewer who reads an empty
+        ``comments`` as "nobody has commented" stops reviewing.
+        """
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert result["comments"] == []
+        assert result["comments_unavailable"] == "read_degraded"
+        notice = result["degraded_notice"]
+        # The empty comments, and the one-tab prose, both named.
+        assert "`comments` is EMPTY because" in notice
+        assert "does not mean the document has no" in notice
+        assert "every other tab is missing" in notice
+
+    @pytest.mark.asyncio
+    async def test_a_preview_read_carries_no_degraded_notice(self):
+        """The control: the notice is about the read, so a good read must not
+        carry it -- an unconditional warning is one an agent learns to skip."""
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_PREVIEW
+        assert "degraded_notice" not in result
+        assert "comments_unavailable" not in result
+
+    @pytest.mark.asyncio
     async def test_default_view_mode_and_rendering(self):
         service = _docs_get_service(fx.TABS_PAYLOAD)
         fn = _unwrap(curated_tools.get_doc_review_view)
@@ -798,6 +840,83 @@ class TestCapabilities:
         quiet_service.documents.assert_not_called()
         assert cached["preview"]["availability"] == "unavailable"
         assert cached["preview"]["evidence"]["reason"] == "not_enrolled"
+
+    @pytest.mark.asyncio
+    async def test_one_callers_probe_is_not_another_callers_verdict(self):
+        """The cache was one process-global dict, and multi-user is the
+        server's DEFAULT transport mode (``main.py``: anything without
+        ``--single-user``).
+
+        Two things crossed between tenants on the probe-free branch, which
+        makes no API call and answers purely from the cache: the VERDICT, and
+        the EVIDENCE STRING -- and ``HttpError.__str__`` embeds the request
+        URI, so that string carries the other tenant's document id.
+        """
+        doc_a = "1AaBbCc-TENANT-A-PRIVATE-DOC"
+        resp = MagicMock()
+        resp.status = 400
+        resp.reason = "Bad Request"
+        service_a = Mock()
+        service_a.documents.return_value.batchUpdate.return_value.execute = Mock(
+            # Shaped as googleapiclient raises it: `HttpError(resp, content,
+            # uri=self.uri)`, so str() carries the document id.
+            side_effect=HttpError(
+                resp=resp,
+                content=b'{"error": {"message": "Invalid value at requests[0]"}}',
+                uri=f"https://docs.googleapis.com/v1/documents/{doc_a}:batchUpdate",
+            )
+        )
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
+
+        a = json.loads(
+            await fn(
+                service_a,
+                user_google_email="tenant-a@example.com",
+                document_id=doc_a,
+                probe=True,
+            )
+        )
+        # A's own report is unchanged: their evidence, their document.
+        assert a["preview"]["availability"] == "available"
+        assert doc_a in a["preview"]["evidence"]["message"]
+
+        service_b = Mock()
+        b = json.loads(await fn(service_b, user_google_email="tenant-b@example.com"))
+
+        service_b.documents.assert_not_called()
+        assert doc_a not in json.dumps(b), "another tenant's document id leaked"
+        assert b["preview"]["availability"] == "unknown"
+        assert b["preview"]["evidence"] is None
+        assert b["preview"]["source"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_callers_own_verdict_survives_another_callers_probe(self):
+        """The control: keying must not cost a caller their own cache."""
+        service = Mock()
+        service.documents.return_value.batchUpdate.return_value.execute = Mock(
+            side_effect=_http_error(
+                400,
+                b'{"error": {"message": "Invalid JSON payload received. '
+                b'Unknown name \\"acceptSuggestion\\" at \'requests[0]\'"}}',
+            )
+        )
+        fn = _unwrap(curated_tools.check_docs_review_capabilities)
+        await fn(service, user_google_email=EMAIL, document_id="d1", probe=True)
+
+        # Somebody else probes in between, with a different outcome.
+        other = Mock()
+        other.documents.return_value.batchUpdate.return_value.execute = Mock(
+            return_value={"documentId": "d2"}
+        )
+        await fn(
+            other, user_google_email="other@example.com", document_id="d2", probe=True
+        )
+
+        quiet = Mock()
+        mine = json.loads(await fn(quiet, user_google_email=EMAIL))
+        quiet.documents.assert_not_called()
+        assert mine["preview"]["availability"] == "unavailable"
+        assert mine["preview"]["evidence"]["reason"] == "not_enrolled"
 
     @pytest.mark.asyncio
     async def test_probe_403_is_permission_not_verdict(self):

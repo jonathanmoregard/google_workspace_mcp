@@ -1,6 +1,42 @@
 <!-- mcp-name: io.github.taylorwilsdon/workspace-mcp -->
 
-> **Fork note.** This fork adds a `docs_preview` service — 7 tools for reviewing Google Docs comments and edit suggestions (built for the client). Setup, the tool surface, the load-bearing Docs API constraints, testing and known gaps are all in **[HANDOVER.md](HANDOVER.md)**. Read that first; the rest of this README is upstream's.
+# This is a fork
+
+A fork of **[taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)** adding one service: **`docs_preview`** — 7 tools that let an agent work with Google Docs **comments** and **edit suggestions** the way a human reviewer does. Built for [the client](https://example.org), who publish web pages out of Google Docs and run heavy review over them.
+
+**[HANDOVER.md](HANDOVER.md) is the documentation for everything below.** It covers setup (including the Developer Preview enrollment that gates half the surface), each tool's contract, the load-bearing Docs API facts, testing, and the known gaps. Everything after this section is upstream's README, unmodified.
+
+### What the fork adds
+
+| | |
+|:---|:---|
+| **`gdocs_preview/`** | The `docs_preview` service. `list_document_suggestions`, `get_doc_review_view`, `check_docs_review_capabilities`, `suggest_doc_edit`, `manage_document_suggestion`, `reply_to_doc_thread`, `create_anchored_doc_comment`. Opt in with `--tools docs_preview`; it registers nothing unless asked for. |
+| **`mockdocs/`** | An in-memory reimplementation of Docs suggesting mode — per-character insert/delete mark sets, same-author merge, accept/reject, the three projections — plus a mock-backed MCP server. Lets the whole surface be tested with no token and no network. |
+| **`llmux/`** | A benchmark measuring **tool-surface ergonomics, not model IQ**: a headless agent drives the mock server against seeded scenarios, and reports lead with a mistake taxonomy rather than a pass rate. Ground truth is computed, never authored. |
+| **`e2e/`** | Black-box tests against the **real** Google APIs, speaking MCP to the server as a subprocess. Skip cleanly without credentials. |
+
+### What the fork changes in upstream files
+
+Deliberately small — the design target is a self-contained package plus a handful of registration lines, so the fork stays merge-friendly. **112 commits, 293 files, ~57,000 insertions against 25 deletions**; only these upstream modules are touched at all:
+
+- **`core/comments.py`** — adds `update` and `delete` actions to the shared comment factory, and corrects `destructiveHint` to `True`. Because the factory is instantiated three times this lands on Docs, Sheets **and** Slides at once. This is the piece that is obviously upstreamable: it has no dependency on `docs_preview` or on preview enrollment.
+- **`gdocs/docs_tools.py`** — one correctness fix: the index-0 remap must not fire when `segment_id`/`tab_id` is set, because a header/footer/footnote is numbered from its own start, so 0 is a real position there.
+- **`main.py`, `auth/scopes.py`, `auth/permissions.py`, `core/tool_tiers.yaml`** — four registration entries for the new service.
+- **`pyproject.toml`, `.gitignore`** — the `hypothesis` test dependency, three pytest markers, and ignores for credentials and test artifacts.
+- **`skills/managing-google-workspace/references/docs.md`** — documents `tab_id`/`segment_id` on the existing Docs tools, matching the fix above.
+- **`gsheets/sheets_helpers.py`, `gsheets/sheets_tools.py`** — formatting only (`ruff format`), no behaviour change.
+
+That is the complete list. Two of those entries do change behaviour an existing upstream user would see — the comment tools gain two actions and a corrected `destructiveHint`, and `modify_doc_text` stops remapping index 0 in a named segment — and both are bug fixes to shared code rather than hooks for this fork. Nothing else upstream is altered, and `docs_preview` itself registers only when `--tools docs_preview` asks for it, so an upstream user who does not opt in sees no new tools and no new scopes.
+
+### Running it
+
+```bash
+uv run python main.py --transport stdio --single-user --tools docs docs_preview
+```
+
+Then call `check_docs_review_capabilities(probe=true, document_id=<a doc you can edit>)` — that is the only way to confirm preview enrollment, and it cannot mutate the document. Without enrollment the server still starts and every read still answers, in a **clearly-flagged degraded mode** rather than a silent one.
+
+---
 
 <div align="center">
 

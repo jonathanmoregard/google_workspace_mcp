@@ -234,7 +234,20 @@ def observe(
         resolution = entry.resolutions.get(sid)
         if resolution is not None and resolution.landed is None:
             resolution.landed = False
-    entry.records = records
+    if complete:
+        entry.records = records
+    else:
+        # A degraded read cannot attest an ABSENCE, and replacing the cache
+        # with it turns "this read did not look there" into "we never saw
+        # this". Concretely: a complete listing caches X (body) and Y (tab B);
+        # a resolution of X whose post-write read degrades to the GA one then
+        # wiped Y, and the next verification of Y answered "this session never
+        # listed suggestion Y" -- false -- and lost its text comparison. Merge
+        # instead: what this read saw is fresher, what it could not see is
+        # kept. The ``complete`` flag below still tells every consumer that
+        # the set behind these ids was not a whole-document read, and
+        # ``_PostWriteRead.absences`` still refuses to call any of them gone.
+        entry.records = {**entry.records, **records}
     entry.observed = True
     entry.complete = complete
 
@@ -315,6 +328,12 @@ def record_resolution(
                 )
             )
     for resolution in recorded:
+        # pop-then-insert: assigning to an existing key keeps its ORIGINAL
+        # position, so a freshly recorded (and possibly now-proven) resolution
+        # inherited the age of the one it replaced and the trim below could
+        # evict it immediately -- discarding the newest evidence first, which
+        # is the opposite of what "oldest entries are dropped" promises.
+        entry.resolutions.pop(resolution.suggestion_id, None)
         entry.resolutions[resolution.suggestion_id] = resolution
         if resolution.landed:
             # Only drop the cached record when the id really did leave. The
@@ -428,12 +447,20 @@ def explain_missing(
         )
     if resolution is not None:
         if resolution.action == "suggest_doc_edit":
-            merged = f", which created {resolution.cause!r}" if resolution.cause else ""
+            # The twin of the same sentence in :func:`collateral_note`, which
+            # was reworded a round earlier while this one went on asserting the
+            # mechanism. The evidence is a before/after diff and nothing else;
+            # a second reviewer resolving their own card inside that window
+            # produces exactly it.
+            merged = f" into {resolution.cause!r}" if resolution.cause else ""
             return (
                 f"It was still listed before your suggest_doc_edit at "
-                f"{resolution.at}{merged} and gone from the read right after -- "
-                f"an adjacent same-author suggestion merges into the new one. "
-                f"{reread}"
+                f"{resolution.at} and gone from the read right after. The "
+                f"likely cause is a merge{merged} -- editing inside or beside "
+                f"an existing same-author suggestion absorbs it rather than "
+                f"creating a new card -- but that was observed, not proven: "
+                f"another editor resolving it in the same window is "
+                f"indistinguishable from here. {reread}"
             )
         cause = repr(resolution.cause) if resolution.cause else "another suggestion"
         if resolution.landed is False:
@@ -473,14 +500,14 @@ def explain_missing(
         # saying "you resolved it" -- is the same over-claim the rungs above
         # were fixed for, one rung down. Unverified ones (``None``) may have
         # removed something, and are offered with that said out loud.
-        landed = [
-            r for r in list(entry.resolutions.values())[-3:] if r.direct and r.landed
-        ]
-        unverified = [
-            r
-            for r in list(entry.resolutions.values())[-3:]
-            if r.direct and r.landed is None
-        ]
+        # Filter FIRST, then take the last three. Slicing first meant one
+        # suggest_doc_edit filing three collateral (``direct=False``) records
+        # pushed a landed accept out of the window, and the answer fell
+        # through to "most likely the id is wrong" with a resolution that may
+        # well have removed it sitting in the ledger.
+        candidates = list(entry.resolutions.values())
+        landed = [r for r in candidates if r.direct and r.landed][-3:]
+        unverified = [r for r in candidates if r.direct and r.landed is None][-3:]
 
         def _names(resolutions: list[Resolution]) -> str:
             return ", ".join(

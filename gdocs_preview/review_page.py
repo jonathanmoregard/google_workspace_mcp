@@ -754,6 +754,10 @@ def build_listing(
     fields = validate_fields(fields, LIST_FIELD_MODES)
     author = normalize_filter_value(author, "author")
     status = normalize_filter_value(status, "status")
+    # Normalised BEFORE the degraded check, so a blank ``tab_id`` gets the
+    # blank-filter message rather than the degraded-read one. ``filter_records``
+    # normalises again; the function is idempotent.
+    tab_id = normalize_filter_value(tab_id, "tab_id")
     degraded = read_source == ga_source
     if degraded:
         # ``tab_id`` belongs here for exactly the reason ``author`` and

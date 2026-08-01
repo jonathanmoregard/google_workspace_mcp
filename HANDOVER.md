@@ -4,8 +4,8 @@ Written for an AI agent picking this repo up cold. It assumes you can read
 code, so it points at files rather than restating them; everything below that
 is load-bearing is stated outright.
 
-Verified against the tree at commit `062ad9b` on branch `docs-preview`,
-2026-08-01 (rounds 1-3 of the cross-vendor review loop applied).
+Verified against the tree at commit `df64924` on branch `docs-preview`,
+2026-08-01 (rounds 1-4 of the cross-vendor review loop applied).
 
 ---
 
@@ -479,9 +479,16 @@ success (`_execute_preview_batch_update(..., enforce_comment_update=True)`).
   was confirmed — the verify-less paths never call `observe()` afterwards, so
   dropping there erased the only copy of a still-pending card and the next
   attempt was told "this session never listed" it.
-  The merge note states the **observation** before the mechanism: all a write
-  sees is "listed before, absent after", and a second reviewer resolving their
-  own card in that window is indistinguishable from here.
+  The merge sentence states the **observation** before the mechanism, in both
+  places it is written: all a write sees is "listed before, absent after", and
+  a second reviewer resolving their own card in that window is
+  indistinguishable from here.
+  `observe()` **merges rather than replaces on a degraded read**. A degraded
+  read cannot attest an absence, so replacing turned "this read did not look
+  there" into "we never saw this": a complete listing caching A and B,
+  followed by a resolution whose post-write read degraded, dropped B — and the
+  next verification of B said "this session never listed" it. A complete read
+  still replaces, because it *is* authoritative about absence.
 - Also-created-since: a card that merely **appeared between the last listing
   and this write** — which is what a second reviewer looks like — is reported
   under `appeared_since_last_read`, never under `created_suggestions`, which

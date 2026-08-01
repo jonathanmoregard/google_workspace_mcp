@@ -343,6 +343,9 @@ async def check_docs_review_capabilities(
                     "http_status": 200,
                     "reason": "probe_request_accepted",
                     "comment_update_state": (response or {}).get("commentUpdateState"),
+                    # The probe IS a batchUpdate: the strongest evidence about
+                    # the write surface there is.
+                    "surface": "write",
                 },
                 source="probe",
                 user_google_email=user_google_email,
@@ -365,6 +368,7 @@ async def check_docs_review_capabilities(
                     # carries the probed DOCUMENT ID. Filed under the caller
                     # who probed; no other caller can read it back.
                     "message": message[:500],
+                    "surface": "write",
                 },
                 source="probe",
                 user_google_email=user_google_email,

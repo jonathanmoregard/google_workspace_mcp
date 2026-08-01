@@ -1208,6 +1208,7 @@ async def _execute_preview_batch_update(
                 # Carries this document's id, via HttpError's URI. Filed under
                 # the caller who produced it and read back by nobody else.
                 "message": message[:500],
+                "surface": "write",
             },
             source="tool_call",
             user_google_email=user_google_email,
@@ -1386,7 +1387,19 @@ async def suggest_doc_edit(
             API reported no new id, which happens when the edit merged into
             an existing same-author suggestion) with the range_scope it was
             read in, appeared_since_last_read, also_removed_suggestion_ids,
-            and notes}.
+            also_removed_suggestion_ids_unavailable,
+            suggestions_at_edit_range_unavailable (a multi-tab document and no
+            tab_id: the range cannot be resolved to one coordinate space),
+            pending_suggestions_are_partial (the post-write read degraded, so
+            pending_suggestion_count is what it SAW), reason (on the two
+            unverified sources, naming what stopped the check), and notes}.
+
+            On verify=false, and when the post-write read fails, every key
+            above is present and NULL rather than absent, so an unknown answer
+            and a missing field never look alike. created_suggestions is null
+            rather than [] there: created_suggestion_ids sits beside this
+            block, and an empty echo would read as "the write created
+            nothing".
 
             created_suggestions claims AUTHORSHIP, so it holds only what the
             API reported as created plus what the suggestion thread
@@ -1784,7 +1797,11 @@ async def manage_document_suggestion(
             pending_suggestion_ids, and -- only when they apply --
             still_pending_unavailable, resulting_text_unavailable,
             also_removed_suggestion_ids,
-            also_removed_suggestion_ids_unavailable and notes}.
+            also_removed_suggestion_ids_unavailable,
+            pending_suggestions_are_partial (the post-write read degraded, so
+            the two pending_* fields are what it SAW, not what the document
+            holds), reason (on the two unverified sources, naming what
+            stopped the check) and notes}.
 
             resulting_text is read in the resolved suggestion's OWN (tab,
             segment), never the document body, so matches_expectation is a

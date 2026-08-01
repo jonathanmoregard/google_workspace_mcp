@@ -122,8 +122,13 @@ class TestHonestyLadder:
             USER, DOC, "suggest_doc_edit", "", ["sug.a"], landed=True, cause="sug.new"
         )
         message = ledger.explain_missing(USER, DOC, "sug.a")
-        assert "merges into the new one" in message
-        assert "'sug.new'" in message
+        # A merge, not a garbage collection -- and offered as the likely cause
+        # rather than asserted: all this write saw is "listed before, absent
+        # after", which a second reviewer resolving their own card produces
+        # identically.
+        assert "likely cause is a merge into 'sug.new'" in message
+        assert "observed, not proven" in message
+        assert "another editor" in message
 
     def test_the_id_a_merge_created_is_not_filed_as_one_that_went_away(self):
         """``suggestion_id`` is the id an action was aimed at; ``cause`` is the
@@ -288,6 +293,70 @@ class TestHonestyLadder:
         message = ledger.explain_missing(USER, DOC, "sug.a")
         assert "likely cause" not in message, message
         assert "still listed it as pending" in message
+
+    def test_a_degraded_read_does_not_erase_what_it_could_not_see(self):
+        """``observe`` used to REPLACE the cache with whatever the read saw.
+
+        A degraded read cannot attest an absence, so replacing turned "this
+        read did not look there" into "we never saw this". Sequence: a
+        complete listing caches A and B; a resolution whose post-write read
+        degrades observes only A; the next verification of B then found no
+        record and told the agent "this session never listed suggestion B" --
+        false -- and lost the text comparison for a card the session had.
+        """
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        # A degraded read: it can only see A.
+        ledger.observe(USER, DOC, [RECORD_A], complete=False)
+
+        assert ledger.record_of(USER, DOC, "sug.b") is not None
+        assert ledger.record_of(USER, DOC, "sug.b")["pre_text"] == " cruel"
+        # And the snapshot still reports the coverage, so every consumer of
+        # the diff knows the set behind it was not a whole-document read.
+        assert ledger.snapshot(USER, DOC).complete is False
+
+    def test_a_complete_read_still_replaces_the_whole_set(self):
+        """The control: a read that saw everything IS authoritative about
+        absence, and a card gone from it is gone."""
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        assert ledger.record_of(USER, DOC, "sug.b") is None
+
+    def test_re_recording_a_resolution_makes_it_the_newest(self):
+        """Assigning to an existing dict key keeps its ORIGINAL position, so a
+        freshly recorded resolution inherited the age of the one it replaced
+        and the trim could evict it immediately -- discarding the newest
+        evidence first."""
+        ledger.record_resolution(USER, DOC, "accept", "sug.old", landed=None)
+        for n in range(ledger.MAX_RESOLUTIONS - 1):
+            ledger.record_resolution(USER, DOC, "accept", f"sug.{n}", landed=True)
+        # Re-record the oldest id, now with proof. It must survive the trim.
+        ledger.record_resolution(USER, DOC, "accept", "sug.old", landed=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.overflow", landed=True)
+
+        entry = ledger._entries[(USER, DOC)]
+        assert "sug.old" in entry.resolutions
+        assert entry.resolutions["sug.old"].landed is True
+
+    def test_the_may_have_rung_filters_before_it_slices(self):
+        """Slicing the last three FIRST meant one suggest_doc_edit filing
+        three collateral records pushed a landed accept out of the window, and
+        the answer fell through to "most likely the id is wrong" with a
+        resolution that may well have removed it sitting in the ledger."""
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", landed=True)
+        # Three collateral records (direct=False) recorded after it.
+        ledger.record_resolution(
+            USER,
+            DOC,
+            "suggest_doc_edit",
+            "",
+            ["sug.c1", "sug.c2", "sug.c3"],
+            landed=True,
+            cause="sug.new",
+        )
+        message = ledger.explain_missing(USER, DOC, "sug.unknown")
+        assert "MAY have removed it" in message, message
+        assert "'sug.a'" in message
 
     def test_landed_defaults_to_unknown_not_proven(self):
         assert ledger.Resolution("sug.a", "accept", "t").landed is None

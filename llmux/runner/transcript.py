@@ -183,7 +183,9 @@ class Transcript:
 
     @property
     def final_text(self) -> str:
-        return self.result_text or (self.assistant_texts[-1] if self.assistant_texts else "")
+        return self.result_text or (
+            self.assistant_texts[-1] if self.assistant_texts else ""
+        )
 
     @property
     def throttling_events(self) -> list[dict[str, Any]]:

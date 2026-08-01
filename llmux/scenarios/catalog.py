@@ -1216,9 +1216,7 @@ def adversarial_header_segment() -> Scenario:
     """
     doc_id = "mockdoc-a4-header-segment"
     b = SeedBuilder(
-        base_text=(
-            "The quarterly plan ships in March.\nRisks are unchanged.\n"
-        ),
+        base_text=("The quarterly plan ships in March.\nRisks are unchanged.\n"),
         document_id=doc_id,
         title="Quarterly plan",
     )

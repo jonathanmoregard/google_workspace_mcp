@@ -394,7 +394,9 @@ async def fetch_ga_document(
     return await asyncio.to_thread(api_call.execute)
 
 
-async def read_for_review(service: Any, document_id: str, view_mode: str) -> ReviewRead:
+async def read_for_review(
+    service: Any, document_id: str, view_mode: str, *, user_google_email: str
+) -> ReviewRead:
     """Read a document with its comment/suggestion threads, degrading to the
     GA read when the Developer Preview surface is unavailable.
 
@@ -456,8 +458,20 @@ async def read_for_review(service: Any, document_id: str, view_mode: str) -> Rev
         )
     preview_status.record(
         "available",
-        {"http_status": 200, "reason": "preview_read_succeeded"},
+        {
+            "http_status": 200,
+            "reason": "preview_read_succeeded",
+            # Which preview surface this evidence is actually about. A
+            # thread-bearing read IS preview-gated, so its success is real
+            # evidence -- but the batchUpdate request types are a separate
+            # surface, and whether enrollment covers both is an open
+            # UNCERTAIN item (docs/preview-api-reference.md). A caller
+            # deciding whether a WRITE will work should read this field
+            # rather than the bare verdict.
+            "surface": "read",
+        },
         source="tool_call",
+        user_google_email=user_google_email,
     )
     return ReviewRead(
         tabs=[(tab.tab_id, tab.document) for tab in tabs],

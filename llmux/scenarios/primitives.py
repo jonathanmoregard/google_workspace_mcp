@@ -398,9 +398,7 @@ def spans_paragraph_break() -> Predicate:
     """Marks a ``'\\n'``: the suggestion crosses a block boundary."""
 
     def pred(doc: MockDoc, sid: str) -> bool:
-        return any(
-            c.cp == "\n" for _, _, c in doc.iter_chars() if sid in c.marks
-        )
+        return any(c.cp == "\n" for _, _, c in doc.iter_chars() if sid in c.marks)
 
     return pred
 

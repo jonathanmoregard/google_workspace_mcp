@@ -183,7 +183,10 @@ decides it, and later rules do not apply to it:
                 'Reject every suggestion that touches the section headed "How '
                 'confident are you in any of this?". That section is being '
                 "rewritten separately and must not change.",
-                Rule(in_section(document, "How confident are you in any of this?"), "reject"),
+                Rule(
+                    in_section(document, "How confident are you in any of this?"),
+                    "reject",
+                ),
             ),
             (
                 "Accept every remaining suggestion by **priya**.",
@@ -252,7 +255,7 @@ decides it, and later rules do not apply to it:
                 Rule(overlaps_other_author(), "reject"),
             ),
             (
-                'Reject every remaining suggestion that touches the section '
+                "Reject every remaining suggestion that touches the section "
                 'headed "Recommendations". Those are numbered and cited '
                 "elsewhere, so they are frozen.",
                 Rule(in_section(document, "Recommendations"), "reject"),
@@ -288,7 +291,7 @@ decides it, and later rules do not apply to it:
 """,
         clauses=[
             (
-                'Reject every suggestion that touches the section headed '
+                "Reject every suggestion that touches the section headed "
                 '"Limitations of this evidence". That section was agreed with '
                 "the authors and is frozen.",
                 Rule(in_section(document, "Limitations of this evidence"), "reject"),
@@ -463,12 +466,8 @@ def build_stress_scenario(
 
     extra_checks: list[dict[str, Any]] = []
     extra_checks.extend(pending_checks(left_pending))
-    extra_checks.extend(
-        witness_checks(doc, decisions, sorted(doc.registry))
-    )
-    extra_checks.append(
-        {"check": "suggestion_count", "equals": len(left_pending)}
-    )
+    extra_checks.extend(witness_checks(doc, decisions, sorted(doc.registry)))
+    extra_checks.append({"check": "suggestion_count", "equals": len(left_pending)})
 
     brief = BRIEF_TEMPLATE.format(
         title=task.title,

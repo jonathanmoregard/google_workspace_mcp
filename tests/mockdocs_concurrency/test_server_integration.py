@@ -103,7 +103,7 @@ def test_the_error_the_agent_gets_back_blames_the_other_editor(live):
     )
     assert result.is_error
     text = "\n".join(b.text for b in result.content if getattr(b, "text", None))
-    assert "no longer exists" in text
+    assert "does not exist" in text
     assert "another editor" in text, (
         "the suggestion ledger no longer distinguishes a concurrent removal "
         "from the agent's own; that distinction is the only in-band signal an "

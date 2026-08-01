@@ -23,7 +23,14 @@ in the accept/reject response so the error never has to happen at all.
 **Honesty ladder.** :func:`explain_missing` answers with the strongest
 evidence it actually has, and never more:
 
-1. *resolved directly* -- we called accept/reject on that very id. Proven.
+1. *resolved directly* -- we called accept/reject on that very id, **and the
+   read right after confirmed it left the pending set**. Proven. Calling it is
+   not the same evidence as its having worked: an HTTP 200 that resolves
+   nothing is a shape prod returns, so :attr:`Resolution.landed` carries the
+   post-write verdict and this rung is only reached on ``True``. On ``None``
+   (nothing verified it) the answer offers the resolution as the likely cause;
+   on ``False`` (the read still listed the id) it says the call did not remove
+   it and points away from this session.
 2. *collateral* -- the id was in the read taken before our resolution and
    absent from the read taken immediately after it. **Observed, not proven**:
    a concurrent editor could have removed it inside that window, so the
@@ -99,6 +106,25 @@ class Resolution:
     #: alongside our write (observed) -- ``cause`` names that write's id when
     #: the API reported one.
     direct: bool = True
+    #: Did the write this record came from actually take effect? ``True``: the
+    #: post-write read confirmed the id had left the pending set. ``False``:
+    #: that read still listed it, so the call did NOT remove it. ``None``:
+    #: nothing checked it (``verify=false``, or the post-write read failed).
+    #:
+    #: Recording a resolution is not the same claim as its having landed, and
+    #: the two were one field. An HTTP 200 that resolves NOTHING is a shape
+    #: prod really returns, so ``manage_document_suggestion`` derives
+    #: ``still_pending: true`` / ``matches_expectation: false`` and then filed
+    #: the id as resolved anyway; every later "does not exist" for it was
+    #: answered "You accepted it yourself" -- proven causation, from the one
+    #: write this module had evidence did not happen. :func:`explain_missing`
+    #: and :func:`collateral_note` now word every branch from this field.
+    #:
+    #: Defaults to ``None`` -- unknown -- so a future direct construction that
+    #: forgets it inherits "nothing checked" rather than "proven". The same
+    #: reason ``still_pending`` is ``Optional[bool]``: on this module's ladder
+    #: the safe default is the claim that asserts least.
+    landed: Optional[bool] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +133,7 @@ class Resolution:
             "at": self.at,
             "cause": self.cause,
             "direct": self.direct,
+            "landed": self.landed,
         }
 
 
@@ -130,8 +157,24 @@ class Snapshot:
 
 @dataclass
 class _Entry:
-    #: suggestion id -> compact record, as of the most recent read.
+    #: suggestion id -> compact record. An ECHO CACHE, not a picture of the
+    #: document: a degraded read merges into it rather than replacing it,
+    #: because such a read cannot attest that the ids it did not list are
+    #: gone. Answers "what did the card I am about to resolve say?"
+    #: (:func:`record_of`), which is a question about text we once saw.
     records: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The ids the MOST RECENT read actually listed -- and nothing else.
+    #:
+    #: These two were one dict, and it could not answer both questions once
+    #: the merge landed. "Which ids did the last read see?" drives every
+    #: before/after diff and the "WAS present in the last read" answer, and a
+    #: merged cache made both of them wrong in the other direction: a card
+    #: another editor had removed stayed in the set, so the next resolution
+    #: reported it as ITS collateral ("accepting A also removed it") and a
+    #: later lookup of it said it was present in a read that never listed it.
+    #: Splitting them keeps the echo (which may be older than the last read)
+    #: away from the evidence (which may not be).
+    last_read_ids: frozenset[str] = frozenset()
     #: suggestion id -> how it went away.
     resolutions: dict[str, Resolution] = field(default_factory=dict)
     #: True once any read has been observed, so "we have never looked" is
@@ -196,7 +239,35 @@ def observe(
         sid = (record or {}).get("suggestion_id")
         if sid:
             records[str(sid)] = _compact(record)
-    entry.records = records
+    # A read is also evidence ABOUT the resolutions already on file. An id
+    # this read still lists as pending was not removed by whatever we recorded
+    # against it, so an unverified resolution (``landed=None``) is refuted
+    # here rather than left to be offered as a cause forever. Only ``None`` is
+    # refutable: a ``True`` record was confirmed by its own post-write read,
+    # and a card back under the same id after that is new information the
+    # ledger has no way to attribute.
+    for sid in records:
+        resolution = entry.resolutions.get(sid)
+        if resolution is not None and resolution.landed is None:
+            resolution.landed = False
+    # The evidence half: exactly what THIS read listed. Every before/after
+    # diff and every "was it in the last read" answer is taken from here, so
+    # neither can be widened by the echo cache below.
+    entry.last_read_ids = frozenset(records)
+    if complete:
+        entry.records = records
+    else:
+        # A degraded read cannot attest an ABSENCE, and replacing the cache
+        # with it turns "this read did not look there" into "we never saw
+        # this". Concretely: a complete listing caches X (body) and Y (tab B);
+        # a resolution of X whose post-write read degrades to the GA one then
+        # wiped Y, and the next verification of Y answered "this session never
+        # listed suggestion Y" -- false -- and lost its text comparison. Merge
+        # instead: what this read saw is fresher, what it could not see is
+        # kept. The ``complete`` flag below still tells every consumer that
+        # the set behind these ids was not a whole-document read, and
+        # ``_PostWriteRead.absences`` still refuses to call any of them gone.
+        entry.records = {**entry.records, **records}
     entry.observed = True
     entry.complete = complete
 
@@ -206,7 +277,11 @@ def snapshot(user_google_email: str, document_id: str) -> Optional[Snapshot]:
     entry = _entries.get(_key(user_google_email, document_id))
     if entry is None or not entry.observed:
         return None
-    return Snapshot(ids=frozenset(entry.records), complete=entry.complete)
+    # ``last_read_ids``, NOT ``records``: the caller is about to subtract this
+    # set from a post-write read, and an id the last read did not list has no
+    # business in that difference. Taking it from the (merged) echo cache made
+    # a card another editor had already removed reappear as OUR collateral.
+    return Snapshot(ids=entry.last_read_ids, complete=entry.complete)
 
 
 def record_of(
@@ -226,6 +301,9 @@ def record_resolution(
     action: str,
     suggestion_id: str,
     collateral: Iterable[str] = (),
+    *,
+    landed: Optional[bool],
+    cause: Optional[str] = None,
 ) -> list[Resolution]:
     """Remember that ``action`` on ``suggestion_id`` removed those ids.
 
@@ -235,21 +313,62 @@ def record_resolution(
     a cause -- an edit whose own id the API never reported still removed
     something, and inventing an id for it would be a lie.
 
+    ``cause`` names the id the collateral is attributed to WITHOUT filing a
+    resolution for it. ``suggest_doc_edit`` needs exactly that: the id it has
+    to name is the one the API just CREATED, and passing it as
+    ``suggestion_id`` filed a "how it went away" record for an id that had
+    just arrived -- so a later lookup of that id answered "You
+    suggest_doc_edited it yourself; resolving a suggestion removes it", a
+    removal this session never performed. ``suggestion_id`` is for the id an
+    action was aimed at; ``cause`` is for the id the collateral is explained
+    by. They coincide for accept/reject and must not for a merge.
+
+    ``landed`` is :attr:`Resolution.landed` and has **no default**: a call
+    site that does not say whether its write took effect cannot record a
+    causal claim other code will repeat back to an agent for the rest of the
+    session. It is the caller's own post-write verdict -- ``True`` only when
+    a read confirmed the id left the pending set.
+
     Returns every :class:`Resolution` recorded by this call, the directly
     resolved one first, so the caller can render the same facts into its
     response.
     """
     entry = _entry(user_google_email, document_id)
     at = _now()
-    recorded = [Resolution(suggestion_id, action, at)] if suggestion_id else []
+    attributed_to = suggestion_id or cause or None
+    recorded = (
+        [Resolution(suggestion_id, action, at, landed=landed)] if suggestion_id else []
+    )
     for sid in collateral:
-        if sid and sid != suggestion_id:
+        if sid and sid != suggestion_id and sid != attributed_to:
             recorded.append(
-                Resolution(sid, action, at, cause=suggestion_id or None, direct=False)
+                Resolution(
+                    sid,
+                    action,
+                    at,
+                    cause=attributed_to,
+                    direct=False,
+                    landed=landed,
+                )
             )
     for resolution in recorded:
+        # pop-then-insert: assigning to an existing key keeps its ORIGINAL
+        # position, so a freshly recorded (and possibly now-proven) resolution
+        # inherited the age of the one it replaced and the trim below could
+        # evict it immediately -- discarding the newest evidence first, which
+        # is the opposite of what "oldest entries are dropped" promises.
+        entry.resolutions.pop(resolution.suggestion_id, None)
         entry.resolutions[resolution.suggestion_id] = resolution
-        entry.records.pop(resolution.suggestion_id, None)
+        if resolution.landed:
+            # Only drop the cached record when the id really did leave. The
+            # verified paths call :func:`observe` immediately after, which
+            # replaces the set anyway; the verify-less ones do NOT, so popping
+            # there erased the only copy of a card that may well still be
+            # pending. A retry with verify=true then found no record, and
+            # ``_note_suggestion_not_listed`` told the agent "this session
+            # never listed suggestion X" -- false, and it cost the text
+            # comparison (``expected_text: null``) for a card the session had.
+            entry.records.pop(resolution.suggestion_id, None)
     while len(entry.resolutions) > MAX_RESOLUTIONS:
         entry.resolutions.pop(next(iter(entry.resolutions)))
     return recorded
@@ -258,19 +377,57 @@ def record_resolution(
 def collateral_note(resolution: Resolution) -> str:
     """One sentence naming a collaterally removed suggestion, for a response."""
     if resolution.action == "suggest_doc_edit":
+        # The merge is the LIKELY explanation, not the observation. All this
+        # write saw is "listed before, absent after", and a second reviewer
+        # resolving their own card in that window produces exactly the same
+        # diff -- so stating the merge as the fact asserted an adjacency and
+        # an authorship nothing here checked. Observation first, mechanism
+        # second, alternative named: the ladder this module documents.
         merged = f" into {resolution.cause!r}" if resolution.cause else ""
         return (
             f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
-            f"before this edit and absent right after it -- an adjacent "
-            f"same-author suggestion merges{merged}."
+            f"before this edit and absent right after it. The likely cause is "
+            f"a merge -- editing inside or beside an existing same-author "
+            f"suggestion absorbs it{merged} rather than creating a new card -- "
+            f"but this was observed, not proven: another editor resolving it "
+            f"in the same window looks identical from here. Check the author "
+            f"before treating it as your own."
         )
     cause = (
         repr(resolution.cause) if resolution.cause else "the suggestion you resolved"
     )
+    if resolution.landed is False:
+        # The garbage-collection rule explains a removal caused by OUR
+        # resolution. This one did not happen: the read taken right after it
+        # still listed the id we acted on. Whatever removed this card, it was
+        # not the write we are reporting on.
+        return (
+            f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+            f"before this call and absent right after it. Your "
+            f"{resolution.action} of {cause} did NOT take effect (that id is "
+            f"still pending), so it did not remove this one -- most likely "
+            f"another editor did, in the same window."
+        )
+    if resolution.landed is None:
+        return (
+            f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+            f"before this call and absent right after it. This session did "
+            f"not verify whether your {resolution.action} of {cause} landed, "
+            f"so the cause is unconfirmed -- {resolution.action}ing a "
+            f"suggestion does remove any other whose last marked character "
+            f"goes with it, and so does another editor."
+        )
+    # Rung 2 is "observed, not proven" (see the module docstring), and this
+    # branch stated the mechanism as fact while its suggest_doc_edit twin was
+    # already worded from the evidence. The diff is the whole of what we know.
     return (
-        f"suggestion {resolution.suggestion_id!r} is gone: {resolution.action}ing "
-        f"{cause} also removed it, because that removed the last character it "
-        f"marked. Its comment thread went with it."
+        f"suggestion {resolution.suggestion_id!r} is gone: it was listed "
+        f"before this call and absent right after it. The likely cause is the "
+        f"{resolution.action} of {cause} -- resolving a suggestion also "
+        f"deletes any other whose last marked character disappears with it, "
+        f"and the comment thread goes with it -- but that was observed, not "
+        f"proven: another editor removing it in the same window looks the "
+        f"same from here."
     )
 
 
@@ -295,44 +452,129 @@ def explain_missing(
 
     resolution = entry.resolutions.get(suggestion_id)
     if resolution is not None and resolution.direct:
+        if resolution.landed is False:
+            # We called it, and the read right after proved it did nothing.
+            # Answering "you resolved it yourself" here hands the agent the
+            # one explanation this module has evidence AGAINST, and sends it
+            # away from the real cause.
+            return (
+                f"You called {resolution.action} on it at {resolution.at}, but "
+                f"the read taken right after still listed it as pending, so "
+                f"that call did not remove it. Whatever removed it since is "
+                f"not something this session did -- most likely another "
+                f"editor. {reread}"
+            )
+        if resolution.landed is None:
+            return (
+                f"You called {resolution.action} on it at {resolution.at} and "
+                f"the API accepted the request, but nothing here verified the "
+                f"resolution landed, so this is the likely cause rather than a "
+                f"proven one: {resolution.action}ing a suggestion removes it. "
+                f"{reread}"
+            )
         return (
             f"You {resolution.action}ed it yourself at {resolution.at}; "
             f"resolving a suggestion removes it. {reread}"
         )
     if resolution is not None:
         if resolution.action == "suggest_doc_edit":
-            merged = f", which created {resolution.cause!r}" if resolution.cause else ""
+            # The twin of the same sentence in :func:`collateral_note`, which
+            # was reworded a round earlier while this one went on asserting the
+            # mechanism. The evidence is a before/after diff and nothing else;
+            # a second reviewer resolving their own card inside that window
+            # produces exactly it.
+            merged = f" into {resolution.cause!r}" if resolution.cause else ""
             return (
                 f"It was still listed before your suggest_doc_edit at "
-                f"{resolution.at}{merged} and gone from the read right after -- "
-                f"an adjacent same-author suggestion merges into the new one. "
-                f"{reread}"
+                f"{resolution.at} and gone from the read right after. The "
+                f"likely cause is a merge{merged} -- editing inside or beside "
+                f"an existing same-author suggestion absorbs it rather than "
+                f"creating a new card -- but that was observed, not proven: "
+                f"another editor resolving it in the same window is "
+                f"indistinguishable from here. {reread}"
             )
         cause = repr(resolution.cause) if resolution.cause else "another suggestion"
-        return (
-            f"It was still listed before you {resolution.action}ed {cause} at "
-            f"{resolution.at} and gone from the read right after, so that "
-            f"{resolution.action} removed it: {resolution.action}ing a "
-            f"suggestion also deletes any other suggestion whose last marked "
-            f"character disappears with it. {reread}"
+        if resolution.landed:
+            # Observation first, mechanism second, alternative named -- the
+            # same rung-2 wording its collateral_note twin carries.
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after. The "
+                f"likely cause is that {resolution.action}: resolving a "
+                f"suggestion also deletes any other suggestion whose last "
+                f"marked character disappears with it. That was observed, not "
+                f"proven -- another editor removing it inside the same window "
+                f"is indistinguishable from here. {reread}"
+            )
+        if resolution.landed is False:
+            # The collateral rung is causation too, and it rests entirely on
+            # the resolution having happened. It did not: the read right after
+            # still listed the id we acted on. Two lanes found this branch
+            # still asserting the rule after the direct branch had been fixed.
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after -- but "
+                f"that {resolution.action} did NOT take effect ({cause} was "
+                f"still pending afterwards), so it cannot be what removed this "
+                f"one. Most likely another editor did, in the same window. "
+                f"{reread}"
+            )
+        if resolution.landed is None:
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after. "
+                f"Nothing here verified that {resolution.action} landed, so "
+                f"this is unconfirmed: {resolution.action}ing a suggestion does "
+                f"delete any other whose last marked character disappears with "
+                f"it, and so does another editor. {reread}"
+            )
+        raise AssertionError(  # pragma: no cover - the three cases are total
+            f"unhandled landed value {resolution.landed!r}"
         )
 
     if entry.resolutions:
-        others = ", ".join(
-            f"{r.suggestion_id!r} ({r.action}, {r.at})"
-            for r in list(entry.resolutions.values())[-3:]
-            if r.direct
-        )
-        if others:
+        # Only resolutions that LANDED can have removed anything. One that the
+        # post-write read contradicted (``landed is False``) is proof of the
+        # opposite, and offering it here as a possible remover -- while also
+        # saying "you resolved it" -- is the same over-claim the rungs above
+        # were fixed for, one rung down. Unverified ones (``None``) may have
+        # removed something, and are offered with that said out loud.
+        # Filter FIRST, then take the last three. Slicing first meant one
+        # suggest_doc_edit filing three collateral (``direct=False``) records
+        # pushed a landed accept out of the window, and the answer fell
+        # through to "most likely the id is wrong" with a resolution that may
+        # well have removed it sitting in the ledger.
+        candidates = list(entry.resolutions.values())
+        landed = [r for r in candidates if r.direct and r.landed][-3:]
+        unverified = [r for r in candidates if r.direct and r.landed is None][-3:]
+
+        def _names(resolutions: list[Resolution]) -> str:
+            return ", ".join(
+                f"{r.suggestion_id!r} ({r.action}, {r.at})" for r in resolutions
+            )
+
+        if landed:
             return (
                 "No record of it being removed, so this is not proven -- but "
-                f"you resolved {others} on this document in this session, and "
+                f"you resolved {_names(landed)} on this document in this "
+                "session, and resolving a suggestion also deletes any other "
+                "suggestion whose last marked character disappears with it. "
+                f"One of those MAY have removed it. {reread}"
+            )
+        if unverified:
+            return (
+                "No record of it being removed, so this is not proven -- but "
+                f"you issued {_names(unverified)} on this document in this "
+                "session. Nothing verified those took effect, so it is not "
+                "even certain they removed anything; if they did land, "
                 "resolving a suggestion also deletes any other suggestion "
-                "whose last marked character disappears with it. One of those "
+                "whose last marked character disappears with it. One of them "
                 f"MAY have removed it. {reread}"
             )
 
-    if suggestion_id in entry.records:
+    if suggestion_id in entry.last_read_ids:
+        # ``last_read_ids``, not ``records``: the sentence is about the LAST
+        # read, and the echo cache can hold a card several reads old.
         return (
             "It WAS present in the last read of this document, so it was "
             "removed between that read and this call -- most likely by another "

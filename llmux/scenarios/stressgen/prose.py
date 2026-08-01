@@ -94,9 +94,7 @@ class Document:
                 f"regex offsets are model offsets (no emoji/combining marks)"
             )
         if not 1500 <= self.word_count <= 4000:
-            raise ValueError(
-                f"{self.key}: {self.word_count} words, want 1500-4000"
-            )
+            raise ValueError(f"{self.key}: {self.word_count} words, want 1500-4000")
         self.section_ranges()
         for original, _rewrite in self.rewrites:
             if self.text.count(original) != 1:

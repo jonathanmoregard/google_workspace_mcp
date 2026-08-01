@@ -1578,8 +1578,36 @@ class TestManageSuggestionVerification:
             )
         )
 
-        assert result["verification"]["source"] == "skipped"
+        verification = result["verification"]
+        assert verification["source"] == "skipped"
         assert _get_calls(service) == []
+        # The block keeps its documented shape. It returned five keys, while
+        # the Returns block documents matches_expectation and friends
+        # unconditionally -- so a client reading verification["matches_
+        # expectation"] raised KeyError on exactly the path where nothing
+        # checked the write, and one using .get could not tell "unknown" from
+        # "this build does not report it".
+        for key in (
+            "read_source",
+            "resolved_suggestion",
+            "expected_text",
+            "resulting_text",
+            "matches_expectation",
+            "pending_suggestion_count",
+            "pending_suggestion_ids",
+        ):
+            assert key in verification, key
+        assert verification["matches_expectation"] is None
+        # Null, never 0: a count is a claim about the document, and no read
+        # here supports one.
+        assert verification["pending_suggestion_count"] is None
+        # The one thing that IS known comes from this session's own listing.
+        assert verification["resolved_suggestion"]["suggestion_id"] == "suggest.rep1"
+        # And the value is inside the vocabulary the docstring enumerates.
+        assert (
+            verification["still_pending_unavailable"]
+            in write_tools.STILL_PENDING_UNAVAILABLE_REASONS
+        )
         # Remembered -- but offered as the likely cause, not a proven one.
         # ``verify=false`` bought exactly one thing: nothing looked at the
         # document, so nothing here saw the resolution take effect.

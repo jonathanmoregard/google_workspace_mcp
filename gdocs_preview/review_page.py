@@ -756,16 +756,33 @@ def build_listing(
     status = normalize_filter_value(status, "status")
     degraded = read_source == ga_source
     if degraded:
+        # ``tab_id`` belongs here for exactly the reason ``author`` and
+        # ``status`` do, and was missing. The GA payload is one UNNAMED body:
+        # every record carries ``tab_id: None``, so any named tab matches
+        # nothing and the answer comes back success-shaped -- matched_count:
+        # 0, tabs_present: [] -- asserting "no suggestions in that tab" from a
+        # read that cannot see tabs at all. The id the caller passes is
+        # typically one THIS SERVER printed on an earlier, healthy response.
         blocked = [
             name
-            for name, value in (("author", author), ("status", status))
+            for name, value in (
+                ("author", author),
+                ("status", status),
+                ("tab_id", tab_id),
+            )
             if value is not None
         ]
         if blocked:
+            names = " and ".join(blocked)
+            missing = (
+                "no tab ids -- it returns a single unnamed body"
+                if blocked == ["tab_id"]
+                else "no suggestion threads"
+            )
             raise ValueError(
-                f"{' and '.join(blocked)} cannot be filtered on this read: it "
-                "degraded to the GA documents.get, which carries no suggestion "
-                f"threads, so {' and '.join(blocked)} is null on every record "
+                f"{names} cannot be filtered on this read: it "
+                f"degraded to the GA documents.get, which carries {missing}, "
+                f"so {names} is null on every record "
                 "and the filter can only ever match nothing. An empty page "
                 "here would read as 'there are no such suggestions' when the "
                 "truth is 'this read cannot see them'. Re-run without the "

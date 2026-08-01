@@ -458,7 +458,18 @@ async def read_for_review(
         )
     preview_status.record(
         "available",
-        {"http_status": 200, "reason": "preview_read_succeeded"},
+        {
+            "http_status": 200,
+            "reason": "preview_read_succeeded",
+            # Which preview surface this evidence is actually about. A
+            # thread-bearing read IS preview-gated, so its success is real
+            # evidence -- but the batchUpdate request types are a separate
+            # surface, and whether enrollment covers both is an open
+            # UNCERTAIN item (docs/preview-api-reference.md). A caller
+            # deciding whether a WRITE will work should read this field
+            # rather than the bare verdict.
+            "surface": "read",
+        },
         source="tool_call",
         user_google_email=user_google_email,
     )

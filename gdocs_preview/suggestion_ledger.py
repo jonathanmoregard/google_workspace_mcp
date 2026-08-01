@@ -250,6 +250,7 @@ def record_resolution(
     collateral: Iterable[str] = (),
     *,
     landed: Optional[bool],
+    cause: Optional[str] = None,
 ) -> list[Resolution]:
     """Remember that ``action`` on ``suggestion_id`` removed those ids.
 
@@ -258,6 +259,16 @@ def record_resolution(
     itself. An empty ``suggestion_id`` records the collateral without naming
     a cause -- an edit whose own id the API never reported still removed
     something, and inventing an id for it would be a lie.
+
+    ``cause`` names the id the collateral is attributed to WITHOUT filing a
+    resolution for it. ``suggest_doc_edit`` needs exactly that: the id it has
+    to name is the one the API just CREATED, and passing it as
+    ``suggestion_id`` filed a "how it went away" record for an id that had
+    just arrived -- so a later lookup of that id answered "You
+    suggest_doc_edited it yourself; resolving a suggestion removes it", a
+    removal this session never performed. ``suggestion_id`` is for the id an
+    action was aimed at; ``cause`` is for the id the collateral is explained
+    by. They coincide for accept/reject and must not for a merge.
 
     ``landed`` is :attr:`Resolution.landed` and has **no default**: a call
     site that does not say whether its write took effect cannot record a
@@ -271,17 +282,18 @@ def record_resolution(
     """
     entry = _entry(user_google_email, document_id)
     at = _now()
+    attributed_to = suggestion_id or cause or None
     recorded = (
         [Resolution(suggestion_id, action, at, landed=landed)] if suggestion_id else []
     )
     for sid in collateral:
-        if sid and sid != suggestion_id:
+        if sid and sid != suggestion_id and sid != attributed_to:
             recorded.append(
                 Resolution(
                     sid,
                     action,
                     at,
-                    cause=suggestion_id or None,
+                    cause=attributed_to,
                     direct=False,
                     landed=landed,
                 )
@@ -389,6 +401,28 @@ def explain_missing(
                 f"{reread}"
             )
         cause = repr(resolution.cause) if resolution.cause else "another suggestion"
+        if resolution.landed is False:
+            # The collateral rung is causation too, and it rests entirely on
+            # the resolution having happened. It did not: the read right after
+            # still listed the id we acted on. Two lanes found this branch
+            # still asserting the rule after the direct branch had been fixed.
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after -- but "
+                f"that {resolution.action} did NOT take effect ({cause} was "
+                f"still pending afterwards), so it cannot be what removed this "
+                f"one. Most likely another editor did, in the same window. "
+                f"{reread}"
+            )
+        if resolution.landed is None:
+            return (
+                f"It was still listed before you {resolution.action}ed {cause} "
+                f"at {resolution.at} and gone from the read right after. "
+                f"Nothing here verified that {resolution.action} landed, so "
+                f"this is unconfirmed: {resolution.action}ing a suggestion does "
+                f"delete any other whose last marked character disappears with "
+                f"it, and so does another editor. {reread}"
+            )
         return (
             f"It was still listed before you {resolution.action}ed {cause} at "
             f"{resolution.at} and gone from the read right after, so that "

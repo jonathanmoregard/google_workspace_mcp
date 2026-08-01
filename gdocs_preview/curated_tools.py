@@ -299,11 +299,17 @@ async def check_docs_review_capabilities(
         the request type was not even parsed);
       - other 400 -> ``available`` (request type recognized, failed only on
         the bogus suggestion id);
+      - 404 naming a missing suggestion/comment/reply -> ``available`` (the
+        request type was parsed and resolved far enough to look the
+        subresource up; this is what prod actually returns for the probe);
       - 200 -> ``available`` (per preview docs, suggestion/comment updates
         can no-op with a commentUpdateState instead of erroring);
-      - 403/404 -> ``unknown`` (permission/scope or missing document --
-        proves nothing about enrollment).
-    The verdict is cached process-wide, so later probe-free calls report it.
+      - 403, or any other 404 -> ``unknown`` (permission/scope or missing
+        document -- proves nothing about enrollment).
+    The verdict is cached PER CALLER (keyed by user_google_email), so later
+    probe-free calls by the same caller report it and a caller with no
+    evidence of their own gets ``unknown`` rather than somebody else's
+    verdict.
 
     Args:
         user_google_email (str): The user's Google email address. Required.

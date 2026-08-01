@@ -358,6 +358,34 @@ class TestListSuggestions:
             assert "status" in result["null_fields"], mode
 
     @pytest.mark.asyncio
+    async def test_a_tab_filter_on_a_degraded_read_is_refused(self):
+        """``tab_id`` belongs in the same refusal as author/status, and was
+        missing from it.
+
+        The GA payload is one UNNAMED body: every record carries
+        ``tab_id: None``, so a named tab matches nothing and the answer came
+        back success-shaped -- ``matched_count: 0``, ``tabs_present: []`` --
+        asserting "no suggestions in that tab" from a read that cannot see
+        tabs at all. The id a caller passes here is typically one THIS SERVER
+        printed on an earlier, healthy response.
+        """
+        service = _ga_only_service(fx.DOC_PLAIN_INSERTION)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        with pytest.raises(UserInputError) as excinfo:
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                tab_id="t.0",
+            )
+
+        message = str(excinfo.value)
+        assert "tab_id cannot be filtered on this read" in message
+        assert "single unnamed body" in message
+        assert "every suggestion is still listed" in message
+
+    @pytest.mark.asyncio
     async def test_an_author_filter_on_a_degraded_read_is_refused(self):
         """`matched_count: 0, authors_present: []` is a true statement about
         the read and a false one about the document: the reviewer reads it as

@@ -535,6 +535,17 @@ def _unlocated_note(
 #: (:attr:`_PostWriteRead.complete` false); a complete read answers every id.
 PENDING_UNKNOWN_REASONS = ("segment_not_in_read", "read_incomplete")
 
+#: EVERY value ``still_pending_unavailable`` can take. The two above are what a
+#: READ reports when it could not look where the id lives; ``not_verified`` is
+#: what the two verify-less returns report, where no read happened at all. It
+#: was emitted without being in any vocabulary and without appearing in the
+#: tool's documented enum, so a client branching on the documented values fell
+#: through the one case where nothing checked the write. It is deliberately NOT
+#: in :data:`PENDING_UNKNOWN_REASONS`, whose members each own a sentence in
+#: ``_PENDING_UNKNOWN_NOTES`` describing what the read missed -- there is no
+#: read here to describe, and :func:`_unverified_note` says so instead.
+STILL_PENDING_UNAVAILABLE_REASONS = PENDING_UNKNOWN_REASONS + ("not_verified",)
+
 
 def _note_pending_segment_not_in_read(
     *, action: str, suggestion_id: str, record: Any, read: Any
@@ -869,6 +880,56 @@ def _unverified_note(action: str, suggestion_id: str, why: str) -> str:
     )
 
 
+def _unverified_verification(
+    *,
+    source: str,
+    reason: Optional[str],
+    action: str,
+    suggestion_id: str,
+    resolved_record: Optional[dict[str, Any]],
+    why: str,
+) -> dict[str, Any]:
+    """The ``verification`` block for a resolution nothing checked.
+
+    Both verify-less paths returned five keys, while the tool's ``Returns``
+    documents ``read_source``, ``resolved_suggestion``, ``expected_text``,
+    ``resulting_text``, ``matches_expectation``, ``pending_suggestion_count``
+    and ``pending_suggestion_ids`` unconditionally. A client that reads
+    ``verification["matches_expectation"]`` raised ``KeyError`` on exactly the
+    two paths where the answer matters most, and one that used ``.get`` could
+    not tell "unknown" from "this build does not report it".
+
+    The keys are therefore present and NULL -- the same rule
+    :func:`gdocs_preview.address.address_of` follows, for the same reason: a
+    block whose shape varies makes an absent field and an unknown value the
+    same observation. ``pending_suggestion_count`` is null rather than 0,
+    because 0 is a claim about the document that no read here supports.
+    ``resolved_suggestion`` is the one thing that IS known -- it comes from the
+    ledger, not from a read -- so it is echoed rather than nulled.
+    """
+    return {
+        "source": source,
+        "reason": reason,
+        "read_source": None,
+        "still_pending": None,
+        "still_pending_unavailable": "not_verified",
+        "resolved_suggestion": (
+            _echo_suggestion(resolved_record) if resolved_record else None
+        ),
+        "expected_text": None,
+        "resulting_text": None,
+        "matches_expectation": None,
+        # NOT ``resulting_text_unavailable``: that field's vocabulary is
+        # :data:`UNLOCATED_REASONS`, every member of which owns a sentence in
+        # ``_UNLOCATED_NOTES``, and inventing a seventh value for it here
+        # would be the same bug this function exists to fix. It is documented
+        # as conditional, and the condition is a read that ran.
+        "pending_suggestion_count": None,
+        "pending_suggestion_ids": None,
+        "notes": [_unverified_note(action, suggestion_id, why)],
+    }
+
+
 def _is_ours(record: dict[str, Any]) -> bool:
     """Did the AUTHENTICATED user write this suggestion?
 
@@ -1101,7 +1162,13 @@ async def _execute_preview_batch_update(
         raise
     preview_status.record(
         "available",
-        {"http_status": 200, "reason": "preview_request_succeeded"},
+        {
+            "http_status": 200,
+            "reason": "preview_request_succeeded",
+            # A batchUpdate really did go through: evidence about the WRITE
+            # surface, which a successful read does not entail.
+            "surface": "write",
+        },
         source="tool_call",
         user_google_email=user_google_email,
     )
@@ -1559,12 +1626,19 @@ async def _verify_suggest(
             user_google_email,
             document_id,
             "suggest_doc_edit",
-            echoed_ids[0] if echoed_ids else "",
+            # No id was RESOLVED here. The id below is the one this call
+            # CREATED, and passing it as the resolved id filed a "how it went
+            # away" record for a card that had just arrived -- so a later
+            # lookup of it answered "You suggest_doc_edited it yourself;
+            # resolving a suggestion removes it". It is the merge's ``cause``,
+            # which names the absorber without claiming it went anywhere.
+            "",
             vanished,
             # The edit itself landed: the batchUpdate returned and this read
             # is the one that saw its result. What is uncertain about a merge
             # is which id absorbed which, and that is carried by ``cause``.
             landed=True,
+            cause=echoed_ids[0] if echoed_ids else None,
         )
         verification["also_removed_suggestion_ids"] = vanished
         verification.setdefault("notes", []).extend(
@@ -1660,13 +1734,18 @@ async def manage_document_suggestion(
             text exactly as it was, so on a reject the text alone cannot tell
             a write that landed from one that did not.
 
-            still_pending is null when the post-write read could not see the
-            space the suggestion lives in, and still_pending_unavailable then
-            says which: segment_not_in_read (the read lost the card's
-            tab/segment -- the GA fallback carries no tab ids at all) or
-            read_incomplete (that read did not cover the document and this
-            session never listed the id, so there is nothing saying which tab
-            to look in). Absence from a read that could not look there is NOT
+            still_pending is null when nothing established it, and
+            still_pending_unavailable then says which of three reasons:
+            segment_not_in_read (the read lost the card's tab/segment -- the
+            GA fallback carries no tab ids at all), read_incomplete (that read
+            did not cover the document and this session never listed the id,
+            so there is nothing saying which tab to look in), or not_verified
+            (no read happened at all -- verify=false, or the post-write read
+            itself failed). On not_verified the whole verification block is
+            still present with its documented keys null, so an unknown answer
+            and a missing field never look alike; resolved_suggestion is the
+            exception and is echoed, since it comes from this session's own
+            listing rather than from a read. Absence from a read that could not look there is NOT
             evidence the resolution landed, so matches_expectation is null too
             and nothing in the response reports on the write: re-read with
             list_document_suggestions rather than repeating the resolution.
@@ -1838,13 +1917,14 @@ async def _verify_resolution(
         suggestion_ledger.record_resolution(
             user_google_email, document_id, action, suggestion_id, landed=None
         )
-        return {
-            "source": "skipped",
-            "reason": "verify=false",
-            "still_pending": None,
-            "still_pending_unavailable": "not_verified",
-            "notes": [_unverified_note(action, suggestion_id, "verify=false")],
-        }
+        return _unverified_verification(
+            source="skipped",
+            reason="verify=false",
+            action=action,
+            suggestion_id=suggestion_id,
+            resolved_record=resolved_record,
+            why="verify=false",
+        )
 
     read, failure = await _post_write_read(
         service, document_id, user_google_email=user_google_email
@@ -1854,19 +1934,14 @@ async def _verify_resolution(
         suggestion_ledger.record_resolution(
             user_google_email, document_id, action, suggestion_id, landed=None
         )
-        return {
-            "source": "unavailable",
-            "reason": failure,
-            "still_pending": None,
-            "still_pending_unavailable": "not_verified",
-            "notes": [
-                _unverified_note(
-                    action,
-                    suggestion_id,
-                    f"the post-write read failed ({failure})",
-                )
-            ],
-        }
+        return _unverified_verification(
+            source="unavailable",
+            reason=failure,
+            action=action,
+            suggestion_id=suggestion_id,
+            resolved_record=resolved_record,
+            why=f"the post-write read failed ({failure})",
+        )
 
     expected_text: Optional[str] = None
     resulting_text: Optional[str] = None

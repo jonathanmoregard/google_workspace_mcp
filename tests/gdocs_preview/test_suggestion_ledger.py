@@ -115,12 +115,41 @@ class TestHonestyLadder:
 
     def test_merge_collateral_reads_as_a_merge_not_a_gc(self):
         ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        # ``cause``, not ``suggestion_id``: the new id is what the absorbed
+        # card merged INTO, and nothing resolved it. See
+        # test_the_id_a_merge_created_is_not_filed_as_one_that_went_away.
         ledger.record_resolution(
-            USER, DOC, "suggest_doc_edit", "sug.new", ["sug.a"], landed=True
+            USER, DOC, "suggest_doc_edit", "", ["sug.a"], landed=True, cause="sug.new"
         )
         message = ledger.explain_missing(USER, DOC, "sug.a")
         assert "merges into the new one" in message
         assert "'sug.new'" in message
+
+    def test_the_id_a_merge_created_is_not_filed_as_one_that_went_away(self):
+        """``suggestion_id`` is the id an action was aimed at; ``cause`` is the
+        id collateral is explained by. A merge has to name the second without
+        claiming the first.
+
+        ``_verify_suggest`` passed the id the API had just CREATED as the
+        resolved id, so the ledger held a "how it went away" record for a card
+        that had just arrived. When another editor later removed it, the agent
+        asking about it was told "You suggest_doc_edited it yourself;
+        resolving a suggestion removes it" -- a removal this session never
+        performed, and an action that does not remove anything by that name.
+        """
+        ledger.observe(USER, DOC, [RECORD_A], complete=True)
+        ledger.record_resolution(
+            USER, DOC, "suggest_doc_edit", "", ["sug.a"], landed=True, cause="sug.new"
+        )
+        # What _verify_suggest does next: the post-write read, which lists the
+        # card this call just created.
+        ledger.observe(USER, DOC, [{"suggestion_id": "sug.new"}], complete=True)
+
+        message = ledger.explain_missing(USER, DOC, "sug.new")
+        assert "yourself" not in message, message
+        # The honest answer for a live card that has since gone: somebody else.
+        assert "WAS present in the last read" in message
+        assert "another editor" in message
 
     def test_a_degraded_read_does_not_diagnose_the_callers_id(self):
         """Round 6, the ledger's own instance of the class: a GA-fallback read
@@ -187,6 +216,29 @@ class TestHonestyLadder:
         assert "also removed it" not in note, note
         assert "did NOT take effect" in note
         assert "another editor" in note
+
+    def test_collateral_of_an_unlanded_write_is_not_blamed_on_it_either(self):
+        """The collateral RUNG, not just the collateral note.
+
+        Both were causation, both rest on the write having happened, and only
+        the note and the direct rung were reworded the first time round. A
+        second review pass found this branch still saying "so that accept
+        removed it" about the one write the ledger had recorded evidence
+        against.
+        """
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", ["sug.b"], landed=False)
+        message = ledger.explain_missing(USER, DOC, "sug.b")
+        assert "so that accept removed it" not in message, message
+        assert "did NOT take effect" in message
+        assert "another editor" in message
+
+    def test_unverified_collateral_says_it_is_unconfirmed(self):
+        ledger.observe(USER, DOC, [RECORD_A, RECORD_B], complete=True)
+        ledger.record_resolution(USER, DOC, "accept", "sug.a", ["sug.b"], landed=None)
+        message = ledger.explain_missing(USER, DOC, "sug.b")
+        assert "Nothing here verified" in message
+        assert "unconfirmed" in message
 
     def test_landed_is_carried_on_the_record(self):
         (resolution,) = ledger.record_resolution(

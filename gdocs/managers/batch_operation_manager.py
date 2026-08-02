@@ -44,6 +44,8 @@ from gdocs.docs_helpers import (
 )
 from gdocs.managers.validation_manager import ValidationManager
 
+from core.utils import UserInputError
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +83,19 @@ class BatchOperationManager:
 
         Returns:
             Tuple of (success, message, metadata)
+
+        Raises:
+            UserInputError: when the API's refusal is traceable to the
+                caller's own request and there is actionable guidance for it.
+            Exception: whatever the Docs API raised, otherwise.
+
+            ``(False, message, {})`` is reserved for conclusions this method
+            reached itself -- no operations, an operation that failed
+            validation, no requests built. Those are claims it has evidence
+            for. An ``HttpError`` is not: the caller renders a returned
+            message into an ordinary successful MCP result, so a 429 used to
+            arrive as ``"Error: Batch operation failed: <HttpError 429 …>"``
+            with ``is_error`` unset.
         """
         logger.info(f"Executing batch operations on document {document_id}")
         logger.info(f"Operations count: {len(operations)}")
@@ -147,10 +162,23 @@ class BatchOperationManager:
 
             return True, msg, metadata
 
+        except ValueError as e:
+            # _validate_and_build_requests raises ValueError for the caller's
+            # own malformed operations. That is not a failure of the API and
+            # keeps its returned guidance.
+            logger.info(f"Batch operations failed validation: {e}")
+            return False, f"Batch operation failed: {e}", {}
         except Exception as e:
-            error_msg = self._rewrite_execution_error(str(e), operations)
-            logger.error(f"Failed to execute batch operations: {error_msg}")
-            return False, error_msg, {}
+            # The API refused. If the refusal is one we can turn into
+            # actionable guidance it becomes a UserInputError -- still an
+            # error, just a better-worded one. Anything else propagates
+            # untouched for handle_http_errors to wrap.
+            guidance = self._execution_error_guidance(str(e), operations)
+            if guidance is not None:
+                logger.info(f"Rewriting batch execution error as guidance: {e}")
+                raise UserInputError(guidance) from e
+            logger.error(f"Failed to execute batch operations: {e}")
+            raise
 
     async def _preflight_create_header_footer_operations(
         self, document_id: str, operations: list[dict[str, Any]]
@@ -949,11 +977,16 @@ class BatchOperationManager:
 
         return summary
 
-    def _rewrite_execution_error(
+    def _execution_error_guidance(
         self, error_msg: str, operations: list[dict[str, Any]]
-    ) -> str:
+    ) -> str | None:
         """
-        Rewrite common API failures into actionable guidance for tool callers.
+        Actionable guidance for an API failure the caller can act on, or None.
+
+        Returning ``None`` is what sends the original error up untouched.
+        This used to return ``f"Batch operation failed: {error_msg}"`` as a
+        fallback, which meant every API failure -- 429s included -- came back
+        as a string the caller reported as a success.
         """
         lowered = error_msg.lower()
         requested_header_footer_creation = any(
@@ -972,7 +1005,7 @@ class BatchOperationManager:
                 "Reserve create_header_footer for advanced section-break layouts."
             )
 
-        return f"Batch operation failed: {error_msg}"
+        return None
 
     def get_supported_operations(self) -> dict[str, Any]:
         """

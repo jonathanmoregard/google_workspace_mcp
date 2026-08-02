@@ -37,13 +37,44 @@ Pre/post semantics for a suggestion S:
 Context windows are computed on the base text, so neighbouring suggestions'
 pending insertions never leak into context.
 
-Known limitations (kept deliberately out of scope for the review MVP):
-  - Row/column-level table structure suggestions (``suggestedInsertionIds``
-    on TableRow) are not reported; text suggestions inside cells are.
-  - Paragraph-level style suggestions (``suggestedParagraphStyleChanges``)
-    are not reported; text-run style suggestions are.
-  - A suggestion spanning multiple segments (theoretical) is analysed
-    within the segment where it first appears.
+**What this module can and cannot see** -- measured against the live API
+2026-08-02, ``docs/findings/coverage.md``. Extraction walks CONTENT MARKS on
+paragraph elements (``suggestedInsertionIds``, ``suggestedDeletionIds``,
+``suggestedTextStyleChanges``), so a suggestion is visible here exactly when
+it leaves one:
+
+  - **Table row/column insert and delete ARE reported**, contrary to what
+    this docstring claimed for a year. ``insertTableRow`` marks the new
+    row's cell text runs with ``suggestedInsertionIds`` (and the ``tableRow``
+    itself, which this module does not read but does not need to);
+    ``deleteTableRow`` / ``deleteTableColumn`` mark the cells'
+    ``suggestedDeletionIds``. Each yields one record here.
+  - **A named-style change is reported only because it drags a text style
+    with it.** ``HEADING_2`` writes ``suggestedTextStyleChanges`` on the run
+    alongside ``suggestedParagraphStyleChanges`` on the paragraph, and it is
+    the former this module sees.
+  - **NOT reported, because they leave no content mark at all**:
+    ``updateParagraphStyle`` for alignment / line spacing / indent
+    (``paragraph.suggestedParagraphStyleChanges`` only),
+    ``createParagraphBullets`` (``suggestedBulletChanges`` +
+    ``bullet.suggestedInsertionId``), ``updateTableRowStyle``
+    (``tableRow.suggestedTableRowStyleChanges``) and ``updateTableCellStyle``
+    (``tableCell.suggestedTableCellStyleChanges``). Every one of them is a
+    real pending suggestion: HTTP 200, an ``OPEN`` thread in the payload's
+    top-level ``suggestions`` array, a card in the Docs sidebar.
+  - A suggestion spanning multiple segments (theoretical) is analysed within
+    the segment where it first appears.
+
+The last bullet used to be the whole story and it was told as a scope
+decision. It is not one on its own: ``suggestion_count`` was silently short,
+which is the failure this package exists to prevent. The gap is now COUNTED
+rather than modelled -- :func:`gdocs_preview.review_page.attach_unreported`
+subtracts what this module found from the API's own pending-thread inventory
+and both read tools report the difference as
+``unreported_suggestion_count`` plus a notice naming the kinds. Modelling
+them (address, pre/post projection, resolution check per kind) is a much
+larger feature and still deliberately out of scope; being silent about them
+never was a decision, only an omission.
 """
 
 from __future__ import annotations

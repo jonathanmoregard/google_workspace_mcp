@@ -63,6 +63,14 @@ class TableOperationManager:
 
         Returns:
             Tuple of (success, message, metadata)
+
+        Raises:
+            Exception: whatever the Docs API raised while CREATING the table.
+                Once creation has succeeded nothing else raises, because the
+                table exists from that moment and an error would invite a
+                retry that creates a second one. Those later failures come
+                back as ``partial_success`` with the reason in the message --
+                a degrade that says it degraded, not a failure in disguise.
         """
         logger.debug(
             f"Creating table at index {index}, dimensions: {len(table_data)}x{len(table_data[0]) if table_data and len(table_data) > 0 else 0}"
@@ -83,75 +91,81 @@ class TableOperationManager:
                 {},
             )
 
-        try:
-            # Step 1: Create empty table
-            await self._create_empty_table(document_id, index, rows, cols, tab_id)
+        # Step 1: Create empty table. A failure here is raised: nothing exists
+        # yet, so the caller is free to retry, and "Table creation failed" as
+        # a SUCCESSFUL result was wrong twice over -- wrong shape, and a claim
+        # about the table rather than about the call.
+        await self._create_empty_table(document_id, index, rows, cols, tab_id)
 
-            # Step 2: Get fresh document structure to find actual cell positions
-            fresh_tables = await self._get_document_tables(document_id, tab_id)
-            if not fresh_tables:
-                return False, "Could not find table after creation", {}
+        # From here on the table EXISTS. Every remaining failure degrades
+        # rather than raising, because an error would invite a retry that
+        # creates a second table. Each degrade says what did not happen.
 
-            # Step 3: Find the newly created table by insertion index
-            # The table should be at or near the requested index
-            target_table = self._find_table_near_index(fresh_tables, index)
-            if not target_table:
-                return (
-                    False,
-                    f"Could not locate newly created table near index {index}",
-                    {},
-                )
+        # Step 2: Get fresh document structure to find actual cell positions
+        fresh_tables = await self._get_document_tables(document_id, tab_id)
+        if not fresh_tables:
+            return False, "Could not find table after creation", {}
 
-            # Step 4: Populate all cells and pin any header rows in one batch.
-            try:
-                population_count = await self._populate_table_cells_batch(
-                    document_id,
-                    target_table,
-                    table_data,
-                    bold_headers,
-                    tab_id,
-                    header_rows,
-                )
-            except Exception as e:
-                if header_rows <= 0:
-                    raise
-
-                logger.error(
-                    "Table was created, but the population/header-pinning batch "
-                    f"failed: {str(e)}"
-                )
-                return (
-                    True,
-                    "Table was created, but population and header pinning failed: "
-                    f"{str(e)}. Do not retry table creation.",
-                    {
-                        "rows": rows,
-                        "columns": cols,
-                        "populated_cells": 0,
-                        "total_cells": rows * cols,
-                        "table_created": True,
-                        "partial_success": True,
-                        "header_rows_applied": False,
-                    },
-                )
-
-            metadata = {
-                "rows": rows,
-                "columns": cols,
-                "populated_cells": population_count,
-                "total_cells": rows * cols,
-                "header_rows_applied": header_rows > 0,
-            }
-
+        # Step 3: Find the newly created table by insertion index
+        # The table should be at or near the requested index
+        target_table = self._find_table_near_index(fresh_tables, index)
+        if not target_table:
             return (
-                True,
-                f"Successfully created {rows}x{cols} table and populated {population_count} cells",
-                metadata,
+                False,
+                f"Could not locate newly created table near index {index}",
+                {},
             )
 
+        # Step 4: Populate all cells and pin any header rows in one batch.
+        try:
+            population_count = await self._populate_table_cells_batch(
+                document_id,
+                target_table,
+                table_data,
+                bold_headers,
+                tab_id,
+                header_rows,
+            )
         except Exception as e:
-            logger.error(f"Failed to create and populate table: {str(e)}")
-            return False, f"Table creation failed: {str(e)}", {}
+            # This degrade used to fire only when header_rows > 0; otherwise
+            # the exception escaped into a blanket handler that reported
+            # "Table creation failed". The table had been created in both
+            # cases -- header_rows has nothing to do with whether it exists --
+            # so the caller was told creation failed about a table that was
+            # sitting in their document, and a retry produced a second one.
+            logger.error(
+                "Table was created, but the population/header-pinning batch "
+                f"failed: {str(e)}"
+            )
+            pinning = " and header pinning" if header_rows > 0 else ""
+            return (
+                True,
+                f"Table was created, but population{pinning} failed: "
+                f"{str(e)}. Do not retry table creation.",
+                {
+                    "rows": rows,
+                    "columns": cols,
+                    "populated_cells": 0,
+                    "total_cells": rows * cols,
+                    "table_created": True,
+                    "partial_success": True,
+                    "header_rows_applied": False,
+                },
+            )
+
+        metadata = {
+            "rows": rows,
+            "columns": cols,
+            "populated_cells": population_count,
+            "total_cells": rows * cols,
+            "header_rows_applied": header_rows > 0,
+        }
+
+        return (
+            True,
+            f"Successfully created {rows}x{cols} table and populated {population_count} cells",
+            metadata,
+        )
 
     async def _create_empty_table(
         self,
@@ -380,51 +394,52 @@ class TableOperationManager:
 
         Returns:
             Tuple of (success, message, metadata)
+
+        Raises:
+            Exception: whatever the Docs API raised. Unlike table creation
+                there is nothing here that a retry could duplicate, so an API
+                failure is simply an error.
         """
-        try:
-            tables = await self._get_document_tables(document_id, tab_id)
-            if table_index < 0 or table_index >= len(tables):
-                return (
-                    False,
-                    f"Table index {table_index} not found. Document has {len(tables)} tables",
-                    {},
-                )
-
-            table_info = tables[table_index]
-
-            # Validate dimensions
-            table_rows = table_info["rows"]
-            table_cols = table_info["columns"]
-            data_rows = len(table_data)
-            data_cols = len(table_data[0]) if table_data else 0
-
-            if data_rows > table_rows or data_cols > table_cols:
-                return (
-                    False,
-                    f"Data ({data_rows}x{data_cols}) exceeds table dimensions ({table_rows}x{table_cols})",
-                    {},
-                )
-
-            # Populate cells using batch operation
-            population_count = await self._populate_existing_table_cells_batch(
-                document_id, table_info, table_data, tab_id
-            )
-
-            metadata = {
-                "table_index": table_index,
-                "populated_cells": population_count,
-                "table_dimensions": f"{table_rows}x{table_cols}",
-                "data_dimensions": f"{data_rows}x{data_cols}",
-            }
-
+        tables = await self._get_document_tables(document_id, tab_id)
+        if table_index < 0 or table_index >= len(tables):
             return (
-                True,
-                f"Successfully populated {population_count} cells in existing table",
-                metadata,
+                False,
+                f"Table index {table_index} not found. Document has {len(tables)} tables",
+                {},
             )
 
-        except Exception as e:
-            return False, f"Failed to populate existing table: {str(e)}", {}
+        table_info = tables[table_index]
+
+        # Validate dimensions
+        table_rows = table_info["rows"]
+        table_cols = table_info["columns"]
+        data_rows = len(table_data)
+        data_cols = len(table_data[0]) if table_data else 0
+
+        if data_rows > table_rows or data_cols > table_cols:
+            return (
+                False,
+                f"Data ({data_rows}x{data_cols}) exceeds table dimensions ({table_rows}x{table_cols})",
+                {},
+            )
+
+        # Populate cells using batch operation
+        population_count = await self._populate_existing_table_cells_batch(
+            document_id, table_info, table_data, tab_id
+        )
+
+        metadata = {
+            "table_index": table_index,
+            "populated_cells": population_count,
+            "table_dimensions": f"{table_rows}x{table_cols}",
+            "data_dimensions": f"{data_rows}x{data_cols}",
+        }
+
+        return (
+            True,
+            f"Successfully populated {population_count} cells in existing table",
+            metadata,
+        )
 
     async def _populate_existing_table_cells_batch(
         self,

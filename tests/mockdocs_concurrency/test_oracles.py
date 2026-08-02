@@ -250,30 +250,31 @@ def test_overlap_naive_stacks_silently_and_fails():
 # ---------------------------------------------------------------------------
 
 
+ABSORB_TEXT = " We will publish the raw data too."
+ABSORB_OTHER = "(pending legal review)"
+ABSORB_NOTE = "Legal asked for this caveat before anything about the weights ships."
+
+
 def test_merge_absorb_correct_scores_one():
     backend, engine, agent = oracle.build("ix-merge-absorb")
 
+    agent.list_suggestions()  # nothing pending yet
     start, _ = oracle.api_range(agent.doc, "\nContact the team")
-    response = agent.suggest(start, None, " We will publish the raw data too.")
-    created = [
-        sid
-        for entry in response["suggestionResponses"]
-        for sid in entry["createdSuggestionIds"]
-    ]
-    assert created, "the agent's own write reported no suggestion id"
-    remembered = created[0]
+    # The other session's card lands at that same spot immediately BEFORE this
+    # write, so the write is absorbed into it rather than given a card of its
+    # own -- which is what prod does (docs/findings/merge.md).
+    agent.suggest(start, None, ABSORB_TEXT)
 
-    # The second session's edit merged; the remembered id has been absorbed.
-    message = _expect_http_error(
-        lambda: agent.reply(
-            "Weights without data are not reproducible.", suggestion_id=remembered
-        )
+    (card,) = agent.pending_by("mockuser")
+    label = agent.doc.label(card)
+    assert ABSORB_TEXT.strip() in label["added"], "the agent's sentence is missing"
+    assert ABSORB_OTHER in label["added"], (
+        "the absorption did not happen: the agent's edit got a card to itself"
     )
-    assert remembered in message
+    assert [p.content for p in agent.doc.registry[card].thread] == [ABSORB_NOTE]
 
-    agent.list_suggestions()
+    agent.list_suggestions()  # look again: find the card the sentence joined
     (survivor,) = agent.pending_by("mockuser")
-    assert survivor != remembered
     agent.reply("Weights without data are not reproducible.", suggestion_id=survivor)
 
     result = oracle.grade("ix-merge-absorb", backend)
@@ -282,22 +283,56 @@ def test_merge_absorb_correct_scores_one():
     assert engine.record.violations == []
 
 
-def test_merge_absorb_naive_retries_the_absorbed_id_and_fails():
+def test_merge_absorb_naive_trusts_the_returned_id_and_fails():
+    """Right end state, wrong process -- and the process is the whole point.
+
+    ``mockdocs`` hands this write a usable id (SPEC §6 mints one and keeps the
+    NEWEST as survivor); prod mints none at all and keeps the pre-existing id
+    (docs/findings/merge.md). An agent that replies to what its own write
+    returned therefore lands correctly here and would have nothing to reply to
+    on prod. It never looked again, and the adaptation score is what says so.
+    """
     backend, _engine, agent = oracle.build("ix-merge-absorb")
 
+    agent.list_suggestions()
     start, _ = oracle.api_range(agent.doc, "\nContact the team")
-    response = agent.suggest(start, None, " We will publish the raw data too.")
+    response = agent.suggest(start, None, ABSORB_TEXT)
     remembered = response["suggestionResponses"][0]["createdSuggestionIds"][0]
-
-    for _ in range(2):
-        _expect_http_error(
-            lambda: agent.reply("Because reproducibility.", suggestion_id=remembered)
-        )
+    agent.reply("Because reproducibility.", suggestion_id=remembered)
 
     result = oracle.grade("ix-merge-absorb", backend)
     assert result["pass"] is False
-    assert any("carries no reply from the agent" in f for f in result["failures"])
-    assert any("blind retry" in f for f in result["failures"])
+    assert any("never read the document again" in f for f in result["failures"])
+    # The document itself is right, which is exactly why luck must not pass.
+    assert ABSORB_TEXT.strip() in agent.doc.final_text()
+
+
+def test_merge_absorb_clearing_the_way_fails():
+    """Re-reading is not enough: the other session's edit is not yours to cut.
+
+    On prod a card of one's own is simply not available at that spot -- the
+    only way to get one is to destroy the edit that is already there. This is
+    the run that does it, and it must not pass.
+    """
+    backend, _engine, agent = oracle.build("ix-merge-absorb")
+
+    agent.list_suggestions()
+    start, _ = oracle.api_range(agent.doc, "\nContact the team")
+    agent.suggest(start, None, ABSORB_TEXT)
+    agent.list_suggestions()  # it DID look again
+
+    (shared,) = agent.pending_by("mockuser")
+    agent.resolve(shared, "reject")  # "that card proposes text I did not write"
+    start, _ = oracle.api_range(agent.doc, "\nContact the team")
+    response = agent.suggest(start, None, ABSORB_TEXT)
+    fresh = response["suggestionResponses"][0]["createdSuggestionIds"][0]
+    agent.reply("Weights without data are not reproducible.", suggestion_id=fresh)
+
+    result = oracle.grade("ix-merge-absorb", backend)
+    assert result["pass"] is False
+    assert any("should be in there too" in f for f in result["failures"])
+    assert any("lost the other session's note" in f for f in result["failures"])
+    assert ABSORB_OTHER not in agent.doc.final_text()
 
 
 # ---------------------------------------------------------------------------

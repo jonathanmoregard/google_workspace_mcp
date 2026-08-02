@@ -146,11 +146,25 @@ async def list_document_suggestions(
     before/after text of specific cards.
 
     **Nothing is ever truncated silently.** Every response reports
-    ``suggestion_count`` (pending suggestions in the whole document),
-    ``matched_count`` (after filters) and ``returned_count`` (this page), and
-    a page that is not the last one carries ``page.next_page_token`` plus a
-    ``notice_page`` saying so in words. Compare the three integers and you
-    know whether you have seen everything.
+    ``suggestion_count`` (the pending suggestions this tool models, in the
+    whole document), ``matched_count`` (after filters) and ``returned_count``
+    (this page), and a page that is not the last one carries
+    ``page.next_page_token`` plus a ``notice_page`` saying so in words.
+
+    **A fourth number completes that set: ``unreported_suggestion_count``.**
+    Suggestions are extracted by walking the document's content marks, and
+    some kinds leave none -- paragraph style (alignment, line spacing,
+    indent), list/bullet formatting, table ROW style and table CELL style
+    (measured against the live API; ``docs/findings/coverage.md``). Those are
+    real pending suggestions with real ids, they just have no text to show,
+    so they are counted here rather than described, with
+    ``unreported_suggestions`` (id, Google's own ``summary_text``, author,
+    status) and a ``notice_unreported`` naming the kinds. They ARE actionable
+    by id through ``manage_document_suggestion``. A review is finished when
+    ``suggestion_count`` and ``unreported_suggestion_count`` are both zero --
+    not when the first one is. On a degraded read the count is ``null`` with
+    ``unreported_suggestions_unavailable: "read_degraded"``, because the
+    thread inventory it is derived from exists only on the preview read.
 
     Thread-derived fields (``author``, ``status``, ``create_time``,
     ``summary_text``, ``replies``) come from the Developer Preview read. If
@@ -212,9 +226,10 @@ async def list_document_suggestions(
 
     Returns:
         str: JSON with document_id, title, suggestion_count, matched_count,
-            returned_count, fields, filters, page (page_size, offset,
-            has_more, next_page_token), read_source, tabs and the
-            per-suggestion records described above.
+            returned_count, unreported_suggestion_count (+
+            unreported_suggestions / notice_unreported when non-zero), fields,
+            filters, page (page_size, offset, has_more, next_page_token),
+            read_source, tabs and the per-suggestion records described above.
     """
     read = await read_for_review(
         service, document_id, "SUGGESTIONS_INLINE", user_google_email=user_google_email
@@ -255,6 +270,17 @@ async def list_document_suggestions(
         )
     except (PageTokenError, ValueError) as error:
         raise UserInputError(str(error)) from error
+    # The WHOLE modelled set, never the page or the filtered subset: a page is
+    # a subset by construction, so subtracting one would report the rest of
+    # the document as unmodelled. See review_page.attach_unreported.
+    review_page.attach_unreported(
+        result,
+        threads=read.threads,
+        reported_ids=[
+            r.get("suggestion_id") for r in (analysis.get("suggestions") or [])
+        ],
+        complete=read.complete,
+    )
     result["read_source"] = read.source
     result["tabs"] = read.tab_metadata
     if read.degraded_reason:
@@ -466,6 +492,22 @@ async def get_doc_review_view(
     and the response says so in ``scope_note`` rather than looking scoped.
     Use ``list_document_suggestions`` when you want them as filters.
 
+    **``suggestion_ids`` is not the whole pending set.** The markers above are
+    rendered from the document's content marks, and some suggestion kinds
+    leave none: paragraph style (alignment, line spacing, indent), list/bullet
+    formatting, table ROW style and table CELL style (measured against the
+    live API; ``docs/findings/coverage.md``). Those cards appear nowhere in
+    the text and nowhere in ``suggestion_ids``, so the response counts them
+    separately in ``unreported_suggestion_count``, with
+    ``unreported_suggestions`` (id, Google's own ``summary_text``, author,
+    status) and a ``notice_unreported``. That count is a property of the
+    DOCUMENT and is not narrowed by ``start_index``/``end_index``. It is
+    ``null`` with ``unreported_suggestions_unavailable: "read_degraded"``
+    whenever the read degraded -- which includes BOTH PREVIEW_* view modes:
+    the API refuses comment threads there ("Comments may not be requested
+    when previewing suggestions", HTTP 400, measured 2026-08-02), so those
+    modes always fall back to the GA read.
+
     ``comments`` carries the Docs-side comment threads: comment_id,
     anchor_id, status, quoted_text, the head post's author/content/times and
     every reply with its own post_id and author. That is richer than the
@@ -500,7 +542,9 @@ async def get_doc_review_view(
     Returns:
         str: JSON with view_mode, read_source, tabs, fields, paragraph_count,
             returned_paragraph_count, the requested body_text and/or
-            paragraph map, suggestion_ids, window (when narrowed),
+            paragraph map, suggestion_ids, unreported_suggestion_count (+
+            unreported_suggestions / notice_unreported when non-zero),
+            window (when narrowed),
             scope_note (when segment_id/tab_id was passed without a window),
             omitted_fields + notice (when narrowed), and comments.
     """
@@ -571,6 +615,16 @@ async def get_doc_review_view(
         **shaped,
         "comments": read.comments if include_comments else [],
     }
+    # ``rendered``, not ``shaped``: ``shaped["suggestion_ids"]`` is narrowed to
+    # the caller's window, and subtracting a window would report the whole rest
+    # of the document as unmodelled. The unmodelled set is a property of the
+    # document, so it is reported whole and the window does not narrow it.
+    review_page.attach_unreported(
+        result,
+        threads=read.threads,
+        reported_ids=rendered.get("suggestion_ids") or [],
+        complete=read.complete,
+    )
     if not include_comments:
         result["comments_omitted"] = len(read.comments)
     if read.degraded_reason:

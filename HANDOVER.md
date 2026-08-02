@@ -16,8 +16,8 @@ A fork of [`taylorwilsdon/google_workspace_mcp`](https://github.com/taylorwilsdo
 — 7 tools that let an agent work with Google Docs **comments** and **edit
 suggestions** the way a human reviewer does.
 
-Built for **the client**, who publish web pages out of Google Docs and run
-heavy comment/suggestion review over them.
+Built for **the requester**, who publishes web pages out of Google Docs and
+runs heavy comment/suggestion review over them.
 
 Requirements it satisfies (from the requester, recorded in
 [`docs/plans/2026-07-13-mvp.md`](docs/plans/2026-07-13-mvp.md)):
@@ -61,7 +61,7 @@ and the thread-bearing read only exist for **enrolled projects**. Apply at
   on. **Caveat, stated honestly:** whether enrollment propagates per-project
   or per-account is still listed as an open UNCERTAIN item
   (`docs/preview-api-reference.md:420`, item 3) — it has never been tested
-  with a second, non-enrolled project. Either way, the client having org-level
+  with a second, non-enrolled project. Either way, the requester having org-level
   approval does not automatically cover a *new* GCP project: register the
   project you actually build the OAuth client in.
 - Without enrollment the server still starts and every read still answers —
@@ -208,6 +208,16 @@ the write. `pending_suggestion_count` is `null`, not `0`: a count is a claim
 about the document. `resolved_suggestion` is echoed, since it comes from this
 session's own listing rather than from a read. Set it false only for a batch
 you will verify at the end — collateral removals (§4.5) then go unreported.
+
+The verification block's **pending accounting is two numbers, not one**, for
+the same reason the read tools' is (`docs/findings/coverage.md`):
+`pending_suggestion_count`/`pending_suggestion_ids` are what this layer models,
+`unreported_suggestion_count`/`unreported_suggestions` are the rest of what the
+API lists as OPEN. `still_pending` is derived from **both**, so an id it calls
+pending is always in one of the two lists; a review is done when both numbers
+are zero. Both are emitted by the same `review_page.attach_unreported` the read
+tools call, so the two surfaces cannot answer it differently
+([`docs/findings/closeout-fixes.md`](docs/findings/closeout-fixes.md)).
 
 `reply_to_doc_thread` and `create_anchored_doc_comment` have no `verify`
 because the batchUpdate response already carries the stored object
@@ -631,12 +641,12 @@ than comparing is what retires the branch class.
 uv run pytest tests/          # or: .venv/bin/python -m pytest tests/
 ```
 
-**2229 tests collected** (2026-07-31). Config is entirely in
+**2455 tests collected** (2026-08-02). Config is entirely in
 `pyproject.toml [tool.pytest.ini_options]` — there is no `pytest.ini` and no
-root `conftest.py`. Notable sub-suites: `tests/gdocs_preview` 380,
-`tests/llmux` 168, `tests/llmux_runner` 120, `tests/mockdocs` 83,
-`tests/mockdocs_concurrency` 64, `tests/e2e_harness` 38 (the e2e
-gating/report/session logic, unit-tested with no credentials).
+root `conftest.py`. Notable sub-suites: `tests/gdocs_preview` 467,
+`tests/llmux` 168, `tests/llmux_runner` 120, `tests/core` 168,
+`tests/mockdocs` 85, `tests/mockdocs_concurrency` 64, `tests/e2e_harness` 38
+(the e2e gating/report/session logic, unit-tested with no credentials).
 
 CI (`.github/workflows/pytest.yml`) runs bare `uv run pytest` from the repo
 root, which also collects `e2e/` — safely, since those skip without
@@ -648,18 +658,18 @@ credentials.
 server as a subprocess and speaks MCP to it; nothing is mocked.
 
 ```bash
-uv run pytest e2e -m e2e_ga        # 15 tests — needs only an OAuth token
-uv run pytest e2e -m e2e_preview   # 22 tests — additionally needs enrollment
+uv run pytest e2e -m e2e_ga        # 26 tests — needs only an OAuth token
+uv run pytest e2e -m e2e_preview   # 54 tests — additionally needs enrollment
 uv run pytest e2e -rs              # everything eligible, with skip reasons
 ```
 
-- **`e2e_ga` (15)** — gated on **credentials, not env vars**. The `ga_auth`
+- **`e2e_ga` (26)** — gated on **credentials, not env vars**. The `ga_auth`
   session fixture resolves the credential dir, inspects the token offline,
   and hard-skips with actionable instructions on any non-`ok` status
   (`no_credentials_dir`, `no_token`, `unreadable`, `no_refresh_token`,
   `missing_scopes`, `refresh_failed`). It **never** starts an interactive
   flow.
-- **`e2e_preview` (22)** — everything above plus a live
+- **`e2e_preview` (54)** — everything above plus a live
   `check_docs_review_capabilities` probe against a scratch doc, once per
   session; skips with the probe's classification evidence embedded in the
   message if the verdict is not `available`.
@@ -795,74 +805,95 @@ uv run python -m llmux.runner.run --corpus llmux/interference --all       # SPEN
 
 ---
 
-## 7. Known gaps and open questions
+## 7. What was open, what was measured, and what is still unknown
 
-**Untested paths**
+Everything in this section was, until 2026-08-02, either untested or a guess.
+It was then put to the live API. The evidence for each answer — verbatim
+requests, responses and error strings — is in [`docs/findings/`](docs/findings/);
+this section is the index, not the record.
 
-- **Nested tabs.** `preview_read.tab_documents()` walks `childTabs`
-  depth-first and there is unit coverage
-  (`tests/gdocs_preview/test_preview_read.py:289`), but no e2e test has ever
-  run against a real document with nested tabs.
-- **Unanchored `insertComment`.** The API's behaviour with `range` omitted is
-  undocumented, and `create_anchored_doc_comment` *requires* a range, so it
-  stays untested. For unanchored document-level comments use the Drive path
-  (`manage_document_comment` action `create`).
-- **Non-enrolled error shapes.** `preview_status._UNKNOWN_FIELD_MARKERS`
-  (`"unknown name"`, `"cannot find field"`, `"invalid json payload"`) is a
-  **heuristic that has never been observed against a real non-enrolled
-  project** — only against `mockdocs`' simulation of one. The credentials in
-  use are enrolled, so this is now unreproducible without a second GCP
-  project. If the classifier ever mislabels, this is the first place to look.
-- **Whether the preview thread operations really are SUGGEST-incompatible.**
-  The 8 thread ops are excluded from SUGGEST batches on a codegen-overlay
-  design decision, never verified live
-  (`docs/preview-api-reference.md`, open item 5; `mockdocs/adapter.py:91`).
-- **Whether SUGGEST-mode batches resolve indexes against the pre-batch
-  document** the way EDIT-mode ones do — transcribed, not verified
-  (`write_tools.py:1298`).
+Five findings changed the code. Two of them were bugs of the class this repo
+exists to prevent: a response that asserted more than its evidence supported.
 
-**Still UNCERTAIN in `docs/preview-api-reference.md` §"Open UNCERTAIN items"**
+### 7.1 Answered, and the code changed
 
-1. `InsertCommentRequest` with `range` omitted (above).
-2. The real discovery type names for the `CommentThread.status` /
-   `SuggestionThread.status` enums — currently inlined by hand.
-3. Whether preview enrollment propagates per-project or per-account (§2.1).
-4. Whether a multi-tab document's `suggestions`/`comments` arrays carry any
-   tab attribution. Observed arrays have none; the repo attributes a
-   suggestion to the tab whose body carries its id.
-5. SUGGEST-incompatibility of the thread ops (above).
+| question | answer | evidence |
+|---|---|---|
+| Nested tabs | Creatable via `addDocumentTab` + `tabProperties.parentTabId`; `tab_documents()` flattens them correctly. **But `index` is position among *siblings***, so a document whose first tab had a child returned **two tabs at `index: 0`** and the flat inventory presented a nested tab as a colliding top-level one. Tab metadata now carries `parent_tab_id` and `nesting_level`. | [`tabs.md`](docs/findings/tabs.md) |
+| Tab attribution of comments (UNCERTAIN 4) | No thread object carries any tab field. Attribution-by-id-location is correct for **suggestions** and ambiguity has no mechanism — a range cannot span tabs. **Comments were different and carried no address at all**: each tab has a disjoint `commentAnchors` map, so `anchorId` is the join key. Comment records now carry `tab_id`, null (never "the default tab") when unplaceable. | [`tabs.md`](docs/findings/tabs.md) |
+| Are the thread ops SUGGEST-incompatible? (UNCERTAIN 5) | **Split, and the overlay was half wrong.** The eight *officially unsupported* request types really are refused — `400 Invalid requests[0].X: Request does not support application as suggestion.`, each accepted in EDIT mode on the next call. The eight *preview thread* ops (`insertComment`, `addCommentReply`, `acceptSuggestion`, `rejectSuggestion`, the deletes) are **NOT** refused: HTTP 200, `ALL_SAVED`, and they take effect. `mockdocs` was rejecting batches prod accepts, so no mock scenario could exercise a comment written alongside a suggested edit. Fixed. | [`suggest-semantics.md`](docs/findings/suggest-semantics.md) |
+| Does SUGGEST resolve indexes against the pre-batch document? | **No — progressively, exactly like EDIT.** Over `"0123456789"`, `[insert@1 "AAAA", insert@5 "B"]` gives `"AAAAB0123456789"` in both modes; pre-batch resolution would have given `"AAAA0123B456789"`. The modes differ only in that a *suggested* deletion leaves its characters in the `SUGGESTIONS_INLINE` space while an EDIT deletion shifts. `suggest_doc_edit`'s replacement shape was correct — for the other reason, which is why the wrong justification survived. | [`suggest-semantics.md`](docs/findings/suggest-semantics.md) |
+| Paragraph-style and table-structure suggestions | **The "out of scope by design" claim did not survive.** Table row/column edits were **already reported** — that half was simply wrong. Paragraph-style edits were **silently dropped**: `updateParagraphStyle` in SUGGEST mode creates a real OPEN suggestion that lands only on the paragraph (`suggestedParagraphStyleChanges`), and `analysis.py` walks content marks, so a document whose only card was that one reported `suggestion_count: 0`. All three accounting numbers agreed with each other and disagreed with the document. Alignment, spacing, indent, bullets and table row/cell styles were all invisible. Both read tools now emit `unreported_suggestion_count` + `unreported_suggestions` + a notice — counting what is not modelled rather than modelling it. | [`coverage.md`](docs/findings/coverage.md) |
+| The not-enrolled classifier | The three markers appear verbatim in one canonical grammar (`Invalid JSON payload received. Unknown name "X" at 'P': Cannot find field.`) at every nesting depth, and the query-parameter variant drops `Cannot find field.` — so the redundancy is load-bearing. **A second grammar carried none of them**: `Invalid value at 'P' (TYPE), "V"` fell through to `available`, recording a request the API never parsed as proof the surface is reachable. Now classified `("unknown", "request_not_parsed")` — deliberately not `unavailable`, which would tell an enrolled caller with a typo to go and enrol. | [`errors-and-discovery.md`](docs/findings/errors-and-discovery.md) |
+| Unanchored `insertComment` (UNCERTAIN 1) | **The API refuses it**: `400 Invalid requests[0].insertComment: Insert comment requests must specify a range to anchor to.` Empty and tab-only ranges are refused too. `create_anchored_doc_comment`'s mandatory range is Google's restriction, not a self-imposed one, so it stays. The Drive redirect now has evidence: a Drive-created unanchored comment reads back through the Docs preview as a full `CommentThread` with `anchorId` and `plainTextQuote` simply absent — that absence *is* "document-level". | [`errors-and-discovery.md`](docs/findings/errors-and-discovery.md) |
+| Merge tolerance (mock spec §13.2) | **0 — the mock's guess was right**, and the suspicion that insert-then-insert differs from insert-then-delete is **not** borne out. Twelve documents, four orderings × gaps 0/1/2: gap 0 joins, gap 1 does not, uniformly. Not a coalescing window (130 s apart still joins) and symmetric. | [`merge.md`](docs/findings/merge.md) |
+| Threads on merge (§13.3), and id renaming | **Both dissolve.** What this repo has been calling "merge" is **absorption at creation time**, not two suggestions becoming one: a new edit touching an existing same-author card is absorbed into it, the write returns no `createdSuggestionIds` at all — only `updatedSummarySuggestionIds` naming the pre-existing id — and no second id is ever minted. So no thread is ever orphaned (two threaded deletions plus a spanning deletion left two cards, each keeping its own reply), and "does the id get renamed" has no subject. | [`merge.md`](docs/findings/merge.md) |
+| Which card absorbs, when a new edit touches two | **Deterministic — the touched card with the lexicographically greatest suggestion id.** First measured 2026-08-01 as "nondeterministic, 3 left / 2 right over five identical runs"; a 2026-08-02 re-measurement that decouples position from creation order (44 fresh documents, 56 two-card-touch events, four edit-type conditions) matched "greatest id wins" 56/56 and every position/age rule near chance — the ids are random, which is what made five same-order trials look like a coin. The "later card (higher index) survives" hypothesis is rejected (27/56). Undocumented behaviour: one e2e test asserts it so drift is caught, but agents and product code still must not rely on it — the invariant tests stay id-agnostic. | [`merge.md`](docs/findings/merge.md) |
 
-**The mock's guesses that tests depend on**
+Two API facts worth carrying forward, both found twice independently:
 
-`mockdocs` has no `TODO`/`GUESS` markers; the convention is `UNCERTAIN`
-pointing at the numbered items above.
+- **The thread array is not the pending set.** A resolved suggestion does not
+  leave `suggestions[]` — it is restatused (`ACCEPTED`/`REJECTED`) and gains a
+  `suggestionAction` reply. §4.4's rule holds only because `analysis.py`
+  derives the pending set from the body's marks, never from `len(suggestions)`.
+- **Both `PREVIEW_*` view modes always degrade to the GA read.**
+  `documents.get` refuses `commentsViewMode` there: `400 "Comments may not be
+  requested when previewing suggestions."`
 
-- `MERGE_TOLERANCE = 0`, same-author only. Whether the *live* API merges
-  adjacent same-author suggestions from **separate batch requests** was the
-  mock's stated "most likely divergence" — and it has since been
-  **CONFIRMED** against prod for two overlapping same-author edits in separate
-  batches. §14 of the mock spec has not been updated to say so; treat that
-  paragraph as stale. The mock still logs every merge (`model.merge_log`) so
-  divergence stays diffable. The real *tolerance value* (§13.2) is still a
-  guess and may differ between insert-then-insert and insert-then-delete.
-- **Threads on merge**: the mock migrates threads onto the survivor — §10's
-  *recommended* column, deliberately **not** the observed-Docs column. Open
-  question §13.3 is unresolved, so this is a known intentional divergence.
-- **Whether the live API renames or reports the pre-merge id** after a merge
-  is unverified (`adapter.py:579`).
-- **`insertComment`'s response-member name** was originally untranscribed;
-  the mock emits `{"insertComment": {"commentThread": …}}` because
-  `write_tools.py` reads that. Prod has since confirmed the shape.
-- `runColour` returns the most-recently-applied mark's author because
-  cross-author colour precedence (§13.1) is unresolved; colour has no MCP
-  surface, so only invariant I3 exercises it.
-- **Not implemented at all**: §5.4 (backspace-burst destructive deletion) and
-  §9 (undo). Both are editor-interaction concerns with no MCP tool surface, so
-  no tool under test can reach them. §13.4 is therefore untouched by this mock.
-- Not modelled by design (out of scope, `analysis.py`): row/column-level table
-  structure suggestions, and paragraph-level style suggestions. Text
-  suggestions inside table cells, and text-run style suggestions, *are*
-  reported.
+### 7.2 Still open — and why
+
+- **Does preview enrollment propagate per-project or per-account?**
+  (UNCERTAIN 3.) Needs a **second GCP project that is not enrolled**, with its
+  own OAuth client and an interactive consent grant. That is a human in a
+  browser; no amount of probing from an enrolled project substitutes. What the
+  classifier work above *does* establish is that the marker strings match real
+  proto-parse errors — it does not establish what a non-enrolled project
+  returns for a recognised-but-ungated request type. The bridge between the two
+  is inference, and it is labelled as inference in the code.
+- **The discovery type names for the two `status` enums** (UNCERTAIN 2).
+  Every labelled variant (`DEVELOPER_PREVIEW`, `PREVIEW`, `TRUSTED_TESTER`,
+  `LIMITED_AVAILABILITY`) returns the byte-identical public document;
+  `v1preview`/`v1beta`/`v1alpha` are 404s; enrolled credentials change nothing.
+  The transcoder names preview proto types on a value error, but `status` is
+  output-only on both threads, so no request can carry one and no error can
+  name one. The **values** are confirmed live (`CommentThread.status`
+  OPEN→RESOLVED→OPEN; `SuggestionThread.status` OPEN→ACCEPTED/REJECTED); only
+  the type names remain unavailable, and they are unavailable by construction.
+
+### 7.3 Unreachable by construction, not merely untested
+
+- **`runColour` / cross-author colour precedence (§13.1).** Colour appears
+  nowhere in the API transcription, nowhere in any captured payload, and
+  nowhere in `gdocs_preview/`. Docs never serialises the colour a suggestion
+  renders in; it is computed client-side from authorship. The mock's rule is an
+  internal detail exercised only by invariant I3 and cannot change any answer
+  any tool gives.
+- **§5.4 backspace-burst deletion and §9 undo.** Editor-interaction semantics.
+  `batchUpdate` has no burst, no keystroke timing and no undo request type, so
+  no test could distinguish an implementation from its absence.
+
+### 7.4 The mock's remaining divergence, stated plainly
+
+`mockdocs` merges two existing suggestions; prod absorbs a new edit into an
+existing one and never merges two that already exist. Implementing the
+prod-faithful rule was tried and measured: **51 failures**, almost all of them
+checked-in llmux scenario and stress ground truth that would need regenerating
+— which would invalidate the recorded benchmark numbers.
+
+It was therefore **not** changed. The divergence is deliberate, documented at
+`mockdocs/model.py` and `mockdocs/adapter.py`, and the ordering for closing it
+later is in [`merge.md`](docs/findings/merge.md). Anyone regenerating the llmux
+corpora should close this first, or the ground truth will bake the mock's rule
+in again.
+
+The one place the divergence had leaked into a *measurement* has been closed:
+`ix-merge-absorb` used to score agents on two live cards merging, which prod
+cannot produce. It was re-founded on absorption at creation time — the agent's
+own edit joins a same-author card that is already there — and grades only the
+end state both rules reach, never which id survives. See
+[`merge-absorb-premise.md`](docs/findings/merge-absorb-premise.md), which also
+states the one cue the mock cannot stage (prod's write that returns no created
+id at all).
 
 ---
 

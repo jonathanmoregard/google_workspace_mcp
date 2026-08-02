@@ -69,6 +69,20 @@ class HeaderFooterManager:
 
         Returns:
             Tuple of (success, message)
+
+        Raises:
+            Exception: whatever the Docs API raised. A failure of the API is
+                NOT returned here. ``(False, message)`` is reserved for this
+                method's own conclusions about the document -- a bad
+                ``section_type``, a section that could not be located -- which
+                are claims it has evidence for. An ``HttpError`` is not: it
+                says the call did not happen, and the caller renders a
+                returned message into an ordinary successful MCP result.
+                Measured 2026-08-02: a 429 here came back as
+                ``"Error: Failed to write kix.… segment content: <HttpError
+                429 …>"`` with ``is_error`` unset, so the e2e quota guard read
+                a rate-limit failure as a product bug
+                (``docs/findings/e2e-quota.md``).
         """
         logger.info(f"Updating {section_type} in document {document_id}")
 
@@ -83,69 +97,72 @@ class HeaderFooterManager:
                 "header_footer_type must be 'DEFAULT', 'FIRST_PAGE_ONLY', or 'EVEN_PAGE'",
             )
 
-        try:
-            # Get document structure
+        # Get document structure
+        doc = await self._get_document(document_id)
+        target_doc, active_tab_id = self._get_target_doc_for_header_footer(doc)
+
+        # Find the target section
+        target_section, section_id = await self._find_target_section(
+            target_doc, section_type, header_footer_type
+        )
+
+        if not section_id:
+            created_id = await self._create_missing_section(
+                document_id, section_type, header_footer_type
+            )
+            if not created_id:
+                # The creation call succeeded and still yielded no id: a fact
+                # about the response, which is why it may be reported. A
+                # creation call that FAILED raised out of
+                # _create_missing_section and never reached here.
+                return (
+                    False,
+                    f"No {section_type} found in document and automatic creation failed",
+                )
             doc = await self._get_document(document_id)
             target_doc, active_tab_id = self._get_target_doc_for_header_footer(doc)
-
-            # Find the target section
-            target_section, section_id = await self._find_target_section(
-                target_doc, section_type, header_footer_type
+            target_section = (
+                target_doc.get("headers", {}).get(created_id)
+                if section_type == "header"
+                else target_doc.get("footers", {}).get(created_id)
             )
+            section_id = created_id
 
-            if not section_id:
-                created_id = await self._create_missing_section(
-                    document_id, section_type, header_footer_type
-                )
-                if not created_id:
-                    return (
-                        False,
-                        f"No {section_type} found in document and automatic creation failed",
-                    )
-                doc = await self._get_document(document_id)
-                target_doc, active_tab_id = self._get_target_doc_for_header_footer(doc)
-                target_section = (
-                    target_doc.get("headers", {}).get(created_id)
-                    if section_type == "header"
-                    else target_doc.get("footers", {}).get(created_id)
-                )
-                section_id = created_id
-
-            # Update the content
-            success, replace_message = await self._replace_section_content(
+        # Update the content. The first attempt is allowed to fail: a newly
+        # created header/footer can lag briefly before its segment content
+        # becomes fully visible, and the retry below is what absorbs that.
+        # The SECOND failure is re-raised, because by then nothing here has
+        # evidence that the write is ever going to land.
+        try:
+            await self._replace_section_content(
                 document_id, target_section, content, section_id, active_tab_id
             )
+        except Exception as first_error:  # noqa: BLE001 - re-raised below
+            logger.info(
+                f"First {section_type} write failed ({first_error}); re-reading the "
+                "document once in case the segment was still settling"
+            )
+            refreshed_doc = await self._get_document(document_id)
+            refreshed_target_doc, refreshed_tab_id = (
+                self._get_target_doc_for_header_footer(refreshed_doc)
+            )
+            (
+                refreshed_section,
+                refreshed_section_id,
+            ) = await self._find_target_section(
+                refreshed_target_doc, section_type, header_footer_type
+            )
+            if not refreshed_section_id:
+                raise
+            await self._replace_section_content(
+                document_id,
+                refreshed_section,
+                content,
+                refreshed_section_id,
+                refreshed_tab_id,
+            )
 
-            if not success:
-                # Retry once after re-fetching the document. Newly created headers/footers
-                # can lag briefly before their segment content becomes fully visible.
-                refreshed_doc = await self._get_document(document_id)
-                refreshed_target_doc, refreshed_tab_id = (
-                    self._get_target_doc_for_header_footer(refreshed_doc)
-                )
-                (
-                    refreshed_section,
-                    refreshed_section_id,
-                ) = await self._find_target_section(
-                    refreshed_target_doc, section_type, header_footer_type
-                )
-                if refreshed_section_id:
-                    success, replace_message = await self._replace_section_content(
-                        document_id,
-                        refreshed_section,
-                        content,
-                        refreshed_section_id,
-                        refreshed_tab_id,
-                    )
-
-            if success:
-                return True, f"Updated {section_type} content in document {document_id}"
-            else:
-                return False, replace_message
-
-        except Exception as e:
-            logger.error(f"Failed to update {section_type}: {str(e)}")
-            return False, f"Failed to update {section_type}: {str(e)}"
+        return True, f"Updated {section_type} content in document {document_id}"
 
     async def _get_document(self, document_id: str) -> dict[str, Any]:
         """Get the full document data."""
@@ -272,7 +289,7 @@ class HeaderFooterManager:
         new_content: str,
         section_id: str,
         tab_id: Optional[str],
-    ) -> tuple[bool, str]:
+    ) -> None:
         """
         Replace the content in a header or footer section.
 
@@ -281,8 +298,12 @@ class HeaderFooterManager:
             section: Section data containing content elements
             new_content: New content to insert
 
-        Returns:
-            Tuple of (success, message)
+        Raises:
+            Exception: whatever the Docs API raised. This method used to
+                return ``(False, "Failed to write … segment content: …")``,
+                which its caller rendered into a successful MCP result. It
+                reports success by returning and failure by raising, so
+                there is no shape left for a failure to hide in.
         """
         content_elements = section.get("content", []) if section else []
         first_para = self._find_first_paragraph(content_elements)
@@ -333,20 +354,11 @@ class HeaderFooterManager:
                 )
             )
 
-        try:
-            await asyncio.to_thread(
-                self.service.documents()
-                .batchUpdate(documentId=document_id, body={"requests": requests})
-                .execute
-            )
-            return True, "ok"
-
-        except Exception as e:
-            logger.error(f"Failed to replace section content: {str(e)}")
-            return (
-                False,
-                f"Failed to write {section_id} segment content: {str(e)}",
-            )
+        await asyncio.to_thread(
+            self.service.documents()
+            .batchUpdate(documentId=document_id, body={"requests": requests})
+            .execute
+        )
 
     def _segment_has_meaningful_content(
         self, content_elements: list[dict[str, Any]]
@@ -371,7 +383,18 @@ class HeaderFooterManager:
     async def _create_missing_section(
         self, document_id: str, section_type: str, header_footer_type: str = "DEFAULT"
     ) -> Optional[str]:
-        """Create a missing header/footer and return its new segment ID."""
+        """Create a missing header/footer and return its new segment ID.
+
+        Returns ``None`` only when the API answered and the answer carried no
+        id. A failed call is RAISED: "automatic creation failed" is a sentence
+        about the document, and a 429 is not evidence for it.
+
+        The one failure that is recovered rather than raised is "already
+        exists" -- that is not a failure of the operation, it is the document
+        telling us the section we wanted is already there, so the id is looked
+        up and returned. If that lookup itself fails, the original error is
+        raised rather than swallowed.
+        """
         request = create_create_header_footer_request(section_type, header_footer_type)
         try:
             result = await asyncio.to_thread(
@@ -380,16 +403,12 @@ class HeaderFooterManager:
                 .execute
             )
         except Exception as e:
-            if "already exists" in str(e).lower():
-                try:
-                    doc = await self._get_document(document_id)
-                    return self._resolve_section_id_from_styles(
-                        doc, section_type, header_footer_type
-                    )
-                except Exception:
-                    pass
-            logger.error(f"Failed to create missing {section_type}: {str(e)}")
-            return None
+            if "already exists" not in str(e).lower():
+                raise
+            doc = await self._get_document(document_id)
+            return self._resolve_section_id_from_styles(
+                doc, section_type, header_footer_type
+            )
 
         replies = result.get("replies", [])
         if not replies:
@@ -418,28 +437,30 @@ class HeaderFooterManager:
 
         Returns:
             Dictionary with header and footer information
+
+        Raises:
+            Exception: whatever the Docs API raised. This used to return
+                ``{"error": str(e)}``, the dict-shaped version of the bug
+                fixed elsewhere in this file: a caller reading ``headers`` /
+                ``footers`` off the result sees empty ones and concludes the
+                document has none.
         """
-        try:
-            doc = await self._get_document(document_id)
+        doc = await self._get_document(document_id)
 
-            headers_info = {}
-            for header_id, header_data in doc.get("headers", {}).items():
-                headers_info[header_id] = self._extract_section_info(header_data)
+        headers_info = {}
+        for header_id, header_data in doc.get("headers", {}).items():
+            headers_info[header_id] = self._extract_section_info(header_data)
 
-            footers_info = {}
-            for footer_id, footer_data in doc.get("footers", {}).items():
-                footers_info[footer_id] = self._extract_section_info(footer_data)
+        footers_info = {}
+        for footer_id, footer_data in doc.get("footers", {}).items():
+            footers_info[footer_id] = self._extract_section_info(footer_data)
 
-            return {
-                "headers": headers_info,
-                "footers": footers_info,
-                "has_headers": bool(headers_info),
-                "has_footers": bool(footers_info),
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get header/footer info: {str(e)}")
-            return {"error": str(e)}
+        return {
+            "headers": headers_info,
+            "footers": footers_info,
+            "has_headers": bool(headers_info),
+            "has_footers": bool(footers_info),
+        }
 
     def _extract_section_info(self, section_data: dict[str, Any]) -> dict[str, Any]:
         """Extract useful information from a header/footer section."""
@@ -478,6 +499,13 @@ class HeaderFooterManager:
 
         Returns:
             Tuple of (success, message)
+
+        Raises:
+            Exception: whatever the Docs API raised, except the "already
+                exists" refusal, which is the document answering rather than
+                the call failing. This mirrors :meth:`_create_missing_section`;
+                it used to swallow every failure into ``(False, "Failed to
+                create …")``, which a caller renders as ordinary prose.
         """
         if section_type not in ["header", "footer"]:
             return False, "section_type must be 'header' or 'footer'"
@@ -497,30 +525,27 @@ class HeaderFooterManager:
                 "header_footer_type must be 'DEFAULT', 'FIRST_PAGE', or 'EVEN_PAGE'",
             )
 
+        # Build the request
+        request = {"type": api_type}
+
+        # Create the appropriate request type
+        if section_type == "header":
+            batch_request = {"createHeader": request}
+        else:
+            batch_request = {"createFooter": request}
+
         try:
-            # Build the request
-            request = {"type": api_type}
-
-            # Create the appropriate request type
-            if section_type == "header":
-                batch_request = {"createHeader": request}
-            else:
-                batch_request = {"createFooter": request}
-
-            # Execute the request
             await asyncio.to_thread(
                 self.service.documents()
                 .batchUpdate(documentId=document_id, body={"requests": [batch_request]})
                 .execute
             )
-
-            return True, f"Successfully created {section_type} with type {api_type}"
-
         except Exception as e:
-            error_msg = str(e)
-            if "already exists" in error_msg.lower():
+            if "already exists" in str(e).lower():
                 return (
                     False,
                     f"A {section_type} of type {api_type} already exists in the document",
                 )
-            return False, f"Failed to create {section_type}: {error_msg}"
+            raise
+
+        return True, f"Successfully created {section_type} with type {api_type}"

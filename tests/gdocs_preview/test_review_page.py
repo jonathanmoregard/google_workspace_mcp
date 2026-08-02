@@ -1083,3 +1083,100 @@ class TestReviewViewScopeArguments:
         assert "scope_note" not in review_view(
             rendered_document(), fields="full", start_index=1, end_index=8
         )
+
+
+# ---------------------------------------------------------------------------
+# Pending suggestions the analysis layer does not model
+# ---------------------------------------------------------------------------
+
+
+def thread(
+    sid: str, *, status: str | None = "OPEN", summary: str = "Format: alignment"
+):
+    """One normalized suggestion thread, as preview_read produces them."""
+    return {
+        "suggestion_id": sid,
+        "status": status,
+        "summary_text": summary,
+        "author": {"display_name": "Alice Reviewer", "me": False, "user": "users/1"},
+        "replies": [],
+    }
+
+
+class TestUnreportedSuggestions:
+    """The set subtraction that makes an invisible card countable.
+
+    Measured against prod 2026-08-02 (docs/findings/coverage.md): an
+    ``updateParagraphStyle`` alignment suggestion leaves NO content mark, so
+    ``analysis.extract_suggestions`` returns nothing for it while the API
+    files an OPEN thread. ``suggestion_count`` was therefore short by one,
+    with nothing in the response saying so.
+    """
+
+    def test_a_thread_with_no_record_is_reported(self):
+        cards = rp.unreported_suggestions(
+            {
+                "s.text": thread("s.text", summary="Add: “x”"),
+                "s.para": thread("s.para"),
+            },
+            ["s.text"],
+        )
+        assert [c["suggestion_id"] for c in cards] == ["s.para"]
+        # Google's own label is what names the kind; a bare id would not.
+        assert cards[0]["summary_text"] == "Format: alignment"
+        assert cards[0]["author"] == "Alice Reviewer"
+        assert cards[0]["status"] == "OPEN"
+
+    def test_a_modelled_thread_is_not_reported_twice(self):
+        assert rp.unreported_suggestions({"s.a": thread("s.a")}, ["s.a"]) == []
+
+    def test_a_resolved_thread_is_not_reported(self):
+        """A rejected card keeps its thread, so the raw subtraction would
+        count every suggestion the document has ever had."""
+        cards = rp.unreported_suggestions(
+            {"s.gone": thread("s.gone", status="REJECTED")}, []
+        )
+        assert cards == []
+
+    def test_no_threads_reports_nothing(self):
+        assert rp.unreported_suggestions({}, ["s.a"]) == []
+
+
+class TestAttachUnreported:
+    def test_a_clean_document_says_zero_explicitly(self):
+        result = rp.attach_unreported({}, threads={}, reported_ids=[], complete=True)
+        assert result["unreported_suggestion_count"] == 0
+        # No noise when there is nothing to say.
+        assert "unreported_suggestions" not in result
+        assert "notice_unreported" not in result
+
+    def test_an_unmodelled_card_is_counted_listed_and_narrated(self):
+        result = rp.attach_unreported(
+            {"suggestion_count": 1},
+            threads={"s.text": thread("s.text"), "s.para": thread("s.para")},
+            reported_ids=["s.text"],
+            complete=True,
+        )
+        assert result["unreported_suggestion_count"] == 1
+        assert result["unreported_suggestions"][0]["suggestion_id"] == "s.para"
+        notice = result["notice_unreported"]
+        # The three things the notice has to carry: that the response's other
+        # counts exclude them, what kind they are, and that they remain
+        # actionable.
+        assert "NOT counted by any other suggestion count in this response" in notice
+        assert "Format: alignment" in notice
+        assert "manage_document_suggestion" in notice
+        # ...and NOT the name of any one tool's count field. Three tools ship
+        # this string; ``get_doc_review_view`` and the write tools have no
+        # ``suggestion_count``, so naming it pointed two of them at a field
+        # their response does not contain.
+        assert "`suggestion_count`" not in notice
+
+    def test_a_degraded_read_says_it_cannot_tell_rather_than_zero(self):
+        """Zero here would be an absence claim from a read carrying no thread
+        array at all -- the same rule author, status and tab_id follow."""
+        result = rp.attach_unreported({}, threads={}, reported_ids=[], complete=False)
+        assert result["unreported_suggestion_count"] is None
+        assert result["unreported_suggestions_unavailable"] == "read_degraded"
+        assert "cannot say" in result["notice_unreported"]
+        assert "unreported_suggestions" not in result

@@ -24,6 +24,7 @@ from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
     extract_office_xml_text,
     handle_http_errors,
+    TransientNetworkError,
     UserInputError,
 )
 from core.server import server
@@ -977,8 +978,17 @@ async def insert_doc_image(
 
             image_uri = f"https://drive.google.com/uc?id={image_source}"
             source_description = f"Drive file {file_metadata.get('name', image_source)}"
-        except Exception as e:
-            return f"Error: Could not access Drive file {image_source}: {str(e)}"
+        except HttpError as error:
+            # "Could not access Drive file" as a successful result told the
+            # caller a fact about the FILE. A 429 or a 500 is a fact about the
+            # CALL, and the two need different reactions: fix the id, versus
+            # wait and retry. A 404 really is about the file, so it keeps the
+            # wording -- as a raised input error, not as a success.
+            if error.resp.status == 404:
+                raise UserInputError(
+                    f"Could not access Drive file {image_source}: {error}"
+                ) from error
+            raise
     else:
         image_uri = image_source
         source_description = "URL image"
@@ -1827,14 +1837,18 @@ async def create_table_with_data(
     # Use TableOperationManager to handle the complex logic
     table_manager = TableOperationManager(service)
 
-    # Try to create the table, and if it fails due to index being at document end, retry with index-1
+    # Try to create the table, and if it fails due to index being at document
+    # end, retry with index-1. The manager now RAISES that rejection instead
+    # of returning it as a message, so the retry reads the API's own error
+    # rather than a string the manager had rendered for display.
     effective_index = index
-    success, message, metadata = await table_manager.create_and_populate_table(
-        document_id, table_data, index, bold_headers, tab_id, header_rows
-    )
-
-    # If it failed due to index being at or beyond document end, retry with adjusted index
-    if not success and "must be less than the end index" in message:
+    try:
+        success, message, metadata = await table_manager.create_and_populate_table(
+            document_id, table_data, index, bold_headers, tab_id, header_rows
+        )
+    except HttpError as error:
+        if "must be less than the end index" not in str(error):
+            raise
         logger.debug(
             f"Index {index} is at document boundary, retrying with index {index - 1}"
         )
@@ -1988,19 +2002,18 @@ async def export_doc_to_pdf(
         f"[export_doc_to_pdf] Email={user_google_email}, Doc={document_id}, pdf_filename={pdf_filename}, folder_id={folder_id}"
     )
 
-    # Get file metadata first to validate it's a Google Doc
-    try:
-        file_metadata = await asyncio.to_thread(
-            service.files()
-            .get(
-                fileId=document_id,
-                fields="id, name, mimeType, webViewLink",
-                supportsAllDrives=True,
-            )
-            .execute
+    # Get file metadata first to validate it's a Google Doc. A failure here is
+    # raised, not returned: "Could not access document" in a successful result
+    # reads as a fact about the document's permissions, and a 429 is not one.
+    file_metadata = await asyncio.to_thread(
+        service.files()
+        .get(
+            fileId=document_id,
+            fields="id, name, mimeType, webViewLink",
+            supportsAllDrives=True,
         )
-    except Exception as e:
-        return f"Error: Could not access document {document_id}: {str(e)}"
+        .execute
+    )
 
     mime_type = file_metadata.get("mimeType", "")
     original_name = file_metadata.get("name", "Unknown Document")
@@ -2012,24 +2025,21 @@ async def export_doc_to_pdf(
 
     logger.info(f"[export_doc_to_pdf] Exporting '{original_name}' to PDF")
 
-    # Export the document as PDF
-    try:
-        request_obj = service.files().export_media(
-            fileId=document_id, mimeType="application/pdf"
-        )
+    # Export the document as PDF. Nothing has been written anywhere yet, so a
+    # failure is simply an error and a retry costs the caller nothing.
+    request_obj = service.files().export_media(
+        fileId=document_id, mimeType="application/pdf"
+    )
 
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request_obj)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request_obj)
 
-        done = False
-        while not done:
-            _, done = await asyncio.to_thread(downloader.next_chunk)
+    done = False
+    while not done:
+        _, done = await asyncio.to_thread(downloader.next_chunk)
 
-        pdf_content = fh.getvalue()
-        pdf_size = len(pdf_content)
-
-    except Exception as e:
-        return f"Error: Failed to export document to PDF: {str(e)}"
+    pdf_content = fh.getvalue()
+    pdf_size = len(pdf_content)
 
     # Determine PDF filename
     if not pdf_filename:
@@ -2037,7 +2047,9 @@ async def export_doc_to_pdf(
     elif not pdf_filename.endswith(".pdf"):
         pdf_filename += ".pdf"
 
-    # Upload PDF to Drive
+    # Upload PDF to Drive. A failure leaves NOTHING saved, so it is an error
+    # rather than a degrade -- but the message keeps the fact that the bytes
+    # were produced, since that is what tells the caller a retry is cheap.
     try:
         # Reuse the existing BytesIO object by resetting to the beginning
         fh.seek(0)
@@ -2080,8 +2092,12 @@ async def export_doc_to_pdf(
 
         return f"Successfully exported '{original_name}' to PDF and saved to Drive as '{pdf_filename}' (ID: {pdf_file_id}, {pdf_size:,} bytes){folder_info}. PDF: {pdf_web_link} | Original: {web_view_link}"
 
-    except Exception as e:
-        return f"Error: Failed to upload PDF to Drive: {str(e)}. PDF was generated successfully ({pdf_size:,} bytes) but could not be saved to Drive."
+    except HttpError as error:
+        raise Exception(
+            f"Failed to upload PDF to Drive: {error}. The PDF was generated "
+            f"({pdf_size:,} bytes) but could not be saved, so nothing was "
+            "written to Drive and the export can be retried."
+        ) from error
 
 
 # ==============================================================================
@@ -2471,11 +2487,16 @@ async def get_doc_as_markdown(
             ),
             timeout=30,
         )
-    except (TimeoutError, asyncio.TimeoutError):
-        return (
-            f"Error: Timed out fetching document {document_id} from Google Docs API. "
-            "The document may be too large or there may be a network issue. Please try again."
-        )
+    except (TimeoutError, asyncio.TimeoutError) as error:
+        # Returned as prose this was a successful result whose body was an
+        # empty document with an apology in front of it. A timeout is the
+        # network failing, and TransientNetworkError is the type
+        # handle_http_errors already passes through unwrapped.
+        raise TransientNetworkError(
+            f"Timed out fetching document {document_id} from Google Docs API. "
+            "The document may be too large or there may be a network issue. "
+            "Please try again."
+        ) from error
 
     markdown = convert_doc_to_markdown(doc)
 

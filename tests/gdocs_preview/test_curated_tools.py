@@ -140,7 +140,15 @@ class TestListSuggestions:
         )
 
         assert result["read_source"] == curated_tools.READ_SOURCE_PREVIEW
-        assert result["tabs"] == [{"tab_id": "t.0", "title": "Tab 1", "index": 0}]
+        assert result["tabs"] == [
+            {
+                "tab_id": "t.0",
+                "title": "Tab 1",
+                "index": 0,
+                "parent_tab_id": None,
+                "nesting_level": 0,
+            }
+        ]
         (s,) = result["suggestions"]
         assert s["suggestion_id"] == "suggest.ins1"
         assert s["author"]["display_name"] == "Alice Reviewer"
@@ -839,6 +847,151 @@ class TestClassifyPreviewError:
         assert reason == "unexpected_http_500"
 
 
+class TestClassifyAgainstLiveErrorStrings:
+    """The classifier, pinned to messages copied VERBATIM off the live API.
+
+    The marker list had only ever been checked against ``mockdocs``'
+    simulation of a non-enrolled project. On 2026-08-01 deliberately bogus
+    request types and field names were sent to docs.googleapis.com and the
+    exact strings recorded (docs/findings/errors-and-discovery.md). These
+    tests hold the classifier to those strings rather than to a paraphrase,
+    so a re-worded marker fails here instead of in production.
+
+    A second, non-enrolled GCP project was NOT available, so none of this
+    proves what a non-enrolled caller receives for a recognised-but-ungated
+    request type. It proves the markers match real PROTO-PARSE grammar.
+    """
+
+    #: Unknown-name rejections. Every one is HTTP 400 and carries all three
+    #: markers, except the query-parameter variant, which drops
+    #: "Cannot find field." and is caught by the other two.
+    UNKNOWN_NAME = {
+        "invented request type": (
+            "Invalid JSON payload received. Unknown name "
+            "\"thisRequestTypeDoesNotExist\" at 'requests[0]': Cannot find field."
+        ),
+        "preview request type, wrong case": (
+            'Invalid JSON payload received. Unknown name "insertcomment" '
+            "at 'requests[0]': Cannot find field."
+        ),
+        "unknown sub-field of a preview request": (
+            'Invalid JSON payload received. Unknown name "bogusSubFieldXyz" '
+            "at 'requests[0].insert_comment': Cannot find field."
+        ),
+        "unknown field nested inside a range": (
+            'Invalid JSON payload received. Unknown name "bogusRangeFieldXyz" '
+            "at 'requests[0].insert_comment.range': Cannot find field."
+        ),
+        "unknown top-level field of the batchUpdate body": (
+            "Invalid JSON payload received. Unknown name "
+            '"bogusTopLevelFieldXyz": Cannot find field.'
+        ),
+        "unknown query parameter (no 'Cannot find field.')": (
+            'Invalid JSON payload received. Unknown name "bogusQueryParamXyz": '
+            "Cannot bind query parameter. Field 'bogusQueryParamXyz' could not "
+            "be found in request message."
+        ),
+    }
+
+    #: Value rejections. The JSON never parsed either, but the reason says
+    #: nothing about enrollment -- an enrolled caller with a malformed value
+    #: produces exactly these.
+    INVALID_VALUE = {
+        "request member is a string": (
+            "Invalid value at 'requests[0].insert_comment' "
+            "(type.googleapis.com/google.apps.docs.v1.InsertCommentRequest), "
+            '"not-an-object"'
+        ),
+        "int field given a non-numeric string": (
+            "Invalid value at 'requests[0].insert_text.location.index' "
+            '(TYPE_INT32), "abc"'
+        ),
+        "bogus value for the preview write-mode enum": (
+            "Invalid value at 'write_control.write_mode' "
+            "(type.googleapis.com/google.apps.docs.v1.WriteControl.WriteMode), "
+            '"TOTALLY_BOGUS_WRITE_MODE"'
+        ),
+        "two members of the request oneof": (
+            "Invalid value at 'requests[0]' (oneof), oneof field 'request' is "
+            "already set. Cannot set 'deleteContentRange'"
+        ),
+    }
+
+    #: Semantic rejections: the request type WAS parsed. Different grammar --
+    #: the camelCase request name, a colon, then prose.
+    SEMANTIC_400 = {
+        "insertComment without a range": (
+            "Invalid requests[0].insertComment: Insert comment requests must "
+            "specify a range to anchor to."
+        ),
+        "insertComment with an empty range": (
+            "Invalid requests[0].insertComment: Invalid range: must contain a "
+            "start and end index"
+        ),
+        "insertComment beyond the segment": (
+            "Invalid requests[0].insertComment: Index 900000 must be less than "
+            "the end index of the referenced segment, 24."
+        ),
+        "no request set": "Invalid requests[0]: No request set.",
+        "bogus field mask": (
+            "Invalid requests[0].updateParagraphStyle: Invalid field: "
+            "bogus_mask_field_xyz"
+        ),
+    }
+
+    @pytest.mark.parametrize("label", sorted(UNKNOWN_NAME))
+    def test_unknown_name_400s_read_as_not_enrolled(self, label):
+        verdict = preview_status.classify_preview_error(400, self.UNKNOWN_NAME[label])
+        assert verdict == ("unavailable", "not_enrolled"), label
+
+    @pytest.mark.parametrize("label", sorted(UNKNOWN_NAME))
+    def test_every_unknown_name_400_carries_at_least_two_markers(self, label):
+        """Redundancy is the point: no single phrase carries the verdict."""
+        lowered = self.UNKNOWN_NAME[label].lower()
+        hit = [m for m in preview_status._UNKNOWN_FIELD_MARKERS if m in lowered]
+        assert len(hit) >= 2, (label, hit)
+
+    @pytest.mark.parametrize("label", sorted(INVALID_VALUE))
+    def test_invalid_value_400s_are_not_read_as_proof_of_enrollment(self, label):
+        """The fail-open direction this fix closes.
+
+        These are proto-parse failures with none of the unknown-name markers.
+        Before 2026-08-01 they fell through to ``available`` -- a request the
+        API never parsed, reported as evidence that the preview surface is
+        reachable.
+        """
+        verdict = preview_status.classify_preview_error(400, self.INVALID_VALUE[label])
+        assert verdict == ("unknown", "request_not_parsed"), label
+
+    @pytest.mark.parametrize("label", sorted(SEMANTIC_400))
+    def test_semantic_400s_still_read_as_available(self, label):
+        verdict = preview_status.classify_preview_error(400, self.SEMANTIC_400[label])
+        assert verdict == ("available", "preview_request_type_recognized"), label
+
+    def test_the_two_parse_grammars_do_not_overlap_the_semantic_one(self):
+        """No semantic message may match a parse marker, or vice versa.
+
+        The whole classifier rests on the live API using three disjoint
+        grammars. This states that as an assertion over the recorded corpus
+        rather than as a paragraph of prose.
+        """
+        markers = (
+            preview_status._UNKNOWN_FIELD_MARKERS
+            + preview_status._PARSE_FAILURE_MARKERS
+        )
+        for label, message in self.SEMANTIC_400.items():
+            lowered = message.lower()
+            assert not [m for m in markers if m in lowered], label
+
+    def test_the_probes_own_404_is_unaffected(self):
+        """The capabilities probe's real answer, verbatim (2026-07-30 and
+        re-observed 2026-08-01)."""
+        verdict = preview_status.classify_preview_error(
+            404, "Suggestion with ID probe.nonexistent does not exist."
+        )
+        assert verdict == ("available", "preview_request_type_recognized")
+
+
 class TestCapabilities:
     @pytest.mark.asyncio
     async def test_default_is_side_effect_free(self):
@@ -953,7 +1106,18 @@ class TestCapabilities:
             # uri=self.uri)`, so str() carries the document id.
             side_effect=HttpError(
                 resp=resp,
-                content=b'{"error": {"message": "Invalid value at requests[0]"}}',
+                # A real SEMANTIC 400 (live API, 2026-08-01) - the request
+                # type parsed, only its argument was wrong - so A's verdict
+                # is "available" and the leak this test is about is visible.
+                # It used to read "Invalid value at requests[0]", which is
+                # the PARSE-failure grammar and now classifies as "unknown"
+                # (see preview_status._PARSE_FAILURE_MARKERS); the string was
+                # always incidental to what this test asserts.
+                content=(
+                    b'{"error": {"message": "Invalid requests[0].insertComment: '
+                    b"Index 900000 must be less than the end index of the "
+                    b'referenced segment, 24."}}'
+                ),
                 uri=f"https://docs.googleapis.com/v1/documents/{doc_a}:batchUpdate",
             )
         )
@@ -1024,3 +1188,263 @@ class TestCapabilities:
         )
         assert result["preview"]["availability"] == "unknown"
         assert result["preview"]["evidence"]["reason"] == "permission_or_scope"
+
+
+class TestSuggestionsThisLayerDoesNotModel:
+    """A pending suggestion with no content mark must not vanish.
+
+    Measured against prod 2026-08-02 (docs/findings/coverage.md): an
+    ``updateParagraphStyle`` alignment / line-spacing / indent suggestion,
+    ``createParagraphBullets``, ``updateTableRowStyle`` and
+    ``updateTableCellStyle`` all return HTTP 200, file an OPEN thread and
+    put NOTHING on any paragraph element. Before this block both read tools
+    answered such a document with ``suggestion_count: 0`` / an empty
+    ``suggestion_ids`` and no other sign that anything existed -- an
+    incomplete answer that looked complete, which is the failure this whole
+    package exists to prevent.
+    """
+
+    def _payload(self, document, threads):
+        return fx.build_tabs_payload([("t.0", document)], suggestions=threads)
+
+    @pytest.mark.asyncio
+    async def test_the_listing_counts_and_names_what_it_cannot_describe(self):
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        # The modelled card is still exactly one, and still described.
+        assert result["suggestion_count"] == 1
+        assert [s["suggestion_id"] for s in result["suggestions"]] == ["suggest.ins1"]
+        # ...and the invisible one is now a number, an id and a sentence.
+        assert result["unreported_suggestion_count"] == 1
+        (card,) = result["unreported_suggestions"]
+        assert card["suggestion_id"] == "suggest.para1"
+        assert card["summary_text"] == "Format: alignment"
+        assert card["author"] == "Alice Reviewer"
+        assert "Format: alignment" in result["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_a_document_whose_only_suggestion_is_invisible(self):
+        """The worst case: ``suggestion_count: 0`` on a document under
+        review. Nothing else in the response contradicted it."""
+        service = _docs_get_service(
+            self._payload(fx.DOC_PARAGRAPH_STYLE_ONLY, [fx.PARAGRAPH_STYLE_THREAD])
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["suggestion_count"] == 0
+        assert result["unreported_suggestion_count"] == 1
+        assert "Do NOT report a review as complete" in result["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_a_page_is_not_what_the_count_is_taken_against(self):
+        """The subtraction uses the whole modelled set, never the page.
+
+        A page is a subset by construction, so subtracting one would report
+        the rest of the document as unmodelled.
+        """
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                page_size=1,
+            )
+        )
+        assert result["returned_count"] == 1
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_filter_does_not_narrow_the_unreported_count(self):
+        """It is a property of the DOCUMENT, like ``suggestion_count``."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                author="Alice Reviewer",
+            )
+        )
+        assert result["matched_count"] == 1
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_clean_document_says_zero_rather_than_omitting_the_key(self):
+        service = _docs_get_service(fx.TABS_PAYLOAD)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+        assert result["unreported_suggestion_count"] == 0
+        assert "unreported_suggestions" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_review_view_reports_it_too(self):
+        """``suggestion_ids`` is the view's version of the same claim, and it
+        was equally short: these cards render no marker anywhere."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["suggestion_ids"] == ["suggest.ins1"]
+        assert result["unreported_suggestion_count"] == 1
+        assert result["unreported_suggestions"][0]["suggestion_id"] == "suggest.para1"
+
+    @pytest.mark.asyncio
+    async def test_a_window_does_not_narrow_the_review_views_count(self):
+        """The window narrows what the tool CAN show; it does not change what
+        the document holds. Subtracting the windowed ``suggestion_ids`` would
+        report every card outside the window as unmodelled."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+                start_index=25,
+                end_index=40,
+            )
+        )
+        assert result["suggestion_ids"] == []
+        assert result["unreported_suggestion_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_listing_says_it_cannot_tell(self):
+        """The thread array exists only on the preview read, so ``0`` here
+        would be an absence claim from a read that never looked."""
+        service = _ga_only_service(fx.DOC_PARAGRAPH_STYLE_ONLY)
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert result["unreported_suggestion_count"] is None
+        assert result["unreported_suggestions_unavailable"] == "read_degraded"
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_review_view_says_it_cannot_tell(self):
+        service = _ga_only_service(fx.DOC_PARAGRAPH_STYLE_ONLY)
+        fn = _unwrap(curated_tools.get_doc_review_view)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+
+        assert result["read_source"] == curated_tools.READ_SOURCE_GA
+        assert result["unreported_suggestion_count"] is None
+        assert result["unreported_suggestions_unavailable"] == "read_degraded"
+
+    @pytest.mark.asyncio
+    async def test_the_notice_names_no_field_the_emitting_tool_lacks(self):
+        """One string, three tools -- so it may not name any one tool's key.
+
+        The notice said the cards "are NOT included in ``suggestion_count``"
+        and told the agent not to call the review complete "on
+        ``suggestion_count`` alone". ``get_doc_review_view`` ships the same
+        notice and has no ``suggestion_count`` field at all, so its copy
+        pointed the agent at a number that is not in the response -- a false
+        sentence wrapped around a true one, in the one place whose whole job
+        is to be believed.
+        """
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        view = json.loads(
+            await _unwrap(curated_tools.get_doc_review_view)(
+                service, user_google_email=EMAIL, document_id="doc-fixture-1"
+            )
+        )
+        # The premise, asserted rather than assumed.
+        assert "suggestion_count" not in view
+        assert view["unreported_suggestion_count"] == 1
+        assert "`suggestion_count`" not in view["notice_unreported"], view[
+            "notice_unreported"
+        ]
+        # ...and the guidance it carried survives the rewording.
+        assert "Do NOT report a review as complete" in view["notice_unreported"]
+
+        listing = json.loads(
+            await _unwrap(curated_tools.list_document_suggestions)(
+                _docs_get_service(
+                    self._payload(
+                        fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                        [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+                    )
+                ),
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+            )
+        )
+        # The listing DOES have suggestion_count, and the same sentence is
+        # true of it: every count in the response excludes these cards.
+        assert listing["suggestion_count"] == 1
+        assert "Do NOT report a review as complete" in listing["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_a_resolved_card_stops_being_counted(self):
+        """Rejecting leaves the thread behind with ``status: "REJECTED"``
+        (prod, 2026-08-02) and strips the content mark. Counting the raw
+        thread array would report every card the document ever had."""
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_PLAIN_INSERTION,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD_REJECTED],
+            )
+        )
+        fn = _unwrap(curated_tools.list_document_suggestions)
+
+        result = json.loads(
+            await fn(service, user_google_email=EMAIL, document_id="doc-fixture-1")
+        )
+        assert result["suggestion_count"] == 1
+        assert result["unreported_suggestion_count"] == 0

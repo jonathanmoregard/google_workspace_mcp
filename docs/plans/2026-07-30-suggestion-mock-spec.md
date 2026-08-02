@@ -404,14 +404,33 @@ harness — and is the only part of this document written by the implementation.
   **not implemented**: both are editor-interaction concerns with no MCP tool surface, so
   no tool under test can reach them. Open question §13.4 is therefore untouched by this
   mock.
-- **Merge.** `MERGE_TOLERANCE = 0`, same-author only, per §6. Whether the real preview API
-  merges adjacent same-author suggestions created by separate batch requests is
-  **UNCERTAIN** — the mock merges (following §6) and every such merge is flagged so a
-  post-enrollment run can diff against reality. This is the mock's most likely divergence
-  from the live API.
-- **Threads on merge.** Migrate-on-merge, i.e. §10's *recommended* column, not the
-  observed-Docs column. Open question §13.3 stays open; the mock implements the behaviour
-  the spec argues for.
+- **Merge** — *§13.2 resolved 2026-08-01 against the live API; §6's mechanism is a known
+  divergence.* `MERGE_TOLERANCE = 0`, same-author only, per §6. The **tolerance value is
+  confirmed**: prod joins two same-author edits that touch and keeps two cards at a gap of
+  one unchanged character, identically for all four insert/delete orderings (§13.2
+  suspected insert-then-insert and insert-then-delete might differ — they do not), and it
+  is a distance rule rather than a coalescing window (130 s apart still joins).
+  The **mechanism differs**, and knowingly so: prod does not merge existing suggestions at
+  all, it **absorbs a new edit at creation time** into an abutting/overlapping same-author
+  suggestion — no second id is minted, the *pre-existing* id survives, the response carries
+  `updatedSummarySuggestionIds` and no `createdSuggestionIds`, and two suggestions that
+  already exist stay two forever. §6 as written merges to a fixpoint with the *newest* id
+  surviving. Making the mock prod-faithful failed 51 tests (mostly the checked-in llmux
+  scenario ground truth, whose regeneration would invalidate the recorded benchmark
+  numbers), so the mock still follows §6 and every merge is flagged (`model.merge_log`)
+  so the divergence stays diffable. The `ix-merge-absorb` interference scenario was
+  re-founded on absorption at creation time, so it no longer depends on §6's survivor
+  selection ([`docs/findings/merge-absorb-premise.md`](../findings/merge-absorb-premise.md)).
+  Raw evidence, blast-radius measurement and the decision:
+  [`docs/findings/merge.md`](../findings/merge.md); permanent coverage:
+  `e2e/test_merge_semantics.py`.
+- **Threads on merge** — *§13.3 resolved vacuously 2026-08-01.* Migrate-on-merge, i.e.
+  §10's *recommended* column, not the observed-Docs column. Prod never faces the question:
+  because it never absorbs an existing suggestion, it never orphans a thread. Two threaded
+  same-author deletions plus a deletion spanning both leaves **two** cards, each still
+  carrying its own replies. So §10's "Docs drops the absorbed thread (apparent)" describes
+  the editor, not this API, and the mock's migration is the right policy for a model that
+  does absorb.
 - **Colour / `runColour`.** §13.1 is unresolved and colour has no MCP surface, so
   `runColour` returns the most-recently-applied mark's author (§4's stated interim rule)
   and is exercised only by invariant I3.

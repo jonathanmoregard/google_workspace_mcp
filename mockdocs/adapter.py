@@ -87,10 +87,24 @@ SUGGEST_UNSUPPORTED_OFFICIAL = frozenset(
     }
 )
 
-#: The preview thread operations act on threads, not content, so SUGGEST does
-#: not apply to them. Overlay decision, NOT verified against the live API
-#: (docs/preview-api-reference.md, "Additional exclusions").
-SUGGEST_UNSUPPORTED = SUGGEST_UNSUPPORTED_OFFICIAL | PREVIEW_REQUEST_TYPES
+#: What a SUGGEST batch actually refuses: the official 8, and nothing else.
+#:
+#: This used to be ``SUGGEST_UNSUPPORTED_OFFICIAL | PREVIEW_REQUEST_TYPES``,
+#: on the overlay's reasoning that the preview thread operations act on
+#: threads rather than on content, so SUGGEST could not apply to them. That
+#: was never checked. VERIFIED 2026-08-01 against the live preview API: all
+#: eight thread operations run normally inside a ``writeMode: SUGGEST``
+#: batch, take effect, and report ``commentUpdateState: ALL_SAVED`` -- see
+#: ``docs/findings/suggest-semantics.md`` and
+#: ``e2e/test_suggest_semantics.py``. The mock rejected batches prod accepts,
+#: which is the direction that hides a real capability rather than inventing
+#: one: no llmux scenario could ever exercise a mixed content+thread batch.
+SUGGEST_UNSUPPORTED = SUGGEST_UNSUPPORTED_OFFICIAL
+
+#: Prod's verbatim refusal, measured 2026-08-01 (previously a paraphrase).
+#: ``preview_status`` classifies on message text, so the wording is part of
+#: the mock's contract, not decoration.
+SUGGEST_UNSUPPORTED_MESSAGE = "Request does not support application as suggestion."
 
 #: Content request types the mock implements.
 SUPPORTED_CONTENT_REQUESTS = frozenset(
@@ -576,11 +590,26 @@ class BatchUpdateApplier:
         caller reads the response -- and a tool that fed it straight back to
         acceptSuggestion would get a 400.
 
-        UNCERTAIN: whether the live API renames or reports the pre-merge id
-        is unverified (it is downstream of the also-unverified question of
-        whether it merges at all -- spec §14). Reporting only live ids is the
-        defensible reading of "suggestions affected by each update", and it
-        avoids the mock manufacturing an ergonomics bug that may not exist.
+        RESOLVED 2026-08-01 (docs/findings/merge.md Q3,
+        e2e/test_merge_semantics.py): **the live API never renames anything,
+        because it never mints the second id.** An edit abutting or
+        overlapping an existing same-author suggestion is absorbed into it at
+        creation time; the response carries no ``createdSuggestionIds`` at
+        all, only ``updatedSummarySuggestionIds: [<the pre-existing id>]``.
+        Verbatim, for a SUGGEST insert touching a pending insertion::
+
+            {"replies": [{}],
+             "suggestionResponses": [
+               {"updatedSummarySuggestionIds": ["suggest.e79qrxxlopy"]}],
+             "commentUpdateState": "ALL_SAVED"}
+
+        So this rewrite compensates for a mock-only problem: §6's merge
+        destroys an id the mock has already reported. Reporting only live ids
+        stays the right call -- it is what keeps the mock from manufacturing
+        an ergonomics bug prod does not have -- but the shape still differs
+        (the mock names the survivor under ``createdSuggestionIds``, prod
+        names it under ``updatedSummarySuggestionIds``). That is downstream of
+        the merge divergence recorded on :meth:`MockDoc._merge`.
         """
         rename: dict[str, str] = {}
         for survivor, absorbed in self.doc.merge_log[self._merge_watermark :]:
@@ -634,8 +663,7 @@ class BatchUpdateApplier:
             if suggest and kind in SUGGEST_UNSUPPORTED:
                 raise http_error(
                     400,
-                    f"Invalid requests[{i}].{kind}: request type {kind} is not "
-                    f"supported in SUGGEST write mode.",
+                    f"Invalid requests[{i}].{kind}: {SUGGEST_UNSUPPORTED_MESSAGE}",
                 )
             self._dispatch(i, kind, payload, suggest)
 

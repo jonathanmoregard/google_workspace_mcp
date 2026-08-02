@@ -33,6 +33,7 @@ class RunReport:
         self.docs: dict[str, dict[str, Any]] = {}
         self.error_shapes: list[dict[str, Any]] = []
         self.notes: list[str] = []
+        self.quota: dict[str, Any] | None = None
 
     # -- feeding ---------------------------------------------------------
     def set_identity(self, email: str, credentials_dir: str, verified_via: str) -> None:
@@ -99,6 +100,9 @@ class RunReport:
     def note(self, text: str) -> None:
         self.notes.append(text)
 
+    def set_quota(self, snapshot: dict[str, Any]) -> None:
+        self.quota = dict(snapshot)
+
     # -- rendering -------------------------------------------------------
     def marker_counts(self) -> dict[str, dict[str, int]]:
         counts: dict[str, dict[str, int]] = {}
@@ -111,6 +115,93 @@ class RunReport:
                 )
                 per[outcome] = per.get(outcome, 0) + 1
         return counts
+
+    def _completeness_lines(self, counts: dict[str, dict[str, int]]) -> list[str]:
+        """State plainly how much of the suite actually ran.
+
+        A half-finished run must not read like a green one, so the totals
+        are spelled out even when they are boring.
+        """
+        if not counts:
+            return []
+        totals = {"passed": 0, "failed": 0, "skipped": 0, "unknown": 0}
+        for per in counts.values():
+            for key in totals:
+                totals[key] += per.get(key, 0)
+        total = sum(totals.values())
+        lines = [
+            "",
+            "## Completeness",
+            "",
+            f"- collected e2e tests: **{total}** "
+            f"(passed {totals['passed']}, failed {totals['failed']}, "
+            f"skipped {totals['skipped']}, no-outcome {totals['unknown']})",
+        ]
+        quota_failures = [n for n in self.notes if n.startswith("QUOTA")]
+        if quota_failures:
+            lines.append(
+                "- **INCOMPLETE RUN — write quota was exhausted.** The counts "
+                "above do not describe a full pass of the suite; see the "
+                "Write quota section."
+            )
+        elif totals["failed"] or totals["unknown"]:
+            lines.append(
+                "- **not a clean run** — failures and/or tests with no recorded "
+                "outcome are present above."
+            )
+        return lines
+
+    def _quota_lines(self) -> list[str]:
+        if not self.quota:
+            return []
+        q = self.quota
+        exhausted = q.get("exhausted") or []
+        verdict = "clean — never rate limited"
+        if exhausted:
+            verdict = (
+                f"**WALL HIT — {len(exhausted)} call(s) gave up after every retry**"
+            )
+        elif q.get("rate_limited"):
+            verdict = (
+                f"absorbed — {q['rate_limited']} rate-limit response(s) retried "
+                "away, no call gave up"
+            )
+        lines = [
+            "",
+            "## Write quota",
+            "",
+            f"- verdict: {verdict}",
+            f"- write ceiling: {q.get('documented_limit')}/min "
+            f"(WriteRequestsPerMinutePerUser); harness target at end of run: "
+            f"{q.get('budget_per_minute')}/min",
+            f"- MCP tool calls: {q.get('calls')} "
+            f"({q.get('write_calls')} write calls, "
+            f"{q.get('write_units')} estimated write requests)",
+            f"- rate-limit (429) responses: {q.get('rate_limited')} "
+            f"(of which write-quota: {q.get('write_quota_hits')}); "
+            f"retries: {q.get('retries')}; "
+            f"budget reductions: {q.get('budget_reductions')}",
+            f"- time spent waiting: {q.get('paced_seconds')}s pacing + "
+            f"{q.get('backoff_seconds')}s backoff",
+        ]
+        top = q.get("top_write_tools") or []
+        if top:
+            lines += ["- write calls by tool:"]
+            lines += [f"  - `{name}`: {count}" for name, count in top]
+        if exhausted:
+            lines += ["- calls that never got through:"]
+            lines += [f"  - {item}" for item in exhausted]
+        orphan_risk = q.get("orphan_risk_retries") or []
+        if orphan_risk:
+            lines.append(
+                f"- hygiene: {len(orphan_risk)} retry/retries of a creating tool "
+                f"({', '.join(sorted(set(orphan_risk)))}). A first attempt can "
+                "create a document and then be rate limited before it finishes; "
+                "the scratch-doc factory looks such twins up by title and adopts "
+                "them, so check the Scratch documents table below for entries "
+                "marked `(abandoned retry)`."
+            )
+        return lines
 
     def render_markdown(self) -> str:
         lines = [
@@ -155,6 +246,9 @@ class RunReport:
             lines += ["", "### Skip reasons", ""]
             for reason in skip_reasons:
                 lines += ["```", str(reason), "```"]
+
+        lines += self._completeness_lines(counts)
+        lines += self._quota_lines()
 
         lines += ["", "## Preview classification", ""]
         if self.preview:

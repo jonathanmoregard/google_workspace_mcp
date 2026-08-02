@@ -54,7 +54,7 @@ from mcp.types import ToolAnnotations
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
-from gdocs_preview import preview_status, suggestion_ledger
+from gdocs_preview import preview_status, review_page, suggestion_ledger
 from gdocs_preview.address import (
     in_range_scope,
     resolve_range_scope,
@@ -68,7 +68,11 @@ from gdocs_preview.analysis import (
     extract_suggestions_from_tabs,
     segment_base_texts,
 )
-from gdocs_preview.preview_read import normalize_author, read_for_review
+from gdocs_preview.preview_read import (
+    normalize_author,
+    pending_thread_ids,
+    read_for_review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +201,26 @@ class _PostWriteRead:
         self.records: dict[str, dict[str, Any]] = {
             r["suggestion_id"]: r for r in analysed["suggestions"]
         }
+        #: The API's OWN pending set, which is wider than ``records``.
+        #: ``records`` comes from walking the document's content marks, and a
+        #: paragraph-style, bullet or table row/cell-style suggestion leaves
+        #: none (``docs/findings/coverage.md``, measured 2026-08-02). Rejecting
+        #: such a card and re-reading therefore found it absent from
+        #: ``records`` -- because it was never IN ``records`` -- and
+        #: :meth:`pending_state` answered ``False``: "the reject landed" said
+        #: about a suggestion still sitting OPEN in the document, on the one
+        #: destructive path this package has, and derived from a read that had
+        #: the contradicting evidence in hand. An id the API lists as pending
+        #: is pending, whether or not this package can describe it.
+        #: The raw suggestion threads this read carried, kept so the response
+        #: can NAME the unmodelled cards rather than only counting them --
+        #: ``summaryText`` is Google's own label and the only place their kind
+        #: appears anywhere in the payload. Empty on a degraded read, which is
+        #: why every consumer of it is gated on :attr:`complete`.
+        self.threads: dict[str, dict[str, Any]] = dict(
+            getattr(read, "threads", None) or {}
+        )
+        self.pending_thread_ids: frozenset[str] = pending_thread_ids(self.threads)
         #: Every tab this read saw, whether or not it holds a suggestion.
         #: This is the inventory :func:`resolve_range_scope` refuses against,
         #: and it must not be re-derived from ``records``: a multi-tab
@@ -280,8 +304,14 @@ class _PostWriteRead:
         that did not cover the document cannot even name the space it failed
         to look in, so the answer is UNKNOWN rather than a ``False`` nobody
         checked.
+
+        Presence is asked of BOTH the modelled records and the API's own
+        pending threads (:attr:`pending_thread_ids`), because ``records`` is
+        the narrower set: it is built by walking content marks, and the kinds
+        that leave none were invisible to this method entirely -- reported
+        ``False``, "gone", from a read that was listing them as OPEN.
         """
-        if suggestion_id in self.records:
+        if suggestion_id in self.records or suggestion_id in self.pending_thread_ids:
             return True, None
         if self.complete:
             return False, None
@@ -297,8 +327,8 @@ class _PostWriteRead:
         self,
         suggestion_ids: Iterable[str],
         records: dict[str, Optional[dict[str, Any]]],
-    ) -> tuple[list[str], list[str]]:
-        """Split ids into (gone -- checked) and (this read cannot say).
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Split ids into (gone -- checked), (still pending), (cannot say).
 
         The input is a ledger-minus-read difference, which is a candidate list
         and not a finding: on a degraded read every id in a tab the read
@@ -307,13 +337,31 @@ class _PostWriteRead:
         -- :func:`gdocs_preview.suggestion_ledger.record_resolution` pops what
         it is given, so a fabricated removal outlives the response it appeared
         in and is repeated by ``explain_missing`` later.
+
+        **The middle list is a fact, not a gap.** It used to be folded into
+        the third one: everything that was not a decided ``False`` went into
+        "this read cannot say", and the sentence written for that pile asserts
+        *the read did not cover the whole document* -- which is FALSE about a
+        complete read. :meth:`pending_state` answers ``True`` for an id the
+        API still lists as OPEN but the analysis layer no longer describes
+        (``docs/findings/coverage.md``), and that id has been observed, not
+        missed: it is still there. "Still present but unmodelled" and "we
+        could not look" are opposite facts about the read and must not share a
+        sentence. The third list is now reachable only from
+        ``complete is False``, which is what makes its sentence true.
         """
         gone: list[str] = []
+        still_pending: list[str] = []
         unattested: list[str] = []
         for sid in sorted(suggestion_ids):
             state, _ = self.pending_state(sid, records.get(sid))
-            (gone if state is False else unattested).append(sid)
-        return gone, unattested
+            if state is False:
+                gone.append(sid)
+            elif state is True:
+                still_pending.append(sid)
+            else:
+                unattested.append(sid)
+        return gone, still_pending, unattested
 
 
 async def _post_write_read(
@@ -882,6 +930,40 @@ def _partial_pending_note(read: "_PostWriteRead") -> str:
     )
 
 
+def _attach_unreported_pending(
+    verification: dict[str, Any], read: "_PostWriteRead"
+) -> dict[str, Any]:
+    """The unmodelled remainder of the pending set, beside the two counts.
+
+    ``pending_suggestion_count`` and ``pending_suggestion_ids`` are the
+    MODELLED set (``len(read.records)`` / ``sorted(read.records)``), while
+    ``still_pending`` beside them consults :attr:`_PostWriteRead.
+    pending_thread_ids` -- the API's OWN inventory of OPEN cards, which is
+    wider (``docs/findings/coverage.md``). The two therefore disagreed inside
+    one response: a **complete** post-write read of a document holding an
+    unmodelled OPEN card returned ``pending_suggestion_count: 0`` and
+    ``pending_suggestion_ids: []`` with no ``pending_suggestions_are_partial``
+    to qualify them -- the read WAS complete -- and could print
+    ``still_pending: true`` beside a ``pending_suggestion_ids`` omitting that
+    very id, on the destructive path.
+
+    The fix is the read tools' (:func:`gdocs_preview.review_page.
+    attach_unreported`), reused rather than re-derived so the two surfaces
+    cannot answer the same question differently: the counts keep their
+    meaning, and the remainder is emitted beside them with its own notice and
+    Google's own labels for the kinds involved. A caller can then reconcile
+    ``still_pending`` with the accounting -- the id is in one list or the
+    other -- and ``unreported_suggestion_count`` is refused (null +
+    ``read_degraded``) on a read that carries no thread array to subtract from.
+    """
+    return review_page.attach_unreported(
+        verification,
+        threads=read.threads,
+        reported_ids=list(read.records),
+        complete=read.complete,
+    )
+
+
 def _unverified_note(action: str, suggestion_id: str, why: str) -> str:
     """One sentence for a resolution nothing checked.
 
@@ -950,6 +1032,12 @@ def _unverified_verification(
         # as conditional, and the condition is a read that ran.
         "pending_suggestion_count": None,
         "pending_suggestion_ids": None,
+        # The remainder the two counts do not cover is null for the same
+        # reason they are: it is a subtraction against a read, and no read ran.
+        "unreported_suggestion_count": None,
+        "unreported_suggestions_unavailable": (
+            review_page.UNREPORTED_UNAVAILABLE_NOT_VERIFIED
+        ),
         "notes": [_unverified_note(action, suggestion_id, why)],
     }
 
@@ -978,6 +1066,10 @@ def _unverified_suggest_verification(
         "read_source": None,
         "created_suggestions": None,
         "pending_suggestion_count": None,
+        "unreported_suggestion_count": None,
+        "unreported_suggestions_unavailable": (
+            review_page.UNREPORTED_UNAVAILABLE_NOT_VERIFIED
+        ),
         "notes": [
             f"nothing verified this edit: {reason}. created_suggestion_ids is "
             "the API's receipt for the REQUEST; no read confirmed the "
@@ -1092,6 +1184,14 @@ def _collateral_unavailable_note(
     thread went with it." That is causation about a customer's document, and
     the only evidence for it is a before/after diff -- which says nothing at
     all when the "after" read cannot see the tab the id lives in.
+
+    **Only reachable from an incomplete read**, which is what licenses the
+    sentence below. :meth:`_PostWriteRead.absences` used to route a
+    still-OPEN-but-unmodelled id here too, so "that read did not cover the
+    whole document" was printed about a read whose ``complete`` was ``True``
+    -- a false statement about the READ, made while explaining why a claim
+    about the DOCUMENT was being withheld. Those ids now have their own
+    sentence (:func:`_unmodelled_still_pending_note`).
     """
     names = ", ".join(repr(sid) for sid in suggestion_ids)
     return (
@@ -1103,6 +1203,35 @@ def _collateral_unavailable_note(
         "those ids: a read that cannot see a tab is not evidence about the "
         "suggestions in it. Re-read with list_document_suggestions to see "
         "which are still pending."
+    )
+
+
+def _unmodelled_still_pending_note(
+    action: str, suggestion_ids: list[str], read: "_PostWriteRead"
+) -> str:
+    """One sentence for an id that dropped out of the diff without going away.
+
+    The other half of :func:`_collateral_unavailable_note`'s old job, and the
+    opposite fact. This read DID cover the document; the id is simply no longer
+    something the analysis layer describes, while the API goes on listing its
+    thread as OPEN. Reporting it as removed would be false, and reporting it
+    as "we could not look" would be false about the read -- so it is reported
+    as what it is: still pending, still resolvable by id, invisible to
+    everything in this response that is derived from content marks.
+    """
+    names = ", ".join(repr(sid) for sid in suggestion_ids)
+    return (
+        f"{names} was listed before this {action} and is no longer described "
+        f"by this tool's analysis layer, but the API still lists it as pending "
+        f"in its own suggestion-thread array (read_source={read.source!r}, "
+        "which covered the whole document), so it was NOT removed by this "
+        "write and nothing is reported as also-removed for it. The analysis "
+        "layer reads a document's CONTENT MARKS and some suggestion kinds "
+        "leave none -- paragraph style, bullets, table row/cell style "
+        "(docs/findings/coverage.md) -- so such a card is absent from "
+        "pending_suggestion_ids while being fully pending. It is listed in "
+        "unreported_suggestions and manage_document_suggestion still accepts "
+        "or rejects it by id."
     )
 
 
@@ -1382,17 +1511,30 @@ async def suggest_doc_edit(
             verification {source, read_source, created_suggestions
             [suggestion_id, type, pre_text, post_text, context_before,
             context_after, segment, segment_id, tab_id, start_index,
-            end_index, summary_text, status], pending_suggestion_count, and
-            -- only when they apply -- suggestions_at_edit_range (when the
+            end_index, summary_text, status], pending_suggestion_count,
+            unreported_suggestion_count, and -- only when they apply --
+            suggestions_at_edit_range (when the
             API reported no new id, which happens when the edit merged into
             an existing same-author suggestion) with the range_scope it was
             read in, appeared_since_last_read, also_removed_suggestion_ids,
             also_removed_suggestion_ids_unavailable,
+            still_pending_unmodelled_suggestion_ids, unreported_suggestions,
+            unreported_suggestions_unavailable, notice_unreported,
             suggestions_at_edit_range_unavailable (a multi-tab document and no
             tab_id: the range cannot be resolved to one coordinate space),
             pending_suggestions_are_partial (the post-write read degraded, so
             pending_suggestion_count is what it SAW), reason (on the two
             unverified sources, naming what stopped the check), and notes}.
+
+            pending_suggestion_count counts the suggestions this tool MODELS
+            -- it reads a document's content marks, and paragraph-style,
+            bullet and table row/cell-style suggestions leave none.
+            unreported_suggestion_count is the rest of what the API itself
+            lists as pending, named in unreported_suggestions (id, Google's
+            own summary_text label, author, status) with notice_unreported
+            explaining them; a review is finished only when BOTH are zero. On
+            a degraded read it is null with unreported_suggestions_unavailable
+            = read_degraded, and with no read at all, not_verified.
 
             On verify=false, and when the post-write read fails, every key
             above is present and NULL rather than absent, so an unknown answer
@@ -1466,12 +1608,23 @@ async def suggest_doc_edit(
         )
     else:
         # Replacement: delete then insert at start_index, mirroring
-        # modify_doc_text's replacement path. In SUGGEST mode the deleted
-        # text stays in the document (marked), so no index shifting.
-        # UNCERTAIN (pending enrollment): EDIT-mode batches resolve indexes
-        # against the pre-batch document; whether SUGGEST-mode shares that
-        # semantics is transcribed-not-verified. The preview e2e replacement
-        # scenario pins reality on the first enrolled run.
+        # modify_doc_text's replacement path.
+        #
+        # VERIFIED 2026-08-01 (docs/findings/suggest-semantics.md,
+        # e2e/test_suggest_semantics.py). A SUGGEST batch resolves each
+        # request's indexes PROGRESSIVELY -- against the document as the
+        # earlier requests in the same batch left it, exactly like EDIT mode,
+        # not against the pre-batch document as this comment used to claim of
+        # EDIT. What makes the shape below correct is the other half of the
+        # finding: the space it progresses in is SUGGESTIONS_INLINE, and a
+        # SUGGESTED deletion leaves its characters there (marked), so
+        # request 0 shifts nothing and request 1's start_index still means
+        # start_index. Over "0123456789", [delete(1,5), insert@1 "X"] gives
+        # inline "X0123456789" and accepted "X456789".
+        #
+        # The corollary is the reason no third request may be appended here
+        # without re-deriving its index: a suggested INSERTION *is* in the
+        # inline space immediately and does shift everything after it.
         mode = "replacement"
         requests.append(
             {
@@ -1695,8 +1848,10 @@ async def _verify_suggest(
                 )
     # The absence half of the diff, filtered by what THIS read observed: an
     # id that dropped out of the subtraction because the read cannot see its
-    # tab has not vanished, it was never looked for.
-    vanished, unattested = read.absences(
+    # tab has not vanished, it was never looked for -- and one the API still
+    # lists as pending has not vanished either, it just stopped being
+    # something this layer can describe.
+    vanished, still_pending_unmodelled, unattested = read.absences(
         (before.ids - read.live_ids) if before is not None else (),
         _ledger_records(user_google_email, document_id, before),
     )
@@ -1723,11 +1878,21 @@ async def _verify_suggest(
         verification.setdefault("notes", []).extend(
             suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
         )
+    if still_pending_unmodelled:
+        verification["still_pending_unmodelled_suggestion_ids"] = (
+            still_pending_unmodelled
+        )
+        verification.setdefault("notes", []).append(
+            _unmodelled_still_pending_note(
+                "suggest_doc_edit", still_pending_unmodelled, read
+            )
+        )
     if unattested:
         verification["also_removed_suggestion_ids_unavailable"] = "read_incomplete"
         verification.setdefault("notes", []).append(
             _collateral_unavailable_note("suggest_doc_edit", unattested, read)
         )
+    _attach_unreported_pending(verification, read)
     suggestion_ledger.observe(
         user_google_email, document_id, read.records.values(), complete=read.complete
     )
@@ -1794,14 +1959,35 @@ async def manage_document_suggestion(
             (including its segment/segment_id/tab_id, so its indexes are a
             complete address), expected_text, resulting_text,
             matches_expectation, pending_suggestion_count,
-            pending_suggestion_ids, and -- only when they apply --
-            still_pending_unavailable, resulting_text_unavailable,
-            also_removed_suggestion_ids,
+            pending_suggestion_ids, unreported_suggestion_count, and -- only
+            when they apply -- still_pending_unavailable,
+            resulting_text_unavailable, also_removed_suggestion_ids,
             also_removed_suggestion_ids_unavailable,
+            still_pending_unmodelled_suggestion_ids, unreported_suggestions,
+            unreported_suggestions_unavailable, notice_unreported,
             pending_suggestions_are_partial (the post-write read degraded, so
             the two pending_* fields are what it SAW, not what the document
             holds), reason (on the two unverified sources, naming what
             stopped the check) and notes}.
+
+            pending_suggestion_count and pending_suggestion_ids are the
+            suggestions this tool MODELS -- it reads a document's content
+            marks, and paragraph-style, bullet and table row/cell-style
+            suggestions leave none. unreported_suggestion_count is the rest of
+            what the API itself lists as pending, named in
+            unreported_suggestions (id, Google's own summary_text label,
+            author, status) with notice_unreported explaining them. The
+            document's pending set is the two together, so an id reported as
+            still_pending is always in one list or the other, and a review is
+            finished only when BOTH numbers are zero. On a degraded read the
+            thread array is absent, so unreported_suggestion_count is null
+            with unreported_suggestions_unavailable = read_degraded; with no
+            read at all it is null with not_verified.
+
+            still_pending_unmodelled_suggestion_ids names ids that were in the
+            last listing, are no longer described by this tool, and are STILL
+            pending per the API. They were not removed by this write and are
+            deliberately absent from also_removed_suggestion_ids.
 
             resulting_text is read in the resolved suggestion's OWN (tab,
             segment), never the document body, so matches_expectation is a
@@ -2166,7 +2352,7 @@ async def _verify_resolution(
     # could not look for are withheld from BOTH the response and the ledger:
     # record_resolution pops what it is given, so a fabricated removal is
     # repeated by explain_missing for the rest of the session.
-    collateral, unattested = read.absences(
+    collateral, still_pending_unmodelled, unattested = read.absences(
         ((before.ids - read.live_ids) - {suggestion_id}) if before is not None else (),
         _ledger_records(user_google_email, document_id, before),
     )
@@ -2191,11 +2377,19 @@ async def _verify_resolution(
         verification.setdefault("notes", []).extend(
             suggestion_ledger.collateral_note(r) for r in resolutions if not r.direct
         )
+    if still_pending_unmodelled:
+        verification["still_pending_unmodelled_suggestion_ids"] = (
+            still_pending_unmodelled
+        )
+        verification.setdefault("notes", []).append(
+            _unmodelled_still_pending_note(action, still_pending_unmodelled, read)
+        )
     if unattested:
         verification["also_removed_suggestion_ids_unavailable"] = "read_incomplete"
         verification.setdefault("notes", []).append(
             _collateral_unavailable_note(action, unattested, read)
         )
+    _attach_unreported_pending(verification, read)
     suggestion_ledger.observe(
         user_google_email, document_id, read.records.values(), complete=read.complete
     )

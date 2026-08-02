@@ -1382,6 +1382,55 @@ class TestSuggestionsThisLayerDoesNotModel:
         assert result["unreported_suggestions_unavailable"] == "read_degraded"
 
     @pytest.mark.asyncio
+    async def test_the_notice_names_no_field_the_emitting_tool_lacks(self):
+        """One string, three tools -- so it may not name any one tool's key.
+
+        The notice said the cards "are NOT included in ``suggestion_count``"
+        and told the agent not to call the review complete "on
+        ``suggestion_count`` alone". ``get_doc_review_view`` ships the same
+        notice and has no ``suggestion_count`` field at all, so its copy
+        pointed the agent at a number that is not in the response -- a false
+        sentence wrapped around a true one, in the one place whose whole job
+        is to be believed.
+        """
+        service = _docs_get_service(
+            self._payload(
+                fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+            )
+        )
+        view = json.loads(
+            await _unwrap(curated_tools.get_doc_review_view)(
+                service, user_google_email=EMAIL, document_id="doc-fixture-1"
+            )
+        )
+        # The premise, asserted rather than assumed.
+        assert "suggestion_count" not in view
+        assert view["unreported_suggestion_count"] == 1
+        assert "`suggestion_count`" not in view["notice_unreported"], view[
+            "notice_unreported"
+        ]
+        # ...and the guidance it carried survives the rewording.
+        assert "Do NOT report a review as complete" in view["notice_unreported"]
+
+        listing = json.loads(
+            await _unwrap(curated_tools.list_document_suggestions)(
+                _docs_get_service(
+                    self._payload(
+                        fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE,
+                        [*fx.SUGGESTION_THREADS, fx.PARAGRAPH_STYLE_THREAD],
+                    )
+                ),
+                user_google_email=EMAIL,
+                document_id="doc-fixture-1",
+            )
+        )
+        # The listing DOES have suggestion_count, and the same sentence is
+        # true of it: every count in the response excludes these cards.
+        assert listing["suggestion_count"] == 1
+        assert "Do NOT report a review as complete" in listing["notice_unreported"]
+
+    @pytest.mark.asyncio
     async def test_a_resolved_card_stops_being_counted(self):
         """Rejecting leaves the thread behind with ``status: "REJECTED"``
         (prod, 2026-08-02) and strips the content mark. Counting the raw

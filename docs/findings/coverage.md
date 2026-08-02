@@ -161,6 +161,12 @@ COMPLETE read that was listing the contradicting evidence in the same payload.
 This is the class `_ResolutionVerdict` was built to retire; it survived because
 its input was silently narrower than the thing it was reasoning about.
 
+**And it survived one more level up.** Widening `pending_state` left
+`verification.pending_suggestion_count` / `pending_suggestion_ids` still built
+from `read.records`, so `still_pending: true` could print beside
+`pending_suggestion_ids: []` on a complete read. Fixed in the close-out round
+— [`closeout-fixes.md`](closeout-fixes.md) §1.
+
 ---
 
 ## Q2. Table structure suggestions — **RESOLVED, and the claim was backwards**
@@ -252,7 +258,9 @@ The API already says so, in a field this package already parses: the preview
 read's top-level `suggestions[]` is the API's OWN inventory of the document's
 suggestions. So the honest answer costs a set subtraction.
 
-Both read tools now report:
+Both read tools — and, since the close-out round
+([`closeout-fixes.md`](closeout-fixes.md) §1), both write tools' `verification`
+blocks — now report:
 
 ```json
 "unreported_suggestion_count": 1,
@@ -262,7 +270,7 @@ Both read tools now report:
     "author": "Jonathan Moregård",
     "status": "OPEN" }
 ],
-"notice_unreported": "1 pending suggestion(s) in this document are NOT included in `suggestion_count` … Do NOT report a review as complete on `suggestion_count` alone while this count is non-zero."
+"notice_unreported": "1 pending suggestion(s) in this document are NOT counted by any other suggestion count in this response … Do NOT report a review as complete on this response's other suggestion counts alone while `unreported_suggestion_count` is non-zero."
 ```
 
 The ids are **actionable**: `manage_document_suggestion` accepts or rejects by

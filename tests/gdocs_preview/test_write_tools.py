@@ -4376,3 +4376,279 @@ class TestASuggestionWithNoContentMarkIsStillPending:
         post = write_tools._PostWriteRead(read)
         assert post.pending_thread_ids == frozenset()
         assert post.pending_state("suggest.para1", None) == (None, "read_incomplete")
+
+
+# ---------------------------------------------------------------------------
+# Close-out round -- the pending COUNTS were still the modelled set
+# ---------------------------------------------------------------------------
+
+#: A complete preview read of a document whose ONLY pending card is one this
+#: layer does not model (alignment, via ``updateParagraphStyle``).
+PARAGRAPH_STYLE_ONLY_READ = fx.build_tabs_payload(
+    [("t.0", fx.DOC_PARAGRAPH_STYLE_ONLY)], suggestions=[fx.PARAGRAPH_STYLE_THREAD]
+)
+
+#: The realistic mixed state: one text insertion this layer models
+#: (``suggest.ins1``) and one alignment card it does not (``suggest.para1``).
+TEXT_PLUS_PARAGRAPH_STYLE_READ = fx.build_tabs_payload(
+    [("t.0", fx.DOC_TEXT_PLUS_PARAGRAPH_STYLE)],
+    suggestions=[thread_for("suggest.ins1"), fx.PARAGRAPH_STYLE_THREAD],
+)
+
+#: The alignment card as a LISTING would have recorded it, if the analysis
+#: layer had modelled it at the time (a heading suggestion does land on a run,
+#: so it is modelled -- until a concurrent edit removes that run and leaves the
+#: paragraph-style half behind with the thread still OPEN).
+PARA_RECORD = {
+    "suggestion_id": "suggest.para1",
+    "type": "style",
+    "pre_text": "Alpha line one.\n",
+    "post_text": "Alpha line one.\n",
+    "context_before": "",
+    "context_after": "",
+    "segment": "body",
+    "segment_id": None,
+    "tab_id": "t.0",
+    "start_index": 1,
+    "end_index": 17,
+}
+
+
+async def _resolve(service, *, action="reject", suggestion_id="suggest.para1") -> dict:
+    result = json.loads(
+        await _unwrap(write_tools.manage_document_suggestion)(
+            service,
+            user_google_email=EMAIL,
+            document_id=DOC,
+            action=action,
+            suggestion_id=suggestion_id,
+        )
+    )
+    return result["verification"]
+
+
+class TestThePendingCountsAccountForWhatTheApiCallsPending:
+    """The read tools' ``unreported_suggestion_count`` fix, one level up.
+
+    ``pending_suggestion_count`` / ``pending_suggestion_ids`` were
+    ``len(read.records)`` / ``sorted(read.records)`` -- the MODELLED set --
+    while ``still_pending`` beside them consults
+    :attr:`_PostWriteRead.pending_thread_ids`, the API's own OPEN inventory.
+    On a COMPLETE read of a document holding an unmodelled OPEN card the
+    response therefore said ``pending_suggestion_count: 0`` with no
+    ``pending_suggestions_are_partial`` flag to qualify it (the read WAS
+    complete) -- a false absence claim -- and could print ``still_pending:
+    true`` beside a ``pending_suggestion_ids`` that omits that very id: a
+    response contradicting itself on the destructive path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_reject_that_did_not_land_is_reconcilable_with_the_counts(self):
+        verification = await _resolve(
+            _batch_service({}, document=PARAGRAPH_STYLE_ONLY_READ)
+        )
+
+        assert verification["read_source"] == "preview_threads"
+        assert verification["still_pending"] is True, verification
+        # The whole point: the id the response calls still-pending has to be
+        # findable in the same response's own pending accounting.
+        accounted = set(verification["pending_suggestion_ids"] or []) | {
+            card["suggestion_id"]
+            for card in verification.get("unreported_suggestions") or []
+        }
+        assert "suggest.para1" in accounted, verification
+
+    @pytest.mark.asyncio
+    async def test_a_complete_read_never_claims_an_empty_document(self):
+        verification = await _resolve(
+            _batch_service({}, document=PARAGRAPH_STYLE_ONLY_READ)
+        )
+
+        assert verification["pending_suggestion_count"] == 0
+        assert "pending_suggestions_are_partial" not in verification
+        # ...so the qualifier has to come from the unmodelled remainder.
+        assert verification["unreported_suggestion_count"] == 1, verification
+        assert verification["unreported_suggestions"][0]["summary_text"] == (
+            "Format: alignment"
+        )
+        notice = verification["notice_unreported"]
+        assert "Format: alignment" in notice
+        assert "manage_document_suggestion" in notice
+
+    @pytest.mark.asyncio
+    async def test_the_suggest_path_carries_the_same_remainder(self):
+        service = _batch_service(
+            {"suggestionResponses": [{"createdSuggestionIds": ["suggest.ins1"]}]},
+            document=TEXT_PLUS_PARAGRAPH_STYLE_READ,
+        )
+        result = json.loads(
+            await _unwrap(write_tools.suggest_doc_edit)(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=6,
+                text="brave ",
+            )
+        )
+        verification = result["verification"]
+
+        assert verification["pending_suggestion_count"] == 1
+        assert verification["unreported_suggestion_count"] == 1, verification
+        assert [c["suggestion_id"] for c in verification["unreported_suggestions"]] == [
+            "suggest.para1"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_document_with_nothing_unmodelled_says_zero(self):
+        """The control: the block is an accounting number, not an alarm."""
+        _observe(REP1_RECORD)
+        verification = await _resolve(
+            _batch_service({}, document=REPLACEMENT_READ),
+            action="accept",
+            suggestion_id="suggest.rep1",
+        )
+        assert verification["unreported_suggestion_count"] == 0
+        assert "unreported_suggestions" not in verification
+        assert "notice_unreported" not in verification
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_read_refuses_the_number_rather_than_answering_zero(self):
+        """A GA read carries no thread array, so the subtraction has no
+        minuend: 0 there would be an absence claim from a read that never
+        looked, which is the failure this whole block exists to retire."""
+        _observe(T1_RECORD)
+        verification = await _resolve(
+            _degraded_read_service(), action="accept", suggestion_id="suggest.t1"
+        )
+
+        assert verification["unreported_suggestion_count"] is None, verification
+        assert verification["unreported_suggestions_unavailable"] == "read_degraded"
+        assert "never looked" in verification["notice_unreported"]
+
+    @pytest.mark.asyncio
+    async def test_the_unverified_paths_carry_the_key_nulled(self):
+        """Same rule as ``pending_suggestion_count``: a documented key that
+        vanishes makes an absent field and an unknown value one observation."""
+        result = json.loads(
+            await _unwrap(write_tools.manage_document_suggestion)(
+                service := _batch_service({}),
+                user_google_email=EMAIL,
+                document_id=DOC,
+                action="reject",
+                suggestion_id="suggest.para1",
+                verify=False,
+            )
+        )
+        assert service is not None
+        verification = result["verification"]
+        assert verification["unreported_suggestion_count"] is None
+        assert verification["unreported_suggestions_unavailable"] == "not_verified"
+
+    @pytest.mark.asyncio
+    async def test_the_unverified_suggest_path_too(self):
+        result = json.loads(
+            await _unwrap(write_tools.suggest_doc_edit)(
+                _batch_service(),
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=5,
+                text="hello",
+                verify=False,
+            )
+        )
+        verification = result["verification"]
+        assert verification["unreported_suggestion_count"] is None
+        assert verification["unreported_suggestions_unavailable"] == "not_verified"
+
+    def test_both_tools_document_the_key(self):
+        for tool in (
+            write_tools.manage_document_suggestion,
+            write_tools.suggest_doc_edit,
+        ):
+            doc = _unwrap(tool).__doc__ or ""
+            assert "unreported_suggestion_count" in doc, tool
+
+
+class TestStillPresentIsNotTheSameFactAsCouldNotLook:
+    """``absences()`` routed a still-OPEN id into the "we could not look" pile.
+
+    ``pending_state`` answers ``True`` for an id the API still lists as
+    pending but the analysis layer no longer describes. ``absences`` sent
+    everything that was not a decided ``False`` into ``unattested``, and
+    ``_collateral_unavailable_note`` then asserted *"that read did not cover
+    the whole document"* about a read whose ``complete`` was ``True``. "Still
+    present but unmodelled" and "we could not look" are different facts and
+    must not share a sentence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_complete_read_is_never_described_as_partial(self):
+        _observe(PARA_RECORD)
+        verification = await _resolve(
+            _batch_service({}, document=PARAGRAPH_STYLE_ONLY_READ),
+            action="accept",
+            suggestion_id="suggest.gone",
+        )
+
+        assert verification["read_source"] == "preview_threads"
+        joined = " ".join(verification.get("notes") or [])
+        assert "did not cover the whole document" not in joined, joined
+
+    @pytest.mark.asyncio
+    async def test_the_still_open_id_is_named_as_still_pending_not_as_unknown(self):
+        _observe(PARA_RECORD)
+        verification = await _resolve(
+            _batch_service({}, document=PARAGRAPH_STYLE_ONLY_READ),
+            action="accept",
+            suggestion_id="suggest.gone",
+        )
+
+        assert verification["still_pending_unmodelled_suggestion_ids"] == [
+            "suggest.para1"
+        ]
+        assert "also_removed_suggestion_ids" not in verification
+        assert "also_removed_suggestion_ids_unavailable" not in verification
+        note = next(n for n in verification["notes"] if "suggest.para1" in n)
+        assert "still lists it as pending" in note
+        assert "NOT removed" in note
+
+    def test_absences_reports_three_groups(self):
+        """The unit underneath: presence, absence, and no standing to say."""
+        payload = fx.build_tabs_payload(
+            [("t.0", fx.DOC_PARAGRAPH_STYLE_ONLY)],
+            suggestions=[fx.PARAGRAPH_STYLE_THREAD],
+        )
+        tabs = preview_read.tab_documents(payload)
+        read = write_tools._PostWriteRead(
+            preview_read.ReviewRead(
+                tabs=[(t.tab_id, t.document) for t in tabs],
+                tab_metadata=[t.metadata for t in tabs],
+                threads=preview_read.suggestion_threads_by_id(payload),
+                source=preview_read.READ_SOURCE_PREVIEW,
+                complete=True,
+            )
+        )
+        gone, still_pending, unattested = read.absences(
+            ["suggest.para1", "suggest.gone"],
+            {"suggest.para1": PARA_RECORD, "suggest.gone": None},
+        )
+        assert gone == ["suggest.gone"]
+        assert still_pending == ["suggest.para1"]
+        assert unattested == []
+
+    @pytest.mark.asyncio
+    async def test_a_blind_read_still_reports_unknown(self):
+        """The other branch has to keep working: on a degraded read the
+        withheld-collateral sentence is TRUE and must still fire."""
+        _observe(T1_RECORD, REP1_RECORD)
+        verification = await _resolve(
+            _degraded_read_service(), action="accept", suggestion_id="suggest.rep1"
+        )
+
+        assert verification["also_removed_suggestion_ids_unavailable"] == (
+            "read_incomplete"
+        )
+        note = next(
+            n for n in verification["notes"] if "did not cover the whole document" in n
+        )
+        assert "suggest.t1" in note

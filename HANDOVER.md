@@ -209,6 +209,16 @@ about the document. `resolved_suggestion` is echoed, since it comes from this
 session's own listing rather than from a read. Set it false only for a batch
 you will verify at the end — collateral removals (§4.5) then go unreported.
 
+The verification block's **pending accounting is two numbers, not one**, for
+the same reason the read tools' is (`docs/findings/coverage.md`):
+`pending_suggestion_count`/`pending_suggestion_ids` are what this layer models,
+`unreported_suggestion_count`/`unreported_suggestions` are the rest of what the
+API lists as OPEN. `still_pending` is derived from **both**, so an id it calls
+pending is always in one of the two lists; a review is done when both numbers
+are zero. Both are emitted by the same `review_page.attach_unreported` the read
+tools call, so the two surfaces cannot answer it differently
+([`docs/findings/closeout-fixes.md`](docs/findings/closeout-fixes.md)).
+
 `reply_to_doc_thread` and `create_anchored_doc_comment` have no `verify`
 because the batchUpdate response already carries the stored object
 (§4.4), so their echo is free.

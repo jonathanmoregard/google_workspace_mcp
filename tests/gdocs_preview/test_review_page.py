@@ -1160,11 +1160,17 @@ class TestAttachUnreported:
         assert result["unreported_suggestion_count"] == 1
         assert result["unreported_suggestions"][0]["suggestion_id"] == "s.para"
         notice = result["notice_unreported"]
-        # The three things the notice has to carry: that the count excludes
-        # them, what kind they are, and that they remain actionable.
-        assert "`suggestion_count`" in notice
+        # The three things the notice has to carry: that the response's other
+        # counts exclude them, what kind they are, and that they remain
+        # actionable.
+        assert "NOT counted by any other suggestion count in this response" in notice
         assert "Format: alignment" in notice
         assert "manage_document_suggestion" in notice
+        # ...and NOT the name of any one tool's count field. Three tools ship
+        # this string; ``get_doc_review_view`` and the write tools have no
+        # ``suggestion_count``, so naming it pointed two of them at a field
+        # their response does not contain.
+        assert "`suggestion_count`" not in notice
 
     def test_a_degraded_read_says_it_cannot_tell_rather_than_zero(self):
         """Zero here would be an absence claim from a read carrying no thread

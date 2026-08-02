@@ -1117,6 +1117,13 @@ def build_review_view(
 #: model any more than it can name the author of what it did.
 UNREPORTED_UNAVAILABLE_DEGRADED = "read_degraded"
 
+#: The write tools' third reason: no read happened at all (``verify=false``,
+#: or the post-write read itself failed), so there is nothing to subtract from
+#: and nothing to subtract. Same vocabulary as ``still_pending_unavailable``'s
+#: ``not_verified``, for the same reason: an absent key and an unknown value
+#: must not be the same observation.
+UNREPORTED_UNAVAILABLE_NOT_VERIFIED = "not_verified"
+
 #: Reported per unmodelled card. ``summary_text`` is Google's own label and
 #: is what names the KIND ("Format: alignment", "Add row", "Format cell:
 #: background color"), which is the whole point of listing them rather than
@@ -1156,18 +1163,27 @@ def unreported_suggestions(
 def unreported_notice(cards: Sequence[dict[str, Any]]) -> str:
     """Why a count is not enough, said in words.
 
-    A bare integer beside ``suggestion_count`` reads as a rounding detail. The
-    sentence has to (a) name what is missing, using Google's own labels, and
-    (b) say that these ids ARE actionable -- accept/reject works on a
-    suggestion id whether or not this package models its content -- so the
-    agent's next move is obvious rather than "the tool is broken".
+    A bare integer beside a count reads as a rounding detail. The sentence has
+    to (a) name what is missing, using Google's own labels, and (b) say that
+    these ids ARE actionable -- accept/reject works on a suggestion id whether
+    or not this package models its content -- so the agent's next move is
+    obvious rather than "the tool is broken".
+
+    **It may not name a key.** This one string ships from three tools, and it
+    said "are NOT included in ``suggestion_count``" -- a field only
+    ``list_document_suggestions`` emits. ``get_doc_review_view`` carries the
+    same notice and has no ``suggestion_count``; the write tools' counts are
+    called ``pending_suggestion_count``. A notice pointing at a field the
+    response does not contain is a second false statement wrapped around a
+    true one, so the sentence talks about the response instead.
     """
     labels = sorted({str(c.get("summary_text") or "(no label)") for c in cards})
     return (
-        f"{len(cards)} pending suggestion(s) in this document are NOT included "
-        "in `suggestion_count` and are not described anywhere in this "
-        "response. The Docs API lists them as pending in its own suggestion "
-        "thread array; this tool's analysis layer reads a document's content "
+        f"{len(cards)} pending suggestion(s) in this document are NOT counted "
+        "by any other suggestion count in this response, and are not "
+        "described anywhere in it. The Docs API lists them as pending in its "
+        "own suggestion thread array; this tool's analysis layer reads a "
+        "document's content "
         "marks, and these kinds leave none. Measured against the live API: "
         "paragraph style (alignment, line spacing, indent, heading applied "
         "without a font change), list/bullet formatting, table ROW style and "
@@ -1177,8 +1193,8 @@ def unreported_notice(cards: Sequence[dict[str, Any]]) -> str:
         "actionable: `manage_document_suggestion` accepts or rejects by id "
         "regardless. What is unavailable is their text, address and "
         "before/after -- open the document to read those. Do NOT report a "
-        "review as complete on `suggestion_count` alone while this count is "
-        "non-zero."
+        "review as complete on this response's other suggestion counts alone "
+        "while `unreported_suggestion_count` is non-zero."
     )
 
 

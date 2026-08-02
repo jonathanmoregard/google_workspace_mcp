@@ -232,6 +232,33 @@ def test_jitter_is_additive_and_bounded():
     assert high == 2.5
 
 
+def test_jitter_never_pushes_the_delay_past_the_cap():
+    """The cap has to be the last word, not the second-to-last.
+
+    ``min(delay, cap) * (1 + jitter * rand())`` applies the ceiling and then
+    multiplies straight through it: at attempt 10 with the jitter at its
+    maximum that is ``70 * 1.25 = 87.5`` seconds of sleeping inside a suite
+    whose whole point is to finish.
+    """
+    for attempt in range(1, 12):
+        delay = quota.backoff_delay(attempt, rand=lambda: 1.0)
+        assert delay <= 70.0, (attempt, delay)
+    assert quota.backoff_delay(10, rand=lambda: 1.0) == pytest.approx(70.0)
+
+
+def test_a_server_supplied_retry_after_is_never_inflated():
+    """``Retry-After`` is the server saying when to come back.
+
+    Multiplying it by the jitter factor is us deciding it meant something
+    else: a 30 s hint became a 37.5 s sleep.
+    """
+    assert quota.backoff_delay(1, retry_after=30.0, rand=lambda: 1.0) == 30.0
+    assert quota.backoff_delay(4, retry_after=5.0, rand=lambda: 1.0) == 5.0
+    # ...but a pacing floor may still hold it longer: that is our window, not
+    # a reinterpretation of theirs.
+    assert quota.backoff_delay(1, retry_after=5.0, floor=20.0, rand=lambda: 1.0) == 20.0
+
+
 # ---------------------------------------------------------------------------
 # The sliding window
 # ---------------------------------------------------------------------------
@@ -369,6 +396,101 @@ def test_corrupt_state_file_degrades_to_memory_only(tmp_path):
     # ...and a subsequent append repairs rather than raises.
     assert store.append(1_000.0, 1) == [(1_000.0, 1)]
     assert json.loads(path.read_text(encoding="utf-8"))["entries"] == [[1_000.0, 1]]
+
+
+def test_a_reader_never_sees_a_half_written_window(tmp_path):
+    """``append`` truncates then writes; ``load`` used to read unlocked.
+
+    Between the truncate and the write the file is EMPTY, and a reader that
+    lands there parses nothing and reports an empty window -- so a second
+    session treats a full 60 s budget as untouched and sprints straight into
+    the wall the pacer exists to avoid. A shared lock makes the reader wait
+    for the writer instead of observing it mid-flight.
+
+    Two open() calls in one process are independent open file descriptions,
+    so flock really does contend between these threads.
+    """
+    import fcntl
+    import threading
+    import time as time_module
+
+    path = tmp_path / "shared.json"
+    store = quota.WindowStore(path)
+    store.append(1_000.0, 5)
+    assert store.load(1_001.0) == [(1_000.0, 5)]
+
+    truncated = threading.Event()
+    payload = json.dumps({"entries": [[1_000.0, 5]]})
+
+    def rewrite_slowly():
+        with open(path, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                handle.seek(0)
+                handle.truncate()
+                handle.flush()
+                truncated.set()
+                time_module.sleep(0.25)
+                handle.write(payload)
+                handle.flush()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    writer = threading.Thread(target=rewrite_slowly)
+    writer.start()
+    assert truncated.wait(timeout=10)
+    observed = store.load(1_001.0)
+    writer.join(timeout=10)
+
+    assert observed == [(1_000.0, 5)]
+
+
+def test_two_sessions_cannot_both_take_the_last_slot(tmp_path):
+    """``acquire`` checked capacity outside the lock and appended inside it.
+
+    Two processes that observe the same empty window both conclude there is
+    room and both spend it, so the shared budget is exceeded by exactly the
+    number of sessions racing. The barrier below pins the interleaving that
+    makes it deterministic: both pacers reach their first clock read before
+    either of them looks at the shared file.
+    """
+    import threading
+
+    path = tmp_path / "shared.json"
+    barrier = threading.Barrier(2, timeout=15)
+    slept: dict[str, float] = {}
+
+    def session(name: str) -> None:
+        pending = [True]
+
+        def clock() -> float:
+            if pending[0]:
+                pending[0] = False
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:  # pragma: no cover
+                    pass
+            return 1_000.0
+
+        pacer = quota.WritePacer(
+            budget=1,
+            store=quota.WindowStore(path),
+            clock=clock,
+            sleeper=lambda _seconds: None,
+        )
+        slept[name] = pacer.acquire(1)
+
+    threads = [threading.Thread(target=session, args=(n,)) for n in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    assert set(slept) == {"a", "b"}
+    waits = sorted(slept.values())
+    assert waits[0] == 0.0, slept
+    assert waits[1] > 0.0, slept
 
 
 def test_state_path_is_per_account_and_outside_the_repo(monkeypatch, tmp_path):

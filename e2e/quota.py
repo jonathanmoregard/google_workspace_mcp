@@ -293,12 +293,23 @@ def backoff_delay(
     needs to free capacity. The cap exceeds 60 s on purpose: the quota
     being waited on is itself a 60 s window, so a shorter ceiling would
     guarantee another collision.
+
+    Two ordering rules, both of which used to be the other way round:
+
+    * **The cap is applied last.** ``min(delay, cap) * (1 + jitter*rand())``
+      multiplies straight through the ceiling, so attempt 10 with the jitter
+      at maximum slept ``70 * 1.25 = 87.5`` s.
+    * **``Retry-After`` is not jittered.** It is the server saying when to
+      come back; scaling it up is us deciding it meant something else, and a
+      30 s hint became a 37.5 s sleep. The ``floor`` may still hold the call
+      longer - that is our own pacing window, not a reinterpretation of
+      theirs - and the cap still applies, as it always did.
     """
+    if retry_after is not None:
+        return min(max(retry_after, floor), cap)
     exponential = base * (2 ** max(0, attempt - 1))
-    delay = retry_after if retry_after is not None else exponential
-    delay = max(delay, floor)
-    delay = min(delay, cap)
-    return delay * (1.0 + jitter * rand())
+    delay = max(exponential, floor) * (1.0 + jitter * rand())
+    return min(delay, cap)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +400,14 @@ class WindowStore:
     not comparable across processes. Every operation is best-effort: a
     corrupt or unwritable state file degrades to in-memory-only pacing
     rather than failing the suite.
+
+    **Every access takes a lock, readers included.** ``append`` truncates
+    the file and then writes it, so between those two syscalls the shared
+    window is an EMPTY file - and an unlocked reader that lands there parses
+    nothing and reports a spend of zero. A second session then believes it
+    has the whole 60 s budget and sprints into the wall this class exists to
+    keep it away from. Reads take ``LOCK_SH``, so they wait for a
+    half-written file instead of observing one.
     """
 
     def __init__(self, path: Path, window: float = WINDOW_SECONDS) -> None:
@@ -396,11 +415,8 @@ class WindowStore:
         self.window = window
         self.usable = True
 
-    def _read(self) -> list[tuple[float, int]]:
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
+    @staticmethod
+    def _parse(raw: Any) -> list[tuple[float, int]]:
         entries = raw.get("entries") if isinstance(raw, dict) else None
         if not isinstance(entries, list):
             return []
@@ -417,6 +433,22 @@ class WindowStore:
                     continue
         return out
 
+    def _read(self) -> list[tuple[float, int]]:
+        """The whole log, under a SHARED lock (see the class docstring)."""
+        import fcntl
+
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+                try:
+                    text = handle.read()
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            raw = json.loads(text) if text.strip() else {}
+        except (OSError, ValueError):
+            return []
+        return self._parse(raw)
+
     def load(self, now: float) -> list[tuple[float, int]]:
         """Entries from the shared log still inside the window."""
         if not self.usable:
@@ -428,14 +460,47 @@ class WindowStore:
             self.usable = False
             return []
 
-    def append(self, now: float, cost: int) -> list[tuple[float, int]]:
-        """Record a spend and return the pruned shared window.
+    def _read_locked(self, handle: Any, now: float) -> list[tuple[float, int]]:
+        """The in-window entries, read through an ALREADY-locked handle."""
+        handle.seek(0)
+        text = handle.read()
+        try:
+            raw = json.loads(text) if text.strip() else {}
+        except ValueError:
+            raw = {}
+        cutoff = now - self.window
+        return [e for e in self._parse(raw) if e[0] > cutoff]
 
-        Holds an exclusive flock for the read-modify-write only; callers
-        never sleep under the lock.
+    @staticmethod
+    def _write_locked(handle: Any, entries: Sequence[tuple[float, int]]) -> None:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps({"entries": [[t, c] for t, c in entries]}))
+        handle.flush()
+
+    def reserve(
+        self, now: float, cost: int, *, limit: int, force: bool
+    ) -> tuple[float, list[tuple[float, int]]]:
+        """Check capacity and take it in ONE atomic step.
+
+        Returns ``(0.0, window)`` when the spend was recorded, or
+        ``(delay, window)`` naming the seconds until it would fit - having
+        recorded nothing. ``(0.0, [])`` means the store is unusable and the
+        caller should fall back to its in-memory window.
+
+        This exists because :meth:`WritePacer.acquire` used to read the
+        capacity through :meth:`load` and append through :meth:`append`, with
+        the lock held only for the second half. Two sessions could each
+        observe an empty window and each admit a full-budget write, so the
+        shared budget was exceeded by exactly the number of sessions racing.
+        Check and reserve now happen under one exclusive lock.
+
+        ``force`` records regardless of capacity: the caller has run out of
+        patience and is spending anyway, and the accounting must still be
+        honest about it.
         """
         if not self.usable or cost <= 0:
-            return []
+            return 0.0, []
         try:
             import fcntl
 
@@ -443,34 +508,34 @@ class WindowStore:
             with open(self.path, "a+", encoding="utf-8") as handle:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
                 try:
-                    handle.seek(0)
-                    text = handle.read()
-                    try:
-                        raw = json.loads(text) if text.strip() else {}
-                    except ValueError:
-                        raw = {}
-                    entries = raw.get("entries") if isinstance(raw, dict) else None
-                    kept: list[list[float]] = []
-                    cutoff = now - self.window
-                    if isinstance(entries, list):
-                        for item in entries:
-                            try:
-                                timestamp, item_cost = float(item[0]), int(item[1])
-                            except (TypeError, ValueError, IndexError):
-                                continue
-                            if timestamp > cutoff:
-                                kept.append([timestamp, item_cost])
-                    kept.append([now, cost])
-                    handle.seek(0)
-                    handle.truncate()
-                    handle.write(json.dumps({"entries": kept}))
-                    handle.flush()
+                    kept = self._read_locked(handle, now)
+                    delay = (
+                        0.0
+                        if force
+                        else WriteWindow(
+                            limit=limit, window=self.window, entries=list(kept)
+                        ).delay_until_capacity(cost, now)
+                    )
+                    if delay > 0:
+                        return delay, kept
+                    kept.append((now, cost))
+                    self._write_locked(handle, kept)
+                    return 0.0, kept
                 finally:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            return [(float(t), int(c)) for t, c in kept]
         except Exception:  # noqa: BLE001 - pacing must never break a run
             self.usable = False
-            return []
+            return 0.0, []
+
+    def append(self, now: float, cost: int) -> list[tuple[float, int]]:
+        """Record a spend unconditionally and return the pruned window.
+
+        :meth:`reserve` with ``force=True``; kept as a name because "write
+        this down" is what most callers mean and the capacity question is
+        :meth:`WritePacer.acquire`'s alone.
+        """
+        _, kept = self.reserve(now, cost, limit=0, force=True)
+        return kept
 
 
 # ---------------------------------------------------------------------------
@@ -566,38 +631,66 @@ class WritePacer:
             self.window.prune(now)
 
     def seconds_until_capacity(self, cost: int) -> float:
+        """How long ``cost`` would have to wait, WITHOUT reserving it.
+
+        Advisory only - it is the retry backoff's ``floor``. Anything that
+        intends to spend must go through :meth:`acquire`, whose check and
+        reservation are one atomic step; asking this and then spending is
+        precisely the race :meth:`WindowStore.reserve` exists to close.
+        """
         now = self.clock()
         self._sync(now)
         return self.window.delay_until_capacity(cost, now)
+
+    def _reserve(self, now: float, cost: int, *, force: bool) -> float:
+        """Take ``cost`` from the window if it fits; report the wait if not.
+
+        Returns 0.0 once the spend is recorded. With a shared store the whole
+        check-and-reserve happens under one exclusive flock
+        (:meth:`WindowStore.reserve`); without one there is no other party to
+        race and the local window answers directly.
+        """
+        if self.store is None:
+            self.window.prune(now)
+            delay = 0.0 if force else self.window.delay_until_capacity(cost, now)
+            if delay <= 0:
+                self.window.record(now, cost)
+            return delay
+        delay, shared = self.store.reserve(
+            now, cost, limit=self.window.limit, force=force
+        )
+        if shared:
+            self.window.entries = list(shared)
+        elif delay <= 0:
+            # The store went unusable: keep pacing off the local window.
+            self.window.record(now, cost)
+        return delay
 
     def acquire(self, cost: int) -> float:
         """Wait until ``cost`` units fit, then record the spend.
 
         Returns the seconds slept. Records unconditionally (even with
-        pacing disabled) so the accounting stays honest.
+        pacing disabled, and even after running out of patience) so the
+        accounting stays honest.
         """
         slept = 0.0
         if cost <= 0:
             return 0.0
         if self.enabled:
             # Loop rather than sleep once: another session may take the
-            # capacity we were waiting for.
+            # capacity we were waiting for. Each pass re-checks AND reserves
+            # in one step, so the capacity we were told about is the capacity
+            # we get.
             for _ in range(24):
-                delay = self.seconds_until_capacity(cost)
+                delay = self._reserve(self.clock(), cost, force=False)
                 if delay <= 0:
-                    break
+                    self.stats.paced_seconds += slept
+                    return slept
                 delay = min(delay, WINDOW_SECONDS)
                 self.sleeper(delay)
                 slept += delay
-        now = self.clock()
-        if self.store is not None:
-            shared = self.store.append(now, cost)
-            if shared:
-                self.window.entries = shared
-            else:
-                self.window.record(now, cost)
-        else:
-            self.window.record(now, cost)
+        # Out of patience, or pacing is off: spend anyway, and record it.
+        self._reserve(self.clock(), cost, force=True)
         self.stats.paced_seconds += slept
         return slept
 

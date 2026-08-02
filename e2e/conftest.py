@@ -26,7 +26,7 @@ import pytest
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from e2e import gating
+from e2e import gating, quota
 from e2e.mcp_session import ServerSession, tool_json, tool_text
 from e2e.run_report import REPORT
 
@@ -88,11 +88,31 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    if REPORT.outcomes:
-        target = REPORT.write()
-        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-        if reporter is not None:
-            reporter.write_line(f"e2e run report written to {target}")
+    if not REPORT.outcomes:
+        return
+    snapshot = quota.snapshot()
+    REPORT.set_quota(snapshot)
+    if snapshot["exhausted"]:
+        REPORT.note(
+            f"QUOTA: {len(snapshot['exhausted'])} call(s) never got through "
+            "the write-quota wall; this run is INCOMPLETE."
+        )
+    target = REPORT.write()
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(
+            f"e2e write quota: {snapshot['write_units']} write requests, "
+            f"{snapshot['rate_limited']} rate-limited, "
+            f"{snapshot['retries']} retries, "
+            f"{snapshot['paced_seconds']}s paced + "
+            f"{snapshot['backoff_seconds']}s backoff"
+            + (
+                f", {len(snapshot['exhausted'])} GAVE UP"
+                if snapshot["exhausted"]
+                else ""
+            )
+        )
+        reporter.write_line(f"e2e run report written to {target}")
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +156,9 @@ def ga_auth() -> AuthContext:
         pytest.skip(reason)
 
     REPORT.set_identity(info["email"], str(credentials_dir), "oauth2/v2 userinfo")
+    # Write quota is per Google account, so the cross-run pacing window is
+    # keyed on the identity we just proved - not on this checkout.
+    quota.bind_account(info["email"])
     return AuthContext(
         email=info["email"],
         credentials=credentials,
@@ -185,12 +208,27 @@ class DocTracker:
         REPORT.mark_doc_cleaned(doc_id, method)
 
     def cleanup(self, doc_id: str) -> None:
-        """Trash a scratch doc (idempotent; tolerates already-deleted)."""
+        """Trash a scratch doc (idempotent; tolerates already-deleted).
+
+        Retried on 429: teardown that loses a race with a rate limit
+        orphans a document in the user's Drive, which is the one failure
+        mode the hygiene rules will not tolerate. This path talks to Drive
+        directly, so it still has real response headers and can honour
+        ``Retry-After`` properly.
+        """
         entry = self._entry(doc_id)
         if entry is not None and entry["cleaned"]:
             return
         try:
-            self.drive.files().update(fileId=doc_id, body={"trashed": True}).execute()
+            quota.retry_google_call(
+                lambda: (
+                    self.drive.files()
+                    .update(fileId=doc_id, body={"trashed": True})
+                    .execute()
+                ),
+                label=f"trash {doc_id}",
+                stats=quota.STATS,
+            )
             self.mark_cleaned(doc_id, "trash")
         except HttpError as error:
             status = getattr(getattr(error, "resp", None), "status", None)
@@ -198,6 +236,40 @@ class DocTracker:
                 self.mark_cleaned(doc_id, "already-gone")
             else:
                 raise
+
+    def find_docs_titled(self, title: str, exclude: str) -> list[str]:
+        """Ids of untrashed docs with this exact title, minus ``exclude``.
+
+        Scratch titles carry 8 hex characters of entropy, so a second
+        document with the identical title is not a coincidence - it is the
+        abandoned first attempt of a ``create_doc`` that was rate limited
+        between its ``documents.create`` and its content ``batchUpdate``.
+        The retry produced a new document and the original became garbage
+        no one is tracking. This finds it so teardown can trash it.
+        """
+        escaped = title.replace("\\", "\\\\").replace("'", "\\'")
+        try:
+            response = quota.retry_google_call(
+                lambda: (
+                    self.drive.files()
+                    .list(
+                        q=f"name = '{escaped}' and trashed = false",
+                        fields="files(id)",
+                        pageSize=25,
+                    )
+                    .execute()
+                ),
+                label=f"find duplicates of {title}",
+                stats=quota.STATS,
+            )
+        except Exception as exc:  # noqa: BLE001 - hygiene aid, never a gate
+            REPORT.note(f"duplicate-title lookup failed for {title}: {exc}")
+            return []
+        return [
+            f["id"]
+            for f in response.get("files", [])
+            if f.get("id") and f["id"] != exclude
+        ]
 
     def force_cleanup(self) -> None:
         for entry in self.entries:
@@ -275,9 +347,22 @@ def make_scratch_doc(mcp, ga_auth, doc_tracker):
 
     def factory(title_suffix: str = "", content: str = "") -> str:
         title = new_scratch_title(title_suffix)
+        # create_doc with content is two API requests; a 429 on the second
+        # leaves a document behind that the retry's return value knows
+        # nothing about. Watch the guard's counter and, only when it moved,
+        # go looking for the abandoned twin.
+        retries_before = len(quota.STATS.orphan_risk_retries)
         doc_id = create_doc_via_mcp(mcp, ga_auth.email, title, content=content)
         doc_tracker.register(doc_id, title)
         created.append(doc_id)
+        if len(quota.STATS.orphan_risk_retries) > retries_before:
+            for stray_id in doc_tracker.find_docs_titled(title, exclude=doc_id):
+                doc_tracker.register(stray_id, f"{title} (abandoned retry)")
+                created.append(stray_id)
+                REPORT.note(
+                    f"reclaimed {stray_id}: abandoned by a rate-limited "
+                    f"create_doc retry for {title!r}"
+                )
         return doc_id
 
     yield factory

@@ -261,9 +261,7 @@ class TestBatchUpdateDoc:
                 service=service,
                 user_google_email="user@example.com",
                 document_id=DOC_ID,
-                operations=[
-                    {"type": "create_header_footer", "section_type": "header"}
-                ],
+                operations=[{"type": "create_header_footer", "section_type": "header"}],
             )
 
         assert "update_doc_headers_footers" in str(excinfo.value)
@@ -433,9 +431,7 @@ class TestExportDocToPdf:
     @pytest.mark.asyncio
     async def test_a_failing_metadata_read_raises(self):
         service = Mock()
-        service.files.return_value.get.return_value.execute.side_effect = (
-            rate_limited()
-        )
+        service.files.return_value.get.return_value.execute.side_effect = rate_limited()
 
         with pytest.raises(HttpError) as excinfo:
             await _unwrap(docs_tools.export_doc_to_pdf)(

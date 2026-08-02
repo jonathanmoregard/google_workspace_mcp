@@ -437,28 +437,30 @@ class HeaderFooterManager:
 
         Returns:
             Dictionary with header and footer information
+
+        Raises:
+            Exception: whatever the Docs API raised. This used to return
+                ``{"error": str(e)}``, the dict-shaped version of the bug
+                fixed elsewhere in this file: a caller reading ``headers`` /
+                ``footers`` off the result sees empty ones and concludes the
+                document has none.
         """
-        try:
-            doc = await self._get_document(document_id)
+        doc = await self._get_document(document_id)
 
-            headers_info = {}
-            for header_id, header_data in doc.get("headers", {}).items():
-                headers_info[header_id] = self._extract_section_info(header_data)
+        headers_info = {}
+        for header_id, header_data in doc.get("headers", {}).items():
+            headers_info[header_id] = self._extract_section_info(header_data)
 
-            footers_info = {}
-            for footer_id, footer_data in doc.get("footers", {}).items():
-                footers_info[footer_id] = self._extract_section_info(footer_data)
+        footers_info = {}
+        for footer_id, footer_data in doc.get("footers", {}).items():
+            footers_info[footer_id] = self._extract_section_info(footer_data)
 
-            return {
-                "headers": headers_info,
-                "footers": footers_info,
-                "has_headers": bool(headers_info),
-                "has_footers": bool(footers_info),
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get header/footer info: {str(e)}")
-            return {"error": str(e)}
+        return {
+            "headers": headers_info,
+            "footers": footers_info,
+            "has_headers": bool(headers_info),
+            "has_footers": bool(footers_info),
+        }
 
     def _extract_section_info(self, section_data: dict[str, Any]) -> dict[str, Any]:
         """Extract useful information from a header/footer section."""
@@ -497,6 +499,13 @@ class HeaderFooterManager:
 
         Returns:
             Tuple of (success, message)
+
+        Raises:
+            Exception: whatever the Docs API raised, except the "already
+                exists" refusal, which is the document answering rather than
+                the call failing. This mirrors :meth:`_create_missing_section`;
+                it used to swallow every failure into ``(False, "Failed to
+                create …")``, which a caller renders as ordinary prose.
         """
         if section_type not in ["header", "footer"]:
             return False, "section_type must be 'header' or 'footer'"
@@ -516,30 +525,27 @@ class HeaderFooterManager:
                 "header_footer_type must be 'DEFAULT', 'FIRST_PAGE', or 'EVEN_PAGE'",
             )
 
+        # Build the request
+        request = {"type": api_type}
+
+        # Create the appropriate request type
+        if section_type == "header":
+            batch_request = {"createHeader": request}
+        else:
+            batch_request = {"createFooter": request}
+
         try:
-            # Build the request
-            request = {"type": api_type}
-
-            # Create the appropriate request type
-            if section_type == "header":
-                batch_request = {"createHeader": request}
-            else:
-                batch_request = {"createFooter": request}
-
-            # Execute the request
             await asyncio.to_thread(
                 self.service.documents()
                 .batchUpdate(documentId=document_id, body={"requests": [batch_request]})
                 .execute
             )
-
-            return True, f"Successfully created {section_type} with type {api_type}"
-
         except Exception as e:
-            error_msg = str(e)
-            if "already exists" in error_msg.lower():
+            if "already exists" in str(e).lower():
                 return (
                     False,
                     f"A {section_type} of type {api_type} already exists in the document",
                 )
-            return False, f"Failed to create {section_type}: {error_msg}"
+            raise
+
+        return True, f"Successfully created {section_type} with type {api_type}"

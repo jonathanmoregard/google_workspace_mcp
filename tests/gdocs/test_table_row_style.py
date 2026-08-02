@@ -301,7 +301,7 @@ class TestCreateTableWithDataHeaderRows:
                         resp=Mock(status=400),
                         content=(
                             b'{"error":{"message":"Invalid requests[0].insertTable: '
-                            b'Index 10 must be less than the end index of the '
+                            b"Index 10 must be less than the end index of the "
                             b'referenced segment, 10."}}'
                         ),
                         uri="https://docs.googleapis.com/v1/documents/d:batchUpdate",

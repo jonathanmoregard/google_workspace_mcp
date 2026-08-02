@@ -828,6 +828,7 @@ exists to prevent: a response that asserted more than its evidence supported.
 | Unanchored `insertComment` (UNCERTAIN 1) | **The API refuses it**: `400 Invalid requests[0].insertComment: Insert comment requests must specify a range to anchor to.` Empty and tab-only ranges are refused too. `create_anchored_doc_comment`'s mandatory range is Google's restriction, not a self-imposed one, so it stays. The Drive redirect now has evidence: a Drive-created unanchored comment reads back through the Docs preview as a full `CommentThread` with `anchorId` and `plainTextQuote` simply absent — that absence *is* "document-level". | [`errors-and-discovery.md`](docs/findings/errors-and-discovery.md) |
 | Merge tolerance (mock spec §13.2) | **0 — the mock's guess was right**, and the suspicion that insert-then-insert differs from insert-then-delete is **not** borne out. Twelve documents, four orderings × gaps 0/1/2: gap 0 joins, gap 1 does not, uniformly. Not a coalescing window (130 s apart still joins) and symmetric. | [`merge.md`](docs/findings/merge.md) |
 | Threads on merge (§13.3), and id renaming | **Both dissolve.** What this repo has been calling "merge" is **absorption at creation time**, not two suggestions becoming one: a new edit touching an existing same-author card is absorbed into it, the write returns no `createdSuggestionIds` at all — only `updatedSummarySuggestionIds` naming the pre-existing id — and no second id is ever minted. So no thread is ever orphaned (two threaded deletions plus a spanning deletion left two cards, each keeping its own reply), and "does the id get renamed" has no subject. | [`merge.md`](docs/findings/merge.md) |
+| Which card absorbs, when a new edit touches two | **Deterministic — the touched card with the lexicographically greatest suggestion id.** First measured 2026-08-01 as "nondeterministic, 3 left / 2 right over five identical runs"; a 2026-08-02 re-measurement that decouples position from creation order (44 fresh documents, 56 two-card-touch events, four edit-type conditions) matched "greatest id wins" 56/56 and every position/age rule near chance — the ids are random, which is what made five same-order trials look like a coin. The "later card (higher index) survives" hypothesis is rejected (27/56). Undocumented behaviour: one e2e test asserts it so drift is caught, but agents and product code still must not rely on it — the invariant tests stay id-agnostic. | [`merge.md`](docs/findings/merge.md) |
 
 Two API facts worth carrying forward, both found twice independently:
 
@@ -858,9 +859,6 @@ Two API facts worth carrying forward, both found twice independently:
   name one. The **values** are confirmed live (`CommentThread.status`
   OPEN→RESOLVED→OPEN; `SuggestionThread.status` OPEN→ACCEPTED/REJECTED); only
   the type names remain unavailable, and they are unavailable by construction.
-- **Which card absorbs, when a new edit touches two.** Nondeterministic in
-  measurement — three left, two right over five identical back-to-back runs —
-  so no test asserts it and no code should rely on it.
 
 ### 7.3 Unreachable by construction, not merely untested
 

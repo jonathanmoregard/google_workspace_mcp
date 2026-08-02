@@ -234,12 +234,16 @@ def test_an_edit_spanning_two_pending_cards_destroys_neither_card_nor_thread(
     or resolve. If prod ever starts destroying a card here, this test fails
     and ``docs/findings/merge.md`` is what needs revisiting.
 
-    **WHICH of the two absorbs is not predictable.** Five identical
-    constructions run back to back gave the left-hand card three times and
-    the right-hand card twice, with and without replies attached
-    (docs/findings/merge.md, probe 6). So this test asserts the invariant --
-    one card grows to cover the whole span, the other is untouched -- and
-    never which id it was. An agent must not predict it either.
+    **WHICH of the two absorbs is deterministic but undocumented.** Five
+    identical constructions on 2026-08-01 gave 3 left / 2 right and were first
+    read as nondeterministic; the 2026-08-02 re-measurement (56/56 over a
+    design that decouples position from creation order) shows the touched
+    card with the lexicographically GREATEST suggestion id absorbs the edit
+    (docs/findings/merge.md, rewritten sub-finding). That rule gets exactly
+    one test (``test_the_touched_card_with_the_greatest_id_absorbs_the_edit``);
+    THIS test stays id-agnostic on purpose -- the invariant (one card grows,
+    the other is untouched, threads intact) is the contract agents may rely
+    on, the id rule is not.
     """
     doc_id = make_scratch_doc("-merge-span", content=WORDS)
     email = ga_auth.email
@@ -278,8 +282,9 @@ def test_an_edit_spanning_two_pending_cards_destroys_neither_card_nor_thread(
     )
 
     # Exactly one card grew to cover the whole spanned range; the other kept
-    # the range and label it had. Which one is nondeterministic, so both
-    # assignments are legal and neither is asserted.
+    # the range and label it had. Which one is decided by the (undocumented)
+    # greatest-id rule; this test deliberately does not assert it -- the
+    # survivor-rule test below is the single place that does.
     grown = [
         sid for sid, r in cards.items() if (r["start_index"], r["end_index"]) == (7, 26)
     ]
@@ -309,14 +314,66 @@ def test_an_edit_spanning_two_pending_cards_destroys_neither_card_nor_thread(
     assert [r["content"] for r in cards[delta]["replies"]] == ["BETA-on-delta"]
 
 
+def test_the_touched_card_with_the_greatest_id_absorbs_the_edit(
+    preview_ready, mcp, ga_auth, make_scratch_doc
+):
+    """When one edit touches two cards, the greater suggestion id survives.
+
+    Measured 2026-08-02 (docs/findings/merge.md, rewritten Q2 sub-finding):
+    56/56 two-card-touch events over 44 fresh documents -- spanning deletions,
+    gap deletions between insertions, gap-1 fills and junction insertions,
+    with creation order counterbalanced against position -- were absorbed by
+    the touched card whose suggestion id is the lexicographically greatest
+    (plain string comparison of the full ``suggest.<token>`` id; the ids are
+    random, which is why five same-order trials in 2026-08-01's probe looked
+    like a coin). Every position- and age-based rule, including "the later
+    card (higher index) survives", scored near chance.
+
+    This is the ONE test that asserts the rule, so that drift in this
+    undocumented behaviour is caught. Everything else in the suite stays
+    id-agnostic, and agents must keep treating the survivor as unpredictable:
+    Google documents none of this.
+    """
+    doc_id = make_scratch_doc("-merge-survivor", content=WORDS)
+    email = ga_auth.email
+
+    (bravo,) = _suggest(mcp, email, doc_id, start_index=7, end_index=12)[
+        "created_suggestion_ids"
+    ]
+    (delta,) = _suggest(mcp, email, doc_id, start_index=21, end_index=26)[
+        "created_suggestion_ids"
+    ]
+
+    spanning = _suggest(mcp, email, doc_id, start_index=7, end_index=26)
+    assert spanning["created_suggestion_ids"] == [], spanning
+
+    cards = _cards(mcp, email, doc_id, expect=2)
+    assert set(cards) == {bravo, delta}, cards
+    (absorber,) = [
+        sid for sid, r in cards.items() if (r["start_index"], r["end_index"]) == (7, 26)
+    ]
+    expected = max(bravo, delta)
+    REPORT.note(
+        f"survivor rule: ids ({bravo!r}, {delta!r}), max {expected!r}, "
+        f"absorber {absorber!r}"
+    )
+    assert absorber == expected, (
+        "the greatest-id survivor rule (56/56 on 2026-08-02) did not hold: "
+        f"ids ({bravo!r}, {delta!r}), absorber {absorber!r}. If this repeats, "
+        "prod changed its tie-break -- update docs/findings/merge.md rather "
+        "than deleting the assert."
+    )
+
+
 def test_two_cards_pushed_into_contact_do_not_collapse(
     preview_ready, mcp, ga_auth, make_scratch_doc
 ):
     """Absorption happens at CREATION time only, never retroactively.
 
     Two deletions one character apart (gap 1, so two cards), then a third
-    deletion consuming exactly that character. It joins one of them (which one
-    is nondeterministic), and the result is two cards that now TOUCH --
+    deletion consuming exactly that character. It joins one of them (the one
+    with the greater id -- not asserted here), and the result is two cards
+    that now TOUCH --
     ``[7,12)+[12,20)`` or ``[7,13)+[13,20)`` -- and stay two. Verified stable
     on a re-read 20 s later, so this is not an eventually-consistent view of a
     merge that has not happened yet.

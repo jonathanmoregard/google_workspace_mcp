@@ -837,7 +837,8 @@ class MockDoc:
           NEW id wins; prod keeps the older one;
         - :meth:`_merge_around` runs to a fixpoint, so an edit touching two
           cards collapses all three; prod joins exactly one and leaves the
-          other untouched (and *which* one is nondeterministic);
+          other untouched (the one with the lexicographically greatest
+          suggestion id -- measured 56/56 on 2026-08-02, see merge.md);
         - the thread migration below (§10's *recommended* column, open
           question §13.3) answers a question prod never asks: nothing is
           absorbed, so no thread is ever orphaned.

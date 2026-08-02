@@ -76,6 +76,13 @@ driver of the mock's own §6 rule — it is simply not a faithful driver of prod
 Nothing anywhere names a suggestion id, and that is load-bearing rather than
 stylistic — see the divergence below.
 
+*(Update 2026-08-02: prod's survivor rule has since been measured and is
+deterministic — the touched card with the lexicographically greatest
+suggestion id absorbs the edit; see `merge.md`'s rewritten sub-finding. The
+grading here deliberately stays rule-independent anyway: the rule is
+undocumented and id-shaped, the mock's ids follow a different scheme entirely,
+and an end state both rules reach is a stronger foundation than either rule.)*
+
 The grader's replay `TIMELINE` also **stopped replaying the agent's reply**.
 Only two projections are read out of that replay and a thread post moves
 neither, so replaying it bought nothing and cost the one dependency the

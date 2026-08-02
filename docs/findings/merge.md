@@ -19,9 +19,16 @@ reports it as *updated*. Two suggestions that already exist stay two
 **forever**, even when a later edit pushes them into contact or spans both of
 them.
 
-Permanent coverage: `e2e/test_merge_semantics.py` (5 tests, marker
+Permanent coverage: `e2e/test_merge_semantics.py` (6 tests, marker
 `e2e_preview`). Throwaway probe scripts are not in the repo (they were run out
 of `/tmp`); their raw output is transcribed below.
+
+**Correction (2026-08-02).** The first edition of this file reported the
+Q2 sub-finding "which neighbour absorbs" as **nondeterministic**, from five
+identical trials. A re-measurement with a design that decouples position from
+creation order (44 fresh documents, 56 two-card-touch events) shows it is
+**deterministic: the touched card with the lexicographically greatest
+suggestion id absorbs the edit** — see the rewritten sub-finding under Q2.
 
 ---
 
@@ -229,11 +236,19 @@ Two same-author, same-kind deletions now **touching** — `[7,12)` and
 edit arrives; it is never re-evaluated over the existing set. Repeated with the
 creation order reversed (charlie first), same outcome.
 
-### Sub-finding: **which** neighbour absorbs is nondeterministic
+### Sub-finding: **which** neighbour absorbs — deterministic after all (re-measured 2026-08-02)
 
-When a new edit touches two existing cards, the API picks one — and the pick is
-not stable. Five identical constructions of the spanning-deletion case, run
-back to back:
+**The survivor is the touched card whose suggestion id is lexicographically
+greatest** — plain byte-wise string comparison of the full
+`suggest.<token>` id. 56/56 two-card-touch events over 44 fresh documents,
+across four edit-type conditions and both creation orders. The complement
+("smallest id wins") scored 0/56; every position- and age-based rule landed
+near chance.
+
+#### What was measured before, and why it misled
+
+The 2026-08-01 probe ran five identical constructions of the spanning-deletion
+case (left card always created first) and concluded **nondeterministic**:
 
 ```
 run 0 replies=False -> absorbed by bravo   (bravo (7,26) 'Delete: “bravo charlie delta”', delta (21,26) 'Delete: “delta”')
@@ -243,10 +258,138 @@ run 3 replies=True  -> absorbed by delta
 run 4 replies=True  -> absorbed by bravo
 ```
 
-Three left, two right, independent of whether replies were attached. **An agent
-must not predict which card grows.** `e2e/test_merge_semantics.py` therefore
-asserts the invariant (exactly one card covers the spanned range, the other is
-untouched, both threads intact) and never the identity.
+The suggestion **ids are random**, so a rule keyed on id order lands left about
+half the time — five trials cannot distinguish that from a coin, and the probe
+did not record both cards' ids, so the one variable that decides was invisible.
+"3 left / 2 right ⇒ nondeterministic" was an artifact of the design, not a
+property of the API.
+
+#### The 2026-08-02 design
+
+- **Position decoupled from creation order**: half the trials create the left
+  card first, half the right card first.
+- **Fresh document per trial** (prior state contaminates), seeded with the Q1/Q2
+  fixtures; both card ids, creation order, ranges, the joining write's verbatim
+  `suggestionResponses`, and the post-state read were recorded per trial.
+- Four conditions:
+
+  | cond | construction | joining edit | trials |
+  |---|---|---|---|
+  | A | del `[7,12)` + del `[21,26)` | deletion `[7,26)` **overlapping both** (the 08-01 case) | 16 (8 LR / 8 RL) |
+  | B | ins `[10,11)` + ins `[15,16)` | deletion `[11,15)` spanning the gap, **abutting both** | 16 (8 LR / 8 RL) |
+  | C | del `[7,12)` + del `[13,20)` | deletion `[12,13)` filling the 1-char gap, **abutting both** | 12 (6 LR / 6 RL) |
+  | D | C's end state: two cards **touching** at a junction | insertion at the junction index, **abutting both** | 12 (on C's docs) |
+
+  All four combinations joined a card every single time (the write returned
+  `updatedSummarySuggestionIds` naming exactly one id, never
+  `createdSuggestionIds`) — so "some combinations may not join at all" did not
+  occur; even the insertion sitting exactly between two touching deletion
+  cards is absorbed rather than minted.
+
+#### Result: every candidate rule against the 56 events
+
+```
+always left                        29/56  (A:6/16  B:9/16  C:7/12  D:7/12)
+always right (later card)          27/56  (A:10/16 B:7/16  C:5/12  D:5/12)
+always first-created               31/56  (A:8/16  B:9/16  C:7/12  D:7/12)
+always second-created              25/56  (A:8/16  B:7/16  C:5/12  D:5/12)
+lexicographic MIN id                0/56
+lexicographic MAX id               56/56  (A:16/16 B:16/16 C:12/12 D:12/12)
+```
+
+The "later card (higher index) survives" hypothesis is **rejected**: 27/56,
+chance level, with the decoupled design ruling out the confound that could
+have hidden it. Under a fair coin, 44 independent constructions all matching
+one pre-registered comparison is p = 2⁻⁴⁴ ≈ 6·10⁻¹⁴ (D is not independent —
+see below).
+
+Two sharpenings the raw ids force:
+
+- **String order, not numeric value.** Ids vary in length (10–12 chars after
+  `suggest.`). In four trials a *shorter* id beat a longer one
+  (`rywn8z1vss3` > `hlpw59ze7ke7`, `uuspvupthvr` > `ub4hx08kt291`,
+  `qnkjgx519a` > `jyz867gfjj5l`, `tdjknmumdjy` > `ql7qhbfaimwh`) — any
+  length-first or base-36-numeric reading predicts the opposite, so the
+  comparison is plain lexicographic over the character sequence (ASCII:
+  digits sort below letters).
+- **Stable across repeated touches.** In all 12 D trials the junction
+  insertion joined **the same card** that had absorbed C's gap-fill moments
+  earlier — forced by the rule, since neither id changes between the two
+  events. This 12/12 consistency on otherwise "random-looking" outcomes is
+  what exposed the hidden variable.
+
+#### The 56 trials, raw
+
+`order` = which card was created first (LR = left first). All ids share the
+`suggest.` prefix, elided for width. Survivor = the id named by the joining
+write's `updatedSummarySuggestionIds`, confirmed in every trial by the
+post-state read (the named card covered the joined range; the other kept its
+range and label; always exactly two cards).
+
+```
+cond trial order   left-id        right-id       survivor       pos    age
+A     0    LR   jryv5fq1zx3m   giht4t8jqbf5   jryv5fq1zx3m   left   first
+A     1    RL   qdo6x3f3oogw   2xqkmte34ejz   qdo6x3f3oogw   left   second
+A     2    LR   hmqyqceb5i0a   o8nvd3kx55i4   o8nvd3kx55i4   right  second
+A     3    RL   rywn8z1vss3    hlpw59ze7ke7   rywn8z1vss3    left   second
+A     4    LR   6x2bjcm83w5h   207na2xu9ycb   6x2bjcm83w5h   left   first
+A     5    RL   1or362qrr7jq   7mj01wbk9lqw   7mj01wbk9lqw   right  first
+A     6    LR   39jpqy9jg9dl   bho9016149sn   bho9016149sn   right  second
+A     7    RL   z5az2nrza7p5   woh3wnsxbtmp   z5az2nrza7p5   left   second
+A     8    LR   je9gqnngyule   ow6xjrym51p6   ow6xjrym51p6   right  second
+A     9    RL   6m74uctwwhaq   e3cv67shlk9s   e3cv67shlk9s   right  first
+A    10    LR   ixjfd12syzt4   yfzlm18zh0q1   yfzlm18zh0q1   right  second
+A    11    RL   duozwkcojic8   pg1datsnfzzh   pg1datsnfzzh   right  first
+A    12    LR   tdjknmumdjy    ql7qhbfaimwh   tdjknmumdjy    left   first
+A    13    RL   7a496ps6nlfw   8cmdpn9w5zpt   8cmdpn9w5zpt   right  first
+A    14    LR   f6b9rv4ik3ov   i6rt0eps6rof   i6rt0eps6rof   right  second
+A    15    RL   bvn1m5t6j4em   mvn2ylqfdkwq   mvn2ylqfdkwq   right  first
+B     0    LR   utlbskjxej67   9xuganca9qxb   utlbskjxej67   left   first
+B     1    RL   puj0lvymudfm   s5wujqo8dc9u   s5wujqo8dc9u   right  first
+B     2    LR   ydkd3fiu1ow1   372iju3i8amy   ydkd3fiu1ow1   left   first
+B     3    RL   jlwxjqxavl0k   c83zpqawj0i4   jlwxjqxavl0k   left   second
+B     4    LR   k9t30duy2lv0   dv2cvd7801nh   k9t30duy2lv0   left   first
+B     5    RL   5il1e6ih307z   smr7vi788crk   smr7vi788crk   right  first
+B     6    LR   rvfgjkmveyee   8lovmli7c8sf   rvfgjkmveyee   left   first
+B     7    RL   xb46xw5gfj9v   5tx07xgqj2wc   xb46xw5gfj9v   left   second
+B     8    LR   ub4hx08kt291   uuspvupthvr    uuspvupthvr    right  second
+B     9    RL   d71idz3fq33c   bh8z53huivr3   d71idz3fq33c   left   second
+B    10    LR   9xulfmjtt6z3   280r21haffsg   9xulfmjtt6z3   left   first
+B    11    RL   ct3u2iqazag3   zechosxuxaw2   zechosxuxaw2   right  first
+B    12    LR   tk54tqpc56ec   tr737fkdbp3y   tr737fkdbp3y   right  second
+B    13    RL   8i4fpaywf9hp   8pt9s2onu23k   8pt9s2onu23k   right  first
+B    14    LR   83wfikqf6v3n   se780uyqhaqj   se780uyqhaqj   right  second
+B    15    RL   m97isceorac2   6p8onjwptdzp   m97isceorac2   left   second
+C     0    LR   jyz867gfjj5l   qnkjgx519a     qnkjgx519a     right  second
+C     1    RL   sd6aeg74d8zk   qk0dd2drcm87   sd6aeg74d8zk   left   second
+C     2    LR   sdvozt74ulm3   ichziy72swns   sdvozt74ulm3   left   first
+C     3    RL   9mxx6rqajis4   m76oaklxf7sj   m76oaklxf7sj   right  first
+C     4    LR   iit7yyzb9oec   3ze3v4i5linq   iit7yyzb9oec   left   first
+C     5    RL   7ljvq2xe8kic   von4s0kp4i4i   von4s0kp4i4i   right  first
+C     6    LR   moaji786238m   15huemgr4mt8   moaji786238m   left   first
+C     7    RL   banrlhavh4b7   wi8yz1irwfu2   wi8yz1irwfu2   right  first
+C     8    LR   5ijdoxssrtm4   awsod4lpsdxo   awsod4lpsdxo   right  second
+C     9    RL   hx54ognbjmo6   3znvepi8piph   hx54ognbjmo6   left   second
+C    10    LR   rslpovivbak9   7jyvwosvv8cj   rslpovivbak9   left   first
+C    11    RL   fzmcs6cwxlur   39i0zxoxnm5z   fzmcs6cwxlur   left   second
+D  0–11         (same id pairs as C 0–11; survivor identical to C's in all 12)
+```
+
+Raw JSON records (both ids, creation order, ranges, verbatim
+`suggestionResponses`, post-state spans and labels, thread timestamps) were
+captured per trial; the table above is their projection.
+
+#### Honest limits
+
+- The id comparison is the **observable correlate**, presumably a proxy for an
+  internal ordering keyed on the id. Google documents none of this; it can
+  change without notice. `e2e/test_merge_semantics.py::test_the_touched_card_with_the_greatest_id_absorbs_the_edit`
+  asserts the rule against prod so drift is caught, but **product code and
+  agents should keep treating the survivor as unpredictable** — the invariant
+  (one card grows, the other is untouched, threads intact) is the load-bearing
+  contract, and the other merge tests still assert only that, on purpose.
+- Same-author, single-account, body text only, single tab — the same scope as
+  every other measurement in this file.
 
 ---
 
@@ -281,7 +424,7 @@ it.
 
 ### Added
 
-- **`e2e/test_merge_semantics.py`** — 5 `e2e_preview` tests encoding everything
+- **`e2e/test_merge_semantics.py`** — 6 `e2e_preview` tests encoding everything
   above that is stable. They use the existing `make_scratch_doc` fixture, so
   teardown is the suite's normal Drive trash + `test_zz_teardown_audit.py`
   re-audit.
@@ -290,6 +433,8 @@ it.
   - `test_a_deletion_touching_a_pending_insertion_joins_it` (Q1, cross-kind)
   - `test_an_edit_spanning_two_pending_cards_destroys_neither_card_nor_thread` (Q2)
   - `test_two_cards_pushed_into_contact_do_not_collapse` (Q2 converse)
+  - `test_the_touched_card_with_the_greatest_id_absorbs_the_edit`
+    (Q2 sub-finding, added 2026-08-02 — the survivor rule)
 - **`docs/findings/merge.md`** — this file.
 
 ### Changed
@@ -365,7 +510,7 @@ document was trashed in a `finally:` block; none survive.
 The permanent, re-runnable form is:
 
 ```bash
-uv run pytest e2e/test_merge_semantics.py -q     # 5 tests, ~45 s
+uv run pytest e2e/test_merge_semantics.py -q     # 6 tests, ~1 min
 ```
 
 **Quota note.** The Docs API allows **60 write requests per minute per user**
@@ -377,7 +522,9 @@ and limit 'Quota group for write operations per minute per user' …
 {'quota_limit': 'WriteRequestsPerMinutePerUser', 'quota_limit_value': '60'}"
 ```
 
-The 5 new tests cost ~24 writes. Measured from a cold start:
+The 5 tests added on 2026-08-01 cost ~24 writes; the survivor-rule test added
+2026-08-02 costs ~5 more (its numbers below predate it). Measured from a cold
+start:
 
 ```
 uv run pytest e2e -q --ignore=e2e/test_merge_semantics.py   36 passed, 1 skipped, 4m26s

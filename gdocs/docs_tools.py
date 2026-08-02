@@ -1827,14 +1827,18 @@ async def create_table_with_data(
     # Use TableOperationManager to handle the complex logic
     table_manager = TableOperationManager(service)
 
-    # Try to create the table, and if it fails due to index being at document end, retry with index-1
+    # Try to create the table, and if it fails due to index being at document
+    # end, retry with index-1. The manager now RAISES that rejection instead
+    # of returning it as a message, so the retry reads the API's own error
+    # rather than a string the manager had rendered for display.
     effective_index = index
-    success, message, metadata = await table_manager.create_and_populate_table(
-        document_id, table_data, index, bold_headers, tab_id, header_rows
-    )
-
-    # If it failed due to index being at or beyond document end, retry with adjusted index
-    if not success and "must be less than the end index" in message:
+    try:
+        success, message, metadata = await table_manager.create_and_populate_table(
+            document_id, table_data, index, bold_headers, tab_id, header_rows
+        )
+    except HttpError as error:
+        if "must be less than the end index" not in str(error):
+            raise
         logger.debug(
             f"Index {index} is at document boundary, retrying with index {index - 1}"
         )

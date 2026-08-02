@@ -206,6 +206,13 @@ All numbers below are observed output, not expectations.
 
 2546 = 2529 + the 17 tests added here. Nothing dropped.
 
+`integration/empirics` advanced by four commits (to `03ad305`) while this
+work was in flight, taking its own baseline to 2530. This branch **merges
+into that tip with no conflicts** — the four commits touch `llmux/`,
+`mockdocs/` and `pending_for_human.md`, none of which this branch goes near —
+and the merged result runs **2547 passed, 3 skipped**, i.e. 2530 + 17.
+Verified by trial merge, not assumed.
+
 The e2e run spent **227 write requests, 0 rate-limited, 0 retries, 0.0 s
 paced + 0.0 s backoff** — a solo run stays under the 60/min ceiling, as
 `docs/findings/e2e-quota.md` predicted. Drive was searched for

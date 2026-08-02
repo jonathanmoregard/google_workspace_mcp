@@ -587,9 +587,12 @@ def test_guard_does_not_retry_a_bad_request():
     assert guard.stats.rate_limited == 0
 
 
-#: The exact shape update_doc_headers_footers returns when its internal
-#: batchUpdate is rate limited: a SUCCESSFUL MCP result whose body is the
-#: 429. Caught against prod on 2026-08-02.
+#: The exact shape update_doc_headers_footers RETURNED when its internal
+#: batchUpdate was rate limited: a SUCCESSFUL MCP result whose body is the
+#: 429. Caught against prod on 2026-08-02, and fixed on the server side
+#: since (docs/findings/errors-as-success.md) -- this string is now a
+#: recorded historical shape, kept because the guard still has to survive
+#: meeting it from an older checkout.
 IN_BAND_RATE_LIMIT_TEXT = (
     "Error: Failed to write kix.ca8fpucwjkry segment content: <HttpError 429 "
     "when requesting https://docs.googleapis.com/v1/documents/abc:batchUpdate"
@@ -602,11 +605,16 @@ IN_BAND_RATE_LIMIT_TEXT = (
 
 
 def test_a_write_tool_that_reports_429_in_its_body_is_still_retried():
-    """Some tools swallow the HttpError and return it as prose.
+    """A tool that swallows the HttpError and returns it as prose.
 
     ``is_error`` is False, so without the in-band branch the guard would
     hand the test a quota failure to assert against and the run would look
     like a product bug.
+
+    No tool in this checkout does this any more -- the eight that did were
+    fixed in docs/findings/errors-as-success.md. This test now pins the
+    GUARD's tolerance of the shape rather than any current server
+    behaviour, because the guard also runs against older checkouts.
     """
     clock = FakeClock()
     guard = _guard(clock)

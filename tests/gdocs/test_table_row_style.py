@@ -14,6 +14,7 @@ dedicated pinTableHeaderRows request (pinnedHeaderRowsCount).
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from googleapiclient.errors import HttpError
 from pydantic import ValidationError
 
 from gdocs import docs_tools
@@ -288,9 +289,23 @@ class TestCreateTableWithDataHeaderRows:
         ("results", "expected_index"),
         [
             ([(True, "created", {"rows": 1, "columns": 1})], 10),
+            # The document-end rejection arrives as a RAISED HttpError, not as
+            # a returned (False, message). create_and_populate_table stopped
+            # swallowing API failures once a 429 was caught coming back as a
+            # successful result (docs/findings/errors-as-success.md); the
+            # index-1 retry now reads the API's own error instead of a string
+            # the manager had rendered for display.
             (
                 [
-                    (False, "must be less than the end index", {}),
+                    HttpError(
+                        resp=Mock(status=400),
+                        content=(
+                            b'{"error":{"message":"Invalid requests[0].insertTable: '
+                            b"Index 10 must be less than the end index of the "
+                            b'referenced segment, 10."}}'
+                        ),
+                        uri="https://docs.googleapis.com/v1/documents/d:batchUpdate",
+                    ),
                     (True, "created", {"rows": 1, "columns": 1}),
                 ],
                 9,

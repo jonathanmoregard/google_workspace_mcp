@@ -731,13 +731,25 @@ def rate_limited_result_text(result: Any, cost: int) -> str | None:
     * ``is_error`` set - the usual path, where ``handle_http_errors`` let
       the ``HttpError`` become a tool error.
     * ``is_error`` NOT set, with the 429 rendered into the *body* as prose.
-      ``update_doc_headers_footers`` does exactly this: it catches the
-      failure from its manager and returns ``"Error: Failed to write
-      <segment> content: <HttpError 429 ...>"`` as a perfectly successful
-      MCP result. Empirically caught on 2026-08-02; without this branch the
-      guard sees a success, does not retry, and the test fails on an
-      assertion about the response body - a quota failure wearing the
-      costume of a product bug.
+      ``update_doc_headers_footers`` did exactly this when this branch was
+      written: it caught the failure from its manager and returned
+      ``"Error: Failed to write <segment> content: <HttpError 429 ...>"`` as
+      a perfectly successful MCP result. Empirically caught on 2026-08-02;
+      without this branch the guard saw a success, did not retry, and the
+      test failed on an assertion about the response body - a quota failure
+      wearing the costume of a product bug.
+
+    **The server side of that has since been fixed**
+    (``docs/findings/errors-as-success.md``): every tool that swallowed an
+    API failure into a returned string now raises, so on this branch the
+    in-band shape should no longer occur.
+
+    The branch stays anyway, and is not a belt-and-braces habit. The guard
+    runs against whatever server the checkout happens to hold - an older
+    branch, a bisect, a revert - and the failure it prevents is silent and
+    expensive: the run reports a product bug that is really a quota wall.
+    Keeping it costs one string check per write call. If it ever fires
+    against current code, that is a regression worth knowing about.
 
     The in-band branch is restricted to write calls (``cost > 0``) so that
     a read echoing a document's contents can never be mistaken for one.

@@ -413,16 +413,66 @@ saves — never directly.
 
 ## Open UNCERTAIN items
 
-1. `InsertCommentRequest` with `range` omitted — unanchored-comment behavior
-   undocumented (the repo's tool requires a range, so this stays untested).
-2. Real discovery names of the `CommentThread.status` /
-   `SuggestionThread.status` enum types.
-3. Whether preview enrollment propagates per-project or per-account (the
-   capabilities probe in `gdocs_preview/curated_tools.py` classifies the
-   non-enrolled error shapes heuristically; only the enrolled shapes are
-   verified).
-4. Whether a multi-tab document's `suggestions` / `comments` arrays carry any
-   tab attribution. Observed arrays have none — the repo attributes a
-   suggestion to the tab whose body carries its id.
-5. Whether the preview thread operations really are SUGGEST-incompatible
-   (overlay decision, still unverified — see "Additional exclusions").
+Four of the five original items were settled against the live API on
+2026-08-02. Verbatim requests, responses and error strings are in
+[`docs/findings/`](findings/); HANDOVER §7 is the index.
+
+1. ~~`InsertCommentRequest` with `range` omitted~~ — **RESOLVED. The API
+   refuses it**: `400 Invalid requests[0].insertComment: Insert comment
+   requests must specify a range to anchor to.` An empty range and a tab-only
+   range are refused too. The tool's mandatory range is Google's restriction,
+   not a self-imposed one. A Drive-created unanchored comment does read back
+   here as a full `CommentThread` with `anchorId` and `plainTextQuote` absent —
+   that absence is what "document-level" looks like on this surface.
+   ([`errors-and-discovery.md`](findings/errors-and-discovery.md))
+2. **STILL OPEN, and unreachable: the discovery type NAMES** of the
+   `CommentThread.status` / `SuggestionThread.status` enums. Every labelled
+   variant (`DEVELOPER_PREVIEW`, `PREVIEW`, `TRUSTED_TESTER`,
+   `LIMITED_AVAILABILITY`) returns the byte-identical public document;
+   `v1preview`/`v1beta`/`v1alpha` are 404; enrolled credentials change nothing.
+   The transcoder names preview proto types in a value error, but `status` is
+   output-only on both threads, so no request can carry one and no error can
+   name one. The **values** are confirmed live: `CommentThread.status`
+   OPEN→RESOLVED→OPEN, `SuggestionThread.status` OPEN→ACCEPTED/REJECTED.
+   ([`errors-and-discovery.md`](findings/errors-and-discovery.md))
+3. **STILL OPEN: per-project or per-account enrollment.** Needs a second,
+   non-enrolled GCP project with its own OAuth client and an interactive
+   consent grant — a human in a browser. Related but distinct, and now
+   answered: the classifier's marker strings were validated against real
+   proto-parse errors, and a second grammar (`Invalid value at 'P' (TYPE),
+   "V"`) that carried none of them was found falling through to `available`
+   and is now classified `("unknown", "request_not_parsed")`. That validates
+   the markers; it does not establish what a non-enrolled project returns for
+   a recognised-but-ungated request type.
+   ([`errors-and-discovery.md`](findings/errors-and-discovery.md))
+4. ~~Tab attribution on the thread arrays~~ — **RESOLVED. No thread object
+   carries any tab field.** `suggestions[]` keys are exactly `{headPost,
+   status, suggestionId, summaryHtml, summaryText}`; `comments[]` are
+   `{anchorId, commentId, headPost, plainTextQuote, status}`. Attributing a
+   suggestion to the tab whose body carries its id is correct and cannot be
+   ambiguous — a range cannot span tabs, and one SUGGEST batch writing into
+   two tabs mints two distinct ids. **Comments are different**: no tab body
+   carries a comment id, but each tab has a disjoint
+   `documentTab.commentAnchors` map, so `anchorId` is the join key.
+   ([`tabs.md`](findings/tabs.md))
+5. ~~SUGGEST-incompatibility of the thread operations~~ — **RESOLVED, and the
+   overlay was half wrong.** The eight officially-unsupported request types
+   really are refused: `400 Invalid requests[0].X: Request does not support
+   application as suggestion.`, with each accepted in EDIT mode on the next
+   call. The **preview thread ops are NOT refused** — `insertComment`,
+   `addCommentReply`, `acceptSuggestion`, `rejectSuggestion` and the three
+   deletes all return HTTP 200 with `commentUpdateState: ALL_SAVED` inside a
+   `writeMode: SUGGEST` batch, and take effect. See "Additional exclusions",
+   which has been corrected.
+   ([`suggest-semantics.md`](findings/suggest-semantics.md))
+
+Two facts found while answering the above, each confirmed independently by two
+separate investigations:
+
+- **The thread array is not the pending set.** A resolved suggestion does not
+  leave `suggestions[]`; it is restatused and gains a `suggestionAction` reply.
+  Any code deriving "still pending" from `len(suggestions)` is wrong — the
+  pending set comes from the body's marks.
+- **Both `PREVIEW_*` view modes always degrade to the GA read.**
+  `documents.get` refuses `commentsViewMode` alongside them: `400 "Comments
+  may not be requested when previewing suggestions."`

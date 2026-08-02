@@ -348,8 +348,13 @@ class MockDoc:
         self.registry: dict[str, Suggestion] = {}
         self._clock = 0
         self._counters: dict[str, int] = {}
-        #: Merge events, flagged because whether the real API merges adjacent
-        #: same-author batch suggestions is UNCERTAIN (spec §14).
+        #: Merge events. No longer flagged as UNCERTAIN: the live API was
+        #: measured on 2026-08-02 (docs/findings/merge.md). It DOES join
+        #: adjacent same-author edits across separate batches, at tolerance 0
+        #: and with no insert/delete asymmetry — but it does so by ABSORBING a
+        #: new edit into a pre-existing card, never by merging two cards that
+        #: already exist. The mock still does the latter, so this log stays:
+        #: it is the diff between the two models.
         self.merge_log: list[tuple[str, str]] = []
         #: GC events (§11.1 I2). §10 says warn in dev builds: a GC usually
         #: means a bug, and it silently drops a comment thread.

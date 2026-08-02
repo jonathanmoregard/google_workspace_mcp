@@ -416,8 +416,11 @@ harness — and is the only part of this document written by the implementation.
   `updatedSummarySuggestionIds` and no `createdSuggestionIds`, and two suggestions that
   already exist stay two forever. §6 as written merges to a fixpoint with the *newest* id
   surviving. Making the mock prod-faithful failed 51 tests (mostly the checked-in llmux
-  scenario ground truth) and would strand `ix-merge-absorb`, so the mock still follows §6
-  and every merge is flagged (`model.merge_log`) so the divergence stays diffable.
+  scenario ground truth, whose regeneration would invalidate the recorded benchmark
+  numbers), so the mock still follows §6 and every merge is flagged (`model.merge_log`)
+  so the divergence stays diffable. The `ix-merge-absorb` interference scenario was
+  re-founded on absorption at creation time, so it no longer depends on §6's survivor
+  selection ([`docs/findings/merge-absorb-premise.md`](../findings/merge-absorb-premise.md)).
   Raw evidence, blast-radius measurement and the decision:
   [`docs/findings/merge.md`](../findings/merge.md); permanent coverage:
   `e2e/test_merge_semantics.py`.

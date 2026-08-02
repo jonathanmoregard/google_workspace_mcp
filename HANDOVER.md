@@ -880,15 +880,22 @@ Two API facts worth carrying forward, both found twice independently:
 existing one and never merges two that already exist. Implementing the
 prod-faithful rule was tried and measured: **51 failures**, almost all of them
 checked-in llmux scenario and stress ground truth that would need regenerating
-— which would invalidate the recorded benchmark numbers — plus the
-`ix-merge-absorb` interference case, whose premise prod turns out never to
-satisfy.
+— which would invalidate the recorded benchmark numbers.
 
 It was therefore **not** changed. The divergence is deliberate, documented at
 `mockdocs/model.py` and `mockdocs/adapter.py`, and the ordering for closing it
 later is in [`merge.md`](docs/findings/merge.md). Anyone regenerating the llmux
 corpora should close this first, or the ground truth will bake the mock's rule
 in again.
+
+The one place the divergence had leaked into a *measurement* has been closed:
+`ix-merge-absorb` used to score agents on two live cards merging, which prod
+cannot produce. It was re-founded on absorption at creation time — the agent's
+own edit joins a same-author card that is already there — and grades only the
+end state both rules reach, never which id survives. See
+[`merge-absorb-premise.md`](docs/findings/merge-absorb-premise.md), which also
+states the one cue the mock cannot stage (prod's write that returns no created
+id at all).
 
 ---
 

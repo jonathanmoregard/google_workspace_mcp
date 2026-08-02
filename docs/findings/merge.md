@@ -331,8 +331,9 @@ The failures are not incidental. They land in
 would all have to be regenerated, invalidating every recorded benchmark
 comparison — plus `tests/mockdocs/test_model_properties.py` (spec §11.3 L7–L10
 are stated over §6's merge) and the `ix-merge-absorb` interference scenario,
-whose entire premise ("the id the agent is holding gets absorbed by a merge") is
-now known to be **unreachable on prod**.
+whose entire premise at the time ("the id the agent is holding gets absorbed by
+a merge") is now known to be **unreachable on prod**. That scenario has since
+been re-founded — see the note at the end of this section.
 
 That is squarely the "would cascade into many test changes" case, so the change
 was **reverted** and the mock left alone with comments pointing here. The mock
@@ -343,6 +344,14 @@ If someone does want to close the gap later, the order is: (1) rewrite §6 in th
 spec, (2) change `_merge_around`, (3) regenerate `llmux/scenarios/generated`,
 `llmux/scenarios/stress` and `llmux/interference` ground truth, (4) retire or
 re-found `ix-merge-absorb`. It is a project, not an edit.
+
+**Step (4) has since been done, on its own** (2026-08-02, branch
+`fix/merge-absorb-premise`): `ix-merge-absorb` was re-founded on absorption at
+creation time — the agent's own edit joins a same-author card that is already
+there — which is the thing prod does do. Its grade is id-agnostic and asserts
+only the end state both rules reach, so it is no longer a hostage of §6's
+survivor selection. Reasoning, the honest limits of what the mock can stage,
+and gate numbers: [`merge-absorb-premise.md`](merge-absorb-premise.md).
 
 ---
 

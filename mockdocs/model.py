@@ -843,10 +843,17 @@ class MockDoc:
           absorbed, so no thread is ever orphaned.
 
         Left as-is deliberately. Making the model prod-faithful failed 51
-        tests, mostly the checked-in llmux scenario ground truth, and would
-        strand the ``ix-merge-absorb`` interference case whose premise prod
-        turns out never to satisfy. docs/findings/merge.md § "What changes in
-        the repo" records the measurement and the decision.
+        tests, mostly the checked-in llmux scenario ground truth, whose
+        regeneration would invalidate the recorded benchmark numbers.
+        docs/findings/merge.md § "What changes in the repo" records the
+        measurement and the decision.
+
+        The ``ix-merge-absorb`` interference case no longer rides on any of
+        this. It used to be founded on two live cards merging -- the state
+        prod cannot produce -- and was re-founded on absorption at creation
+        time, which prod does do; it now grades an end state both rules reach
+        and nothing about which id survives
+        (docs/findings/merge-absorb-premise.md).
         """
         for _, _, c in self.iter_chars():
             if absorbed in c.ins:

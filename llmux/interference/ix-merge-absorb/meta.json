@@ -2,20 +2,30 @@
   "id": "ix-merge-absorb",
   "difficulty": "hard",
   "steps": 4,
-  "tags": ["suggestions", "suggest-edit", "threads", "merge", "concurrency", "interference"],
+  "tags": ["suggestions", "suggest-edit", "threads", "absorption", "concurrency", "interference"],
   "authors": ["mockuser"],
   "n_suggestions": 0,
   "interferences": [
     {
-      "name": "second-session-extends-the-edit",
-      "kind": "merge_absorb",
+      "name": "other-device-suggests-the-same-spot",
+      "kind": "overlapping_suggestion",
       "editor": "mockuser",
       "document_id": "ix-doc-data",
-      "trigger": {"when": "after", "tool": ["suggest_doc_edit"], "nth": 1},
+      "trigger": {"when": "before", "tool": ["suggest_doc_edit"], "nth": 1},
       "params": {
-        "after_suggestion": "$latest",
-        "text": " (pending legal review)",
-        "author": "mockuser"
+        "after_text": "We will release the model weights.",
+        "text": " (pending legal review)"
+      }
+    },
+    {
+      "name": "other-device-notes-why",
+      "kind": "reply_thread",
+      "editor": "mockuser",
+      "document_id": "ix-doc-data",
+      "trigger": {"when": "before", "tool": ["suggest_doc_edit"], "nth": 1},
+      "params": {
+        "suggestion_id": "sug.mockuser.1",
+        "content": "Legal asked for this caveat before anything about the weights ships."
       }
     }
   ]

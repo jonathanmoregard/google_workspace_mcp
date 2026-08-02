@@ -195,16 +195,50 @@ repo-wide sweep of this bug class would be a second, larger PR.
 
 ## Gates
 
-| gate | result |
-|---|---|
-| `uv run pytest tests/ -q` baseline on `integration/empirics` | **2529 passed, 3 skipped** (855 s) |
-| `uv run pytest tests/ -q` after the fix | see below |
-| `uv run ruff check .` | clean |
-| `uv run ruff format --check .` | clean, 317 files |
-| `uv run pytest e2e -q` | see below |
+All numbers below are observed output, not expectations.
+
+| gate | baseline on `integration/empirics` | after the fix |
+|---|---|---|
+| `uv run pytest tests/ -q` | **2529 passed, 3 skipped** (855 s) | **2546 passed, 3 skipped** (630 s) |
+| `uv run ruff check .` | — | **All checks passed** |
+| `uv run ruff format --check .` | — | **317 files already formatted** |
+| `uv run pytest e2e -q` | 79 passed, 1 skipped | **79 passed, 1 skipped** (689 s / 11:29) |
+
+2546 = 2529 + the 17 tests added here. Nothing dropped.
+
+The e2e run spent **227 write requests, 0 rate-limited, 0 retries, 0.0 s
+paced + 0.0 s backoff** — a solo run stays under the 60/min ceiling, as
+`docs/findings/e2e-quota.md` predicted. Drive was searched for
+`e2e-gdocs-review` afterwards: **no documents found**, so teardown was clean.
+
+### One flake worth knowing about, NOT caused by this branch
+
+`tests/llmux_runner/test_run_wiring.py::test_execute_run_grades_classifies_and_stores_artifacts`
+fails when the suite is run as `.venv/bin/python -m pytest` instead of
+`uv run pytest`. Reproduced on the **base commit `7f7f69f`** with no changes
+applied, so it predates this work.
+
+Cause: `_stub_claude` builds a shell stub that shells out to
+`os.environ.get("PYTHON", "python3")`, and the helper it runs imports
+`mockdocs.state` → `mockdocs.adapter` → `httplib2`. Bare system `python3`
+has no `httplib2`, so the helper dies silently, the comment thread is never
+written to the state dump, and grading reports
+`expected exactly 1 comment thread, found 0`. Under `uv run` the venv is on
+`PATH`, `python3` resolves to the venv interpreter, and it passes.
+
+It is a fail-open of the same family, one layer up: a subprocess failure
+that the harness reads as an agent mistake. Left alone — out of scope for
+this round, and the documented gate command is `uv run pytest`.
+
+### Test changes
 
 17 tests added in `tests/gdocs/test_api_errors_are_not_success.py`. One
 existing test changed contract deliberately:
 `tests/gdocs/test_table_row_style.py::test_success_reports_effective_index`
 stubbed the manager *returning* the document-end rejection; it now *raises*
 it, because that is what the manager does.
+
+`e2e/quota.py`'s in-band 429 branch and its test keep working and keep their
+coverage, but their comments now say the server-side shape they describe is
+historical on this branch. The branch stays: the guard runs against whatever
+checkout it finds, and the failure it prevents is silent.

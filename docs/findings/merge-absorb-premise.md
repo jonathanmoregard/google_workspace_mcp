@@ -158,8 +158,12 @@ uv run python -m llmux.runner.run --corpus llmux/interference --all --dry-run
 uv run ruff check .                                                         All checks passed!
 uv run ruff format --check .                                                316 files already formatted
 uv run pytest tests/mockdocs_concurrency -q                                 65 passed
-uv run pytest tests/ -q                                                     2529 passed, 3 skipped
+uv run pytest tests/ -q                                                     2530 passed, 3 skipped
 ```
+
+The suite baseline was **2529 passed, 3 skipped**; the two `ix-merge-absorb`
+oracles were replaced by three (the "clears the way" run is new), so +1 test
+and nothing dropped.
 
 **Pre-existing failure, unrelated and not introduced here.**
 `tests/llmux_runner/test_run_wiring.py::test_execute_run_grades_classifies_and_stores_artifacts`

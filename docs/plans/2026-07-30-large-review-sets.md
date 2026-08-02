@@ -34,7 +34,7 @@ flat at **779–792 characters** across every tier, of which roughly 72% is
 `pre_text` / `post_text` / the two context windows / per-record metadata the
 caller did not ask for. There is no truncation, no
 page size, and no way to ask for less. A 300-suggestion page — which is an
-ordinary state for an the client article that has been through two rounds
+ordinary state for a requester article that has been through two rounds
 of review — produces roughly **235 KB, about 65,000 tokens, in a single tool
 response**. That is not a large response; it is a response that does not fit
 in most per-message budgets and blows a meaningful fraction of a context

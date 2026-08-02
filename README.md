@@ -2,7 +2,7 @@
 
 # This is a fork
 
-A fork of **[taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)** adding one service: **`docs_preview`** — 7 tools that let an agent work with Google Docs **comments** and **edit suggestions** the way a human reviewer does. Built for [the client](https://example.org), who publish web pages out of Google Docs and run heavy review over them.
+A fork of **[taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)** adding one service: **`docs_preview`** — 7 tools that let an agent work with Google Docs **comments** and **edit suggestions** the way a human reviewer does. Built for a client who publishes web pages out of Google Docs and runs heavy review over them.
 
 ### → **[HANDOVER.md](HANDOVER.md) is the documentation for this fork. Start there.**
 

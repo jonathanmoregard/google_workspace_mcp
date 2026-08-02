@@ -16,8 +16,8 @@ A fork of [`taylorwilsdon/google_workspace_mcp`](https://github.com/taylorwilsdo
 — 7 tools that let an agent work with Google Docs **comments** and **edit
 suggestions** the way a human reviewer does.
 
-Built for **the client**, who publish web pages out of Google Docs and run
-heavy comment/suggestion review over them.
+Built for **the requester**, who publishes web pages out of Google Docs and
+runs heavy comment/suggestion review over them.
 
 Requirements it satisfies (from the requester, recorded in
 [`docs/plans/2026-07-13-mvp.md`](docs/plans/2026-07-13-mvp.md)):
@@ -61,7 +61,7 @@ and the thread-bearing read only exist for **enrolled projects**. Apply at
   on. **Caveat, stated honestly:** whether enrollment propagates per-project
   or per-account is still listed as an open UNCERTAIN item
   (`docs/preview-api-reference.md:420`, item 3) — it has never been tested
-  with a second, non-enrolled project. Either way, the client having org-level
+  with a second, non-enrolled project. Either way, the requester having org-level
   approval does not automatically cover a *new* GCP project: register the
   project you actually build the OAuth client in.
 - Without enrollment the server still starts and every read still answers —

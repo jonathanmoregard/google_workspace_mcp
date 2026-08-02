@@ -29,6 +29,8 @@ from fastmcp import Client
 from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
 
+from e2e.quota import GUARD
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS_DIR = REPO_ROOT / "e2e" / "_artifacts"
 
@@ -174,10 +176,21 @@ class ServerSession:
         *,
         timeout: float = 120.0,
     ) -> CallToolResult:
-        """Call a tool; raises fastmcp ToolError if the tool errored."""
-        return self._run(
-            self._client.call_tool(name, arguments, timeout=timeout),
-            timeout=timeout + 30,
+        """Call a tool; raises fastmcp ToolError if the tool errored.
+
+        Every call goes through the write-quota guard (``e2e/quota.py``):
+        writes are paced under the 60/min Docs ceiling and 429s are
+        retried. This is the single seam through which the whole suite -
+        tests AND fixtures, present and future - reaches the server, which
+        is why the guard lives here rather than in any test module.
+        """
+        return GUARD.call(
+            name,
+            arguments,
+            lambda: self._run(
+                self._client.call_tool(name, arguments, timeout=timeout),
+                timeout=timeout + 30,
+            ),
         )
 
     def call_tool_raw(
@@ -187,12 +200,20 @@ class ServerSession:
         *,
         timeout: float = 120.0,
     ) -> CallToolResult:
-        """Call a tool without raising on error (for sad-path assertions)."""
-        return self._run(
-            self._client.call_tool(
-                name, arguments, timeout=timeout, raise_on_error=False
+        """Call a tool without raising on error (for sad-path assertions).
+
+        Rate-limit errors are still retried away: a sad-path test asserting
+        on a 400 must not be handed a 429 to assert against.
+        """
+        return GUARD.call(
+            name,
+            arguments,
+            lambda: self._run(
+                self._client.call_tool(
+                    name, arguments, timeout=timeout, raise_on_error=False
+                ),
+                timeout=timeout + 30,
             ),
-            timeout=timeout + 30,
         )
 
     def expect_tool_error(

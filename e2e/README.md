@@ -44,6 +44,45 @@ uv run pytest e2e -rs                           # show skip reasons
 
 With no credentials all tests skip cleanly (exit 0) - safe in CI.
 
+## Write quota (why a run sometimes waits)
+
+The Docs API allows **60 write requests per minute per user**, and failed
+writes count too. One run of this suite spends ~115 write requests over
+~200 s, which fits — but the quota belongs to the *Google account*, so two
+or three sessions running at once do not, and the failures land inside
+`make_scratch_doc`'s `create_doc` as **fixture errors** that look like
+broken tests.
+
+`e2e/quota.py` sits on `ServerSession.call_tool`, the single seam every
+test and fixture reaches the server through:
+
+- **pacing** — a sliding 60 s window over write cost, targeting 50/min.
+  The window is shared between processes through a flock-guarded file
+  under `~/.cache/gdocs-review-mcp/`, keyed on the account, so concurrent
+  checkouts cooperate instead of colliding. A solo run never waits.
+- **retry** — 429 only, exponential backoff with jitter, honouring
+  `Retry-After` where it survives (the harness-side Drive calls; the MCP
+  surface renders errors to text and loses headers). **A 400 still fails
+  on the first attempt** — it is a bug, not a transient.
+- **honesty** — exhausting the retries raises `WriteQuotaExhausted`, it
+  never skips; `e2e/last_run.md` reports what the run spent and says
+  `WALL HIT` / `INCOMPLETE RUN` if quota stopped it.
+
+Tools are classified read vs write by mirroring the server's own
+`is_read_only=True` declarations (a unit test re-derives the set from the
+source so it cannot drift); anything unrecognised is paced as a write.
+
+| variable | default | effect |
+|---|---|---|
+| `E2E_WRITE_BUDGET_PER_MIN` | 50 | writes/min the pacer targets |
+| `E2E_QUOTA_MAX_ATTEMPTS` | 6 | attempts per call; 1 disables retry |
+| `E2E_QUOTA_PACING` | on | `off` disables pacing |
+| `E2E_QUOTA_STATE` | on | `off` disables cross-process sharing |
+| `E2E_QUOTA_STATE_PATH` | per-account cache file | explicit window file |
+
+Measurements, design rationale and the known-fragile list:
+[`docs/findings/e2e-quota.md`](../docs/findings/e2e-quota.md).
+
 ## Hygiene & determinism
 
 - Every run creates fresh scratch docs titled

@@ -28,6 +28,7 @@ from auth.oauth_config import (
     is_stateless_mode,
     is_trust_gateway_identity,
 )
+from core.account_directory import warn_on_arbitrary_account_pick
 from core.config import (
     get_transport_mode,
     get_oauth_redirect_uri,
@@ -136,8 +137,11 @@ def _find_any_credentials(
             )
             return None, None
 
-        # Return credentials for the first user found
+        # Return credentials for the first user found. With more than one stored
+        # account that pick is arbitrary (whichever email sorts first), so say so
+        # instead of binding silently — see core/account_directory.py.
         first_user = users[0]
+        warn_on_arbitrary_account_pick(users, first_user)
         credentials = store.get_credential(first_user)
         if credentials:
             logger.info(

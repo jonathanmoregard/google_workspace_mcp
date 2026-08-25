@@ -19,8 +19,9 @@ DOCS_PREVIEW_TOOLS = {
     "create_anchored_doc_comment",
 }
 
-#: Always-registered core tool, present regardless of --tools selection.
-CORE_TOOLS = {"start_google_auth"}
+#: Always-registered core tools, present regardless of --tools selection.
+#: Both live in core/server.py, which every spawn imports.
+CORE_TOOLS = {"start_google_auth", "list_google_accounts"}
 
 #: GA docs-service tools the e2e scenarios rely on. Presence-only: the
 #: docs service's total surface may drift with upstream, so no exact

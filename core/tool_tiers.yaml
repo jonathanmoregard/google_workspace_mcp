@@ -58,6 +58,11 @@ docs:
     - get_doc_content
     - create_doc
     - modify_doc_text
+    # Registered in core/server.py, not gdocs/. Listed under the fork's primary
+    # service, and at the lowest tier: knowing which accounts exist is a
+    # prerequisite for using any of them, and a tool absent from every tier is
+    # silently dropped for every --tool-tier user.
+    - list_google_accounts
   extended:
     - export_doc_to_pdf
     - search_docs

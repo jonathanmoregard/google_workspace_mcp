@@ -29,6 +29,7 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.scopes import PROTOCOL_AUTH_SCOPES, SCOPES, get_current_scopes  # noqa
+from core.account_directory import build_server_instructions, render_account_report
 from core.config import (
     USER_GOOGLE_EMAIL,
     get_transport_mode,
@@ -274,6 +275,28 @@ class SecureFastMCP(FastMCP):
                 patched.append(tool)
         return patched
 
+    def _tool_takes_user_email(self, name: str) -> bool:
+        """Whether the registered tool actually has a user_google_email parameter.
+
+        Injecting the default into a tool that does not accept it is a pydantic
+        ``unexpected_keyword_argument`` error, so account-level tools that take no
+        arguments at all (``list_google_accounts``) would be uncallable whenever
+        USER_GOOGLE_EMAIL is configured. Unknown tools answer True so that an
+        unregistered name still fails the way FastMCP makes it fail.
+        """
+        from core.tool_registry import get_tool_components
+
+        try:
+            tool = get_tool_components(self).get(name)
+            if tool is None:
+                return True
+            properties = (getattr(tool, "parameters", None) or {}).get("properties")
+        except Exception:  # pragma: no cover - defensive
+            return True
+        if not isinstance(properties, dict):
+            return True
+        return "user_google_email" in properties
+
     async def call_tool(self, name: str, arguments: Optional[dict], *args, **kwargs):
         """Inject user_google_email before pydantic validates the call arguments.
 
@@ -297,6 +320,7 @@ class SecureFastMCP(FastMCP):
             not is_oauth21_enabled()
             and USER_GOOGLE_EMAIL
             and "user_google_email" not in arguments
+            and self._tool_takes_user_email(name)
         ):
             arguments = {**arguments, "user_google_email": USER_GOOGLE_EMAIL}
         return await super().call_tool(name, arguments, *args, **kwargs)
@@ -305,11 +329,12 @@ class SecureFastMCP(FastMCP):
 # Build server instructions with user email context for single-user mode.
 # Skipped in trusted-gateway mode: the verified principal supersedes the configured
 # default, and user_google_email is no longer a tool parameter clients can pass.
-_server_instructions = None
-if USER_GOOGLE_EMAIL and not is_trust_gateway_identity():
-    _server_instructions = f"""Connected Google account: {USER_GOOGLE_EMAIL}
-
-When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user_google_email` parameter. Do not ask the user for their email address."""
+# When the credential store holds more than one account the builder names the
+# alternatives and the routing rule; with one account (or none, or on any store
+# failure) it returns the single-account string unchanged. See
+# core/account_directory.py.
+_server_instructions = build_server_instructions(USER_GOOGLE_EMAIL)
+if _server_instructions:
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
 # Branding for the OAuth consent page: FastMCP's OAuth proxy renders the server's
@@ -817,6 +842,42 @@ async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
     except Exception as e:
         logger.error(f"Error processing OAuth callback: {str(e)}", exc_info=True)
         return create_server_error_response(str(e))
+
+
+@server.tool(
+    title="List Google Accounts",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def list_google_accounts() -> str:
+    """
+    List the Google accounts this server holds credentials for.
+
+    Answers from the credential store and already-cached state only: it makes NO
+    API calls and never probes an account, so it is safe to call at any time.
+
+    Reports, per account: the email address, whether it is the configured default
+    (USER_GOOGLE_EMAIL), and the last known Google Docs Developer Preview verdict
+    (available / unavailable / unknown) with its source and timestamp. "unknown"
+    means nothing has been observed for that account yet — it is not a capability
+    miss. Run `check_docs_review_capabilities` against an account to find out.
+
+    Use this to see which accounts exist before asking the user which one to use.
+    Seeing an account here is NOT permission to use it: keep using the default
+    account unless the user explicitly names another one, and never retry a failed
+    call under a different account on your own.
+
+    Returns:
+        str: JSON report: identity_mode, default_account, accounts
+            [{email, is_default, docs_preview {availability, source, checked_at}}],
+            accounts_enumerated, store_status, store_detail, docs_preview_loaded,
+            probed, notes.
+    """
+    return render_account_report(USER_GOOGLE_EMAIL)
 
 
 @server.tool(

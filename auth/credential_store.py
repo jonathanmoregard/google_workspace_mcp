@@ -551,6 +551,42 @@ def _selected_backend() -> str:
 _credential_store: Optional[CredentialStore] = None
 
 
+def build_credential_store() -> CredentialStore:
+    """
+    Construct the configured credential store WITHOUT installing it globally.
+
+    Reads the environment on every call, so a caller that runs before startup
+    has finished configuring the process (``main.py`` loads ``.env`` after
+    importing the server) does not freeze a half-configured store into the
+    global slot for everybody else.
+
+    Returns:
+        Configured credential store instance
+
+    Raises:
+        ValueError: for the gcs backend without OAuth 2.1, or an unknown backend
+    """
+    backend = get_selected_backend()
+    if backend == "gcs":
+        # GCS backend does not support list_users(), which is required for
+        # single-user mode. Reject unless OAuth 2.1 is enabled.
+        oauth21_enabled = _parse_bool_env(os.getenv("MCP_ENABLE_OAUTH21", "false"))
+        if not oauth21_enabled:
+            raise ValueError(
+                "GCSCredentialStore requires MCP_ENABLE_OAUTH21=true. "
+                "The GCS backend does not support list_users(), which is "
+                "required for single-user mode. Use LocalDirectoryCredentialStore "
+                "for single-user deployments, or enable OAuth 2.1 mode."
+            )
+        return GCSCredentialStore()
+    if backend == "local_directory":
+        return LocalDirectoryCredentialStore()
+    raise ValueError(
+        f"Unsupported WORKSPACE_MCP_CREDENTIAL_STORE_BACKEND: {backend!r}. "
+        f"Expected 'local_directory' or 'gcs'."
+    )
+
+
 def get_credential_store() -> CredentialStore:
     """
     Get the global credential store instance.
@@ -561,29 +597,31 @@ def get_credential_store() -> CredentialStore:
     global _credential_store
 
     if _credential_store is None:
-        backend = get_selected_backend()
-        if backend == "gcs":
-            # GCS backend does not support list_users(), which is required for
-            # single-user mode. Reject unless OAuth 2.1 is enabled.
-            oauth21_enabled = _parse_bool_env(os.getenv("MCP_ENABLE_OAUTH21", "false"))
-            if not oauth21_enabled:
-                raise ValueError(
-                    "GCSCredentialStore requires MCP_ENABLE_OAUTH21=true. "
-                    "The GCS backend does not support list_users(), which is "
-                    "required for single-user mode. Use LocalDirectoryCredentialStore "
-                    "for single-user deployments, or enable OAuth 2.1 mode."
-                )
-            _credential_store = GCSCredentialStore()
-        elif backend == "local_directory":
-            _credential_store = LocalDirectoryCredentialStore()
-        else:
-            raise ValueError(
-                f"Unsupported WORKSPACE_MCP_CREDENTIAL_STORE_BACKEND: {backend!r}. "
-                f"Expected 'local_directory' or 'gcs'."
-            )
+        _credential_store = build_credential_store()
         logger.info(f"Initialized credential store: {type(_credential_store).__name__}")
 
     return _credential_store
+
+
+def peek_credential_store() -> CredentialStore:
+    """
+    Get a credential store to READ from, without installing a global instance.
+
+    Returns the installed store when there is one, so an explicitly configured
+    store (``set_credential_store``) always wins. Otherwise it builds a
+    throwaway instance rather than caching one: read-only callers must not
+    decide, on everybody's behalf and possibly before startup is finished, which
+    store the process uses for the rest of its life.
+
+    Returns:
+        Configured credential store instance
+
+    Raises:
+        ValueError: for the gcs backend without OAuth 2.1, or an unknown backend
+    """
+    if _credential_store is not None:
+        return _credential_store
+    return build_credential_store()
 
 
 def set_credential_store(store: CredentialStore):

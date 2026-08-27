@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from googleapiclient.errors import HttpError
 
+import core.account_directory as account_directory
+from auth.credential_store import LocalDirectoryCredentialStore
 from core.utils import UserInputError
 from gdocs_preview import (
     address,
@@ -39,6 +41,8 @@ from mockdocs.fake_services import FakeBackend
 from tests.gdocs_preview import fixtures as fx
 
 EMAIL = "reviewer@example.com"
+#: A second authenticated account, for AC3's candidate-account naming.
+OTHER_EMAIL = "editor@example.com"
 DOC = "doc-fixture-1"
 LINK = f"https://docs.google.com/document/d/{DOC}/edit"
 
@@ -176,6 +180,23 @@ def _http_error(status, content: bytes) -> HttpError:
     resp.status = status
     resp.reason = "mock"
     return HttpError(resp=resp, content=content)
+
+
+def _accounts(monkeypatch, tmp_path, emails):
+    """Point the account directory at a credential store holding ``emails``.
+
+    AC3's candidate-account hint reads the store on the error path; without
+    this the hint would be answering from whatever the developer's real
+    credentials directory happens to hold.
+    """
+    base_dir = tmp_path / "creds"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for email in emails:
+        (base_dir / f"{email}.json").write_text("{}", encoding="utf-8")
+    store = LocalDirectoryCredentialStore(base_dir=str(base_dir))
+    monkeypatch.setattr(account_directory, "peek_credential_store", lambda: store)
+    monkeypatch.setattr(account_directory, "is_trust_gateway_identity", lambda: False)
+    monkeypatch.setattr(account_directory, "is_oauth21_enabled", lambda: False)
 
 
 def _batch_kwargs(service):
@@ -936,6 +957,62 @@ class TestPreviewGating:
         assert status["availability"] == "unavailable"
         assert status["evidence"]["reason"] == "not_enrolled"
         assert status["source"] == "tool_call"
+
+    @pytest.mark.asyncio
+    async def test_not_enrolled_message_names_the_other_accounts(
+        self, monkeypatch, tmp_path
+    ):
+        """AC3: an ``unavailable`` verdict names the accounts NOT tried.
+
+        Capability is per account and unknown until observed, so the message
+        may not imply that the others are enrolled -- only that this failure
+        is not evidence about them, and that nothing was attempted under them.
+        """
+        _accounts(monkeypatch, tmp_path, [EMAIL, OTHER_EMAIL])
+        service = _failing_service(_http_error(400, NOT_ENROLLED_BODY))
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        with pytest.raises(UserInputError) as excinfo:
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=5,
+                text="hello",
+            )
+
+        message = str(excinfo.value)
+        assert "Developer Preview" in message
+        assert OTHER_EMAIL in message
+        assert "No call was attempted under it" in message
+        assert "open question" in message
+        # The write was issued once, under one account, and never repeated.
+        assert service.documents.return_value.batchUpdate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_not_enrolled_message_is_unchanged_for_a_single_account(
+        self, monkeypatch, tmp_path
+    ):
+        """The fork stays byte-identical to upstream with one account."""
+        _accounts(monkeypatch, tmp_path, [EMAIL])
+        service = _failing_service(_http_error(400, NOT_ENROLLED_BODY))
+        fn = _unwrap(write_tools.suggest_doc_edit)
+
+        with pytest.raises(UserInputError) as excinfo:
+            await fn(
+                service,
+                user_google_email=EMAIL,
+                document_id=DOC,
+                start_index=5,
+                text="hello",
+            )
+
+        assert str(excinfo.value) == (
+            "suggest_doc_edit requires Google Workspace Developer Preview "
+            "enrollment for the authenticated project. Enrollment steps: "
+            "pending_for_human.md. Verify with "
+            "check_docs_review_capabilities(probe=true)."
+        )
 
     @pytest.mark.asyncio
     async def test_semantic_400_reraises_http_error_and_records_available(self):

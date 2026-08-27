@@ -52,6 +52,7 @@ from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
+from core.account_directory import HINT_PREVIEW_UNAVAILABLE, candidate_account_hint
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, review_page, suggestion_ledger
@@ -1343,11 +1344,16 @@ async def _execute_preview_batch_update(
             user_google_email=user_google_email,
         )
         if (availability, reason) == ("unavailable", "not_enrolled"):
+            # The verdict just recorded for THIS account is ``unavailable``.
+            # Name the other authenticated accounts as candidates -- and say
+            # that nothing was attempted under them. Empty string unless there
+            # really is another account, so single-account output is unchanged.
             raise UserInputError(
                 f"{tool_name} requires Google Workspace Developer Preview "
                 f"enrollment for the authenticated project. Enrollment steps: "
                 f"pending_for_human.md. Verify with "
                 f"check_docs_review_capabilities(probe=true)."
+                + candidate_account_hint(user_google_email, HINT_PREVIEW_UNAVAILABLE)
             ) from error
         raise
     preview_status.record(

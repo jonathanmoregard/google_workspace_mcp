@@ -8,6 +8,8 @@ things so that the edits to upstream files stay one-liners:
 * :func:`build_account_report` / :func:`render_account_report` — what the
   ``list_google_accounts`` tool answers with.
 * :func:`build_server_instructions` — the FastMCP ``instructions`` string.
+* :func:`candidate_account_hint` / :func:`http_error_account_hint` — the
+  sentence a failed call appends to name the accounts it did NOT try.
 
 Two rules bind everything here:
 
@@ -384,6 +386,158 @@ def build_server_instructions(user_google_email: Optional[str]) -> Optional[str]
         )
 
     return _single_account_instructions(user_google_email)
+
+
+# ---------------------------------------------------------------------------
+# Naming the other accounts when a call fails
+# ---------------------------------------------------------------------------
+
+#: A Docs/Drive 403: this account is authenticated but not allowed.
+HINT_403 = "http_403"
+#: A Docs/Drive 404, whose meaning is ambiguous by Google's own documentation.
+HINT_404 = "http_404"
+#: A preview-gated tool refused because the cached verdict for this account is
+#: ``unavailable`` (the API rejected the preview request field itself).
+HINT_PREVIEW_UNAVAILABLE = "preview_unavailable"
+
+_NOTFOUND_AMBIGUITY = (
+    "A Google notFound means either that this account cannot reach that id or "
+    "that no such document exists: Drive returns notFound for both "
+    "(https://developers.google.com/workspace/drive/api/guides/handle-errors), "
+    "so it is not evidence that the document exists."
+)
+
+#: Whether Developer Preview enrollment is per-account, per-Cloud-project, or
+#: both is undocumented for the two-accounts-one-OAuth-client case
+#: (``docs/preview-api-reference.md``). The hint must not resolve it by
+#: assertion in either direction — it says only that this failure is evidence
+#: about ONE account, which is true under every candidate answer.
+_PREVIEW_GRANULARITY = (
+    "Whether Developer Preview enrollment follows the account or the Cloud "
+    "project is an open question, so this failure is evidence about this "
+    "account only; list_google_accounts reports each account's last observed "
+    "verdict without probing anything."
+)
+
+#: kind -> (sentence before the naming, sentence after it).
+_HINT_FRAMING: Dict[str, Tuple[str, str]] = {
+    HINT_403: ("", ""),
+    HINT_404: (_NOTFOUND_AMBIGUITY, ""),
+    HINT_PREVIEW_UNAVAILABLE: ("", _PREVIEW_GRANULARITY),
+}
+
+#: HTTP status -> hint kind. 401 is deliberately absent: it means nobody is
+#: authenticated for this call, not that the wrong identity was used, and the
+#: fix is to re-authenticate rather than to look at a second account.
+_STATUS_HINTS: Dict[int, str] = {403: HINT_403, 404: HINT_404}
+
+
+def other_accounts(user_google_email: Optional[str]) -> Tuple[str, ...]:
+    """The authenticated accounts a failed call was NOT attempted under.
+
+    Empty — meaning "say nothing" — in four cases, each of which would
+    otherwise put a claim in an error message that the evidence does not
+    support:
+
+    * **Trusted-gateway and OAuth 2.1 modes.** The credential store is shared
+      across principals there, so its contents are other tenants' addresses.
+      Handing them to a caller who cannot act on them is a leak.
+    * **The store could not be enumerated.** "There are no other accounts" must
+      never be inferred from "the store could not be read".
+    * **The caller's own account is unknown.** ``handle_http_errors``
+      substitutes ``"N/A"`` when the tool takes no ``user_google_email``
+      keyword; without knowing which account failed there is no "other", and
+      naming the failed account as a candidate would invite exactly the retry
+      this feature exists to prevent.
+    * **The store does not contain the caller's account.** The enumeration is
+      then describing a different world from the one the call ran in, so the
+      set it produces is not "the others".
+    """
+    if _identity_mode() != "single_user":
+        return ()
+
+    caller = (user_google_email or "").strip()
+    if "@" not in caller:
+        return ()
+
+    directory = enumerate_accounts()
+    if not directory.enumerated:
+        return ()
+
+    folded = caller.casefold()
+    if not any(email.strip().casefold() == folded for email in directory.emails):
+        return ()
+
+    return tuple(
+        email for email in directory.emails if email.strip().casefold() != folded
+    )
+
+
+def _no_attempt_sentence(count: int) -> str:
+    """Say plainly that nothing was tried under the accounts just named."""
+    if count == 1:
+        pronoun, condition = "it", "that account is the one the user meant"
+    else:
+        pronoun, condition = "them", "one of them is the one the user meant"
+    return (
+        f"No call was attempted under {pronoun} — this server never retries a "
+        f"failed call under a different account. If {condition}, confirm that "
+        f"with the user and then call again with user_google_email set to it; "
+        f"do not try the accounts in turn."
+    )
+
+
+def _candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
+    framing = _HINT_FRAMING.get(kind)
+    if framing is None:
+        logger.warning("Unknown candidate-account hint kind: %r", kind)
+        return ""
+
+    others = other_accounts(user_google_email)
+    if not others:
+        return ""
+
+    preamble, trailing = framing
+    naming = "Other accounts authenticated on this server: " + ", ".join(others) + "."
+    parts = (preamble, naming, _no_attempt_sentence(len(others)), trailing)
+    return " " + " ".join(part for part in parts if part)
+
+
+def candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
+    """A sentence naming the other accounts, or ``""`` when there is none.
+
+    The return value is meant to be appended verbatim to an existing error
+    message, so it carries its own leading space and is empty whenever the
+    affordance does not apply — with zero or one authenticated account the
+    caller's message is left byte-identical to what this fork inherited.
+
+    **Never raises.** This runs while another error is being formatted, and a
+    failure here that escaped would replace the real failure with itself.
+    """
+    try:
+        return _candidate_account_hint(user_google_email, kind)
+    except Exception as exc:
+        logger.warning(
+            "Could not build the candidate-account hint (%s); leaving the error "
+            "message unchanged.",
+            exc,
+        )
+        return ""
+
+
+def http_error_account_hint(
+    user_google_email: Optional[str], status: Optional[int]
+) -> str:
+    """:func:`candidate_account_hint` for a Google HTTP status. Never raises.
+
+    The single entry point ``core.utils.handle_http_errors`` calls, so that the
+    decision about WHICH statuses earn an affordance lives here rather than in
+    the upstream-owned hot path.
+    """
+    kind = _STATUS_HINTS.get(status) if isinstance(status, int) else None
+    if kind is None:
+        return ""
+    return candidate_account_hint(user_google_email, kind)
 
 
 # ---------------------------------------------------------------------------

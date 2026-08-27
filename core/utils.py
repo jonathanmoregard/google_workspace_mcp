@@ -17,6 +17,7 @@ from defusedxml import ElementTree as ET
 
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
+from .account_directory import http_error_account_hint
 from .api_enablement import get_api_enablement_message
 from auth.google_auth import GoogleAuthenticationError
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
@@ -582,6 +583,16 @@ def handle_http_errors(
                             f"API error in {tool_name}: {error}. "
                             f"You might need to re-authenticate for user '{user_google_email}'. "
                             f"{auth_hint}"
+                        ) + http_error_account_hint(
+                            user_google_email, error.resp.status
+                        )
+                    elif error.resp.status == 404:
+                        # Ambiguous by Google's own documentation: notFound
+                        # covers "no access" AND "no such file". The hint names
+                        # the other authenticated accounts and says nothing was
+                        # tried under them; it is "" unless there IS another.
+                        message = f"API error in {tool_name}: {error}" + (
+                            http_error_account_hint(user_google_email, 404)
                         )
                     else:
                         # Other HTTP errors (400 Bad Request, etc.) - don't suggest re-auth

@@ -684,37 +684,37 @@ def _import_disk_store_factory():
     return make_sanitized_file_store
 
 
+# One rule for blank values, applied by every helper below:
+#
+#   blank or whitespace-only == unset == take the default;
+#   any non-empty unrecognised value is an error naming the variable.
+#
+# Blank carries no intent to misread. It is what `docker compose` substitutes
+# for `FOO=${FOO}` when FOO is unset, and what an emptied-out `.env` line
+# leaves behind, so treating it as fatal turns a routine deployment idiom into
+# crash-on-boot. The typo this strictness exists to catch — `treu`, a port of
+# `six-three-seven-nine` — is always a non-empty value, and those still raise.
+# `_valkey_bool_env` already worked this way; the int helpers now match it.
+
+
 def _valkey_int_env(name: str, default: int) -> int:
     """Read an integer Valkey setting, naming the variable when it is malformed.
 
     ``int()``'s own ``ValueError`` ("invalid literal for int() with base 10")
     does not say which knob was mistyped, and this whole block used to swallow
     it as an unspecified "invalid Valkey configuration".
-
-    A variable that is present but blank is malformed, not absent: blanking a
-    value out is a plausible typo, and ``int('')`` raised before this helper
-    existed. Only an entirely unset variable takes the default.
     """
-    raw = os.environ.get(name)
-    if raw is None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
         return default
-    stripped = raw.strip()
-    if not stripped:
-        raise ValueError(f"{name} is set but empty; unset it to use the default.")
     try:
-        return int(stripped)
+        return int(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer, got {raw!r}.") from exc
 
 
 def _valkey_optional_int_env(name: str) -> Optional[int]:
-    """Same as :func:`_valkey_int_env`, but for the settings with no default.
-
-    Blank stays permissive here, unlike ``_valkey_int_env``, because that is
-    what these two timeouts already did: they were read as
-    ``int(raw) if raw else None``, so an empty value has always meant "no
-    timeout" rather than an error.
-    """
+    """Same as :func:`_valkey_int_env`, for the settings that have no default."""
     raw = os.getenv(name, "").strip()
     if not raw:
         return None
@@ -920,7 +920,29 @@ def configure_server_for_http():
                     # Configure TLS and timeouts on the underlying Glide client config.
                     # ValkeyStore currently doesn't expose these settings directly.
                     glide_config = getattr(valkey_store, "_client_config", None)
-                    if glide_config is not None:
+                    if glide_config is None:
+                        # The private attribute this code reaches through is
+                        # gone. Timeouts are tuning and can be dropped with a
+                        # warning; TLS is not. Silently opening a cleartext
+                        # connection while the startup log says tls=True is the
+                        # exact shape of bug this whole change exists to remove.
+                        if valkey_use_tls:
+                            raise RuntimeError(
+                                "OAuth 2.1: TLS was requested for the Valkey client_storage "
+                                "(WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS, or port 6380), but this "
+                                "ValkeyStore does not expose the Glide client configuration "
+                                "(_client_config) that carries the TLS setting, so the connection "
+                                "would be made in cleartext. Refusing to start."
+                            )
+                        logger.warning(
+                            "OAuth 2.1: ValkeyStore does not expose _client_config, so the Valkey "
+                            "request and connection timeouts cannot be applied and Glide's own "
+                            "defaults are used. TLS was not requested, so the connection itself is "
+                            "unaffected."
+                        )
+                        valkey_request_timeout_ms = None
+                        valkey_connection_timeout_ms = None
+                    else:
                         glide_config.use_tls = valkey_use_tls
 
                         is_remote_host = valkey_host not in {"localhost", "127.0.0.1"}
@@ -952,6 +974,12 @@ def configure_server_for_http():
                     client_storage = FernetEncryptionWrapper(
                         key_value=valkey_store,
                         fernet=storage_fernet,
+                        # Match FastMCP's own default store
+                        # (OAuthProxy.__init__): a record written under a
+                        # previous GOOGLE_OAUTH_CLIENT_SECRET must read as a
+                        # cache miss, so a secret rotation forces re-registration
+                        # instead of raising DecryptionError on every stale read.
+                        raise_on_decryption_error=False,
                     )
                     logger.info(
                         "OAuth 2.1: Using ValkeyStore for FastMCP OAuth proxy client_storage (host=%s, port=%s, db=%s, tls=%s)",
@@ -1021,6 +1049,9 @@ def configure_server_for_http():
                     client_storage = FernetEncryptionWrapper(
                         key_value=disk_store,
                         fernet=storage_fernet,
+                        # See the Valkey branch: a stale record must be a cache
+                        # miss, not a DecryptionError on every read.
+                        raise_on_decryption_error=False,
                     )
                     logger.info(
                         "OAuth 2.1: Using FileTreeStore for FastMCP OAuth proxy client_storage (directory=%s)",
@@ -1043,6 +1074,18 @@ def configure_server_for_http():
 
             # Check if external OAuth provider is configured
             if config.is_external_oauth21_provider():
+                if client_storage is not None:
+                    # Pre-existing: ExternalOAuthProvider is constructed without
+                    # client_storage, so the backend selected above is not the
+                    # one used. Not fixed here — routing it is a separate change
+                    # — but the "Using ..." line logged a moment ago must not be
+                    # left standing as the last word.
+                    logger.warning(
+                        "OAuth 2.1: EXTERNAL_OAUTH21_PROVIDER is set, so the client_storage "
+                        "backend configured above is NOT used. ExternalOAuthProvider falls back "
+                        "to FastMCP's default per-instance encrypted file store; replicas will "
+                        "not share OAuth client registrations."
+                    )
                 # External OAuth mode: use custom provider that handles ya29.* access tokens
                 from auth.external_oauth_provider import ExternalOAuthProvider
 

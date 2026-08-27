@@ -8,16 +8,23 @@ be Fernet-encrypted at rest. The Valkey branch used to construct the raw
 encryption setup left the unencrypted store bound while the log claimed a
 fallback had happened.
 
-These tests pin the three distinct failure causes apart:
+The disk-backed branch had the same defect and is fixed the same way; both
+branches now obey one contract.
 
-* missing Valkey dependency -> warn (with the install hint) and leave
-  ``client_storage`` unset, exactly as the disk-backed branch does;
-* malformed Valkey configuration -> abort startup naming the offending
-  environment variable, restoring ``parse_bool_env``'s loud-failure contract;
-* rejected storage-encryption key -> abort startup, as the disk branch already
-  does by not catching ``ValueError`` at all.
+These tests pin the distinct failure causes apart:
 
-In none of them may an unencrypted store reach ``GoogleProvider``.
+* missing store dependency -> warn (with the install hint) and leave
+  ``client_storage`` unset, so FastMCP uses its own default;
+* malformed configuration -> abort startup naming the offending environment
+  variable, restoring ``parse_bool_env``'s loud-failure contract;
+* rejected storage-encryption key -> abort startup, logged as an encryption
+  failure and re-raised;
+* TLS requested but unappliable -> abort startup, rather than connecting in
+  cleartext while the log says otherwise.
+
+In none of them may an unencrypted store reach ``GoogleProvider``. Separately,
+a key *rotation* must degrade to a cache miss rather than raising, matching
+FastMCP's own default store.
 """
 
 import logging
@@ -59,6 +66,14 @@ class FakeValkeyStore:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        # The real ValkeyStore exposes this private Glide config, and the server
+        # tunes TLS and timeouts through it. Having it here by default means the
+        # ordinary tests exercise the branch that actually runs in production.
+        self._client_config = SimpleNamespace(
+            use_tls=False,
+            request_timeout=None,
+            advanced_config=None,
+        )
         type(self).instances.append(self)
 
     async def get(self, key, *, collection=None):  # pragma: no cover - protocol
@@ -92,16 +107,20 @@ class FakeValkeyStore:
         return 0
 
 
-class FakeValkeyStoreWithGlideConfig(FakeValkeyStore):
-    """Variant exposing the private Glide config the server tunes."""
+class FakeValkeyStoreWithoutGlideConfig(FakeValkeyStore):
+    """Variant that does NOT expose the private Glide config the server tunes.
+
+    ``ValkeyStore`` really does carry ``_client_config`` today; this models the
+    day it stops, which is the only way the server's TLS and timeout settings
+    can go unapplied.
+    """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._client_config = SimpleNamespace(
-            use_tls=False,
-            request_timeout=None,
-            advanced_config=None,
-        )
+        try:
+            del self._client_config
+        except AttributeError:  # pragma: no cover - defensive
+            pass
 
 
 @pytest.fixture
@@ -191,7 +210,7 @@ def test_glide_tls_and_timeouts_are_still_applied_to_the_wrapped_store(
     monkeypatch, captured
 ):
     """Moving the Glide import earlier must not drop the tuning it enables."""
-    _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStoreWithGlideConfig)
+    _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStore)
     _select_valkey(monkeypatch, host="valkey.internal.example")
     monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "true")
 
@@ -201,6 +220,49 @@ def test_glide_tls_and_timeouts_are_still_applied_to_the_wrapped_store(
     assert store._client_config.use_tls is True
     assert store._client_config.request_timeout == 5000
     assert store._client_config.advanced_config.kwargs == {"connection_timeout": 10000}
+
+
+def test_missing_glide_config_aborts_when_tls_was_requested(
+    monkeypatch, captured, caplog
+):
+    """A dropped TLS setting must never pass silently.
+
+    Degrading is right for a timeout and wrong for transport encryption: the
+    connection would be made in cleartext while the startup line below still
+    reported ``tls=True``.
+    """
+    _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStoreWithoutGlideConfig)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "true")
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        with pytest.raises(RuntimeError, match="would be made in cleartext"):
+            server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "tls=True" not in messages
+
+
+def test_missing_glide_config_without_tls_warns_and_drops_only_timeouts(
+    monkeypatch, captured, caplog
+):
+    """With no TLS requested, the same condition costs only the tuning knobs."""
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+    _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStoreWithoutGlideConfig)
+    _select_valkey(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert isinstance(captured["client_storage"], FernetEncryptionWrapper)
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "does not expose _client_config" in messages
+    assert "tls=False" in messages
+    assert "timeout set to" not in messages, (
+        "a timeout that was not applied must not be logged as if it were"
+    )
 
 
 def test_rejected_encryption_key_does_not_leave_an_unencrypted_valkey_store(
@@ -249,9 +311,7 @@ def test_missing_glide_config_degrades_without_losing_the_store(
     """
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-    _install_fake_valkey(
-        monkeypatch, store_cls=FakeValkeyStoreWithGlideConfig, with_glide=False
-    )
+    _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStore, with_glide=False)
     # A non-loopback host makes the server apply default Glide timeouts, which
     # is what used to pull in ``glide_shared.config`` post-construction.
     _select_valkey(monkeypatch, host="valkey.internal.example")
@@ -344,29 +404,54 @@ def test_malformed_port_aborts_and_names_the_variable(monkeypatch, captured):
         "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_DB",
     ],
 )
-def test_blank_integer_setting_aborts_rather_than_taking_the_default(
-    monkeypatch, captured, name
-):
-    """A blanked-out variable is a typo, not an absent one.
+def test_blank_setting_is_treated_as_unset(monkeypatch, captured, name):
+    """One rule for blank across every one of these variables: blank == unset.
 
-    ``int('')`` raised before these helpers existed; treating blank as "use the
-    default" would quietly widen exactly the strictness they were added for.
+    ``docker compose`` substitutes an empty string for ``FOO=${FOO}`` when FOO
+    is unset, so a blank value is a routine deployment artefact rather than a
+    statement of intent. The typo this strictness exists to catch is always a
+    non-empty value, and those still abort — see the tests above.
     """
     _install_fake_valkey(monkeypatch)
     _select_valkey(monkeypatch)
     monkeypatch.setenv(name, "   ")
 
-    with pytest.raises(ValueError, match=f"{name} is set but empty"):
-        server_module.configure_server_for_http()
+    server_module.configure_server_for_http()
 
-    assert "client_storage" not in captured
-    assert FakeValkeyStore.instances == []
+    store = captured["client_storage"].key_value
+    assert store.kwargs["port"] == 6379
+    assert store.kwargs["db"] == 0
+
+
+def test_blank_timeout_and_tls_settings_are_also_treated_as_unset(
+    monkeypatch, captured
+):
+    """The same rule for the boolean and the no-default integers."""
+    _install_fake_valkey(monkeypatch)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "")
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_REQUEST_TIMEOUT_MS", "  ")
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_CONNECTION_TIMEOUT_MS", "")
+
+    server_module.configure_server_for_http()
+
+    store = captured["client_storage"].key_value
+    # localhost, no TLS -> no default timeouts are applied either
+    assert store._client_config.use_tls is False
+    assert store._client_config.request_timeout is None
+    assert store._client_config.advanced_config is None
 
 
 def test_disk_store_is_wrapped_in_encryption_on_the_happy_path(
     monkeypatch, captured, tmp_path
 ):
-    """Baseline for the disk-backed branch."""
+    """Baseline for the disk-backed branch.
+
+    Also pins that the store came from ``make_sanitized_file_store``: an
+    ``isinstance`` check alone would still pass if the branch went back to
+    building a bare ``FileTreeStore`` with no sanitization strategy.
+    """
+    from key_value.aio._utils.sanitization import HybridSanitizationStrategy
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
     from key_value.aio.stores.filetree import FileTreeStore
 
@@ -379,15 +464,18 @@ def test_disk_store_is_wrapped_in_encryption_on_the_happy_path(
 
     client_storage = captured["client_storage"]
     assert isinstance(client_storage, FernetEncryptionWrapper)
-    assert isinstance(client_storage.key_value, FileTreeStore)
+    store = client_storage.key_value
+    assert isinstance(store, FileTreeStore)
+    assert isinstance(store._key_sanitization_strategy, HybridSanitizationStrategy)
 
 
 def test_disk_import_failure_after_construction_leaves_no_plaintext_store(
     monkeypatch, captured, caplog, tmp_path
 ):
-    """The disk branch has the same shape the Valkey branch had.
+    """The disk branch used to have the same shape the Valkey branch had.
 
-    ``client_storage`` is assigned the raw ``FileTreeStore`` and only later
+    Before the fix, ``client_storage`` was assigned the raw ``FileTreeStore``
+    and only later
     reassigned to the encryption wrapper, with ``except ImportError`` sitting
     between the two. Any ``ImportError`` raised in that window — a lazy import
     inside a dependency is the realistic source — is caught by a handler that
@@ -443,3 +531,140 @@ def test_missing_disk_dependency_falls_back_without_a_store(
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "Disk storage requested but its dependencies are not available" in messages
     assert "Fernet-encrypted local file store" in messages
+
+
+# ---------------------------------------------------------------------------
+# Key rotation: a stale record must degrade to a miss, not raise
+# ---------------------------------------------------------------------------
+
+
+def _configure_with_secret(monkeypatch, captured, secret, backing_store):
+    """Build client_storage over ``backing_store`` using ``secret``."""
+    module = ModuleType(VALKEY_MODULE)
+    module.ValkeyStore = lambda **kwargs: backing_store
+    monkeypatch.setitem(sys.modules, VALKEY_MODULE, module)
+    monkeypatch.setitem(sys.modules, "glide_shared", None)
+    monkeypatch.setitem(sys.modules, GLIDE_CONFIG_MODULE, None)
+    _select_valkey(monkeypatch)
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: True,
+            is_public_client=lambda: False,
+            is_external_oauth21_provider=lambda: False,
+            client_id="client-id",
+            client_secret=secret,
+            get_oauth_base_url=lambda: "https://workspace-mcp.example.test",
+            redirect_path="/oauth2callback",
+        ),
+    )
+    captured.clear()
+    server_module.configure_server_for_http()
+    return captured["client_storage"]
+
+
+@pytest.mark.asyncio
+async def test_client_secret_rotation_degrades_to_a_miss(monkeypatch, captured):
+    """A record written under the previous secret must read as a cache miss.
+
+    ``FernetEncryptionWrapper`` defaults to ``raise_on_decryption_error=True``,
+    which turns every stale read after a ``GOOGLE_OAUTH_CLIENT_SECRET`` rotation
+    into a ``DecryptionError``. FastMCP's own default store passes ``False`` so
+    rotation just forces re-registration; these stores must agree with it.
+    """
+    from key_value.aio.stores.memory import MemoryStore
+
+    backing = MemoryStore()
+
+    before = _configure_with_secret(
+        monkeypatch, captured, "secret-number-one-with-entropy", backing
+    )
+    await before.put("client-a", {"client_id": "abc"}, collection="clients")
+    assert await before.get("client-a", collection="clients") == {"client_id": "abc"}
+
+    after = _configure_with_secret(
+        monkeypatch, captured, "secret-number-two-with-entropy", backing
+    )
+    assert await after.get("client-a", collection="clients") is None, (
+        "a stale record must degrade to a miss, not raise DecryptionError"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disk_client_secret_rotation_degrades_to_a_miss(
+    monkeypatch, captured, tmp_path
+):
+    """Same contract for the disk-backed branch."""
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "disk")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+
+    def _configure(secret):
+        monkeypatch.setattr(
+            "auth.oauth_config.get_oauth_config",
+            lambda: SimpleNamespace(
+                is_oauth21_enabled=lambda: True,
+                is_configured=lambda: True,
+                is_public_client=lambda: False,
+                is_external_oauth21_provider=lambda: False,
+                client_id="client-id",
+                client_secret=secret,
+                get_oauth_base_url=lambda: "https://workspace-mcp.example.test",
+                redirect_path="/oauth2callback",
+            ),
+        )
+        captured.clear()
+        server_module.configure_server_for_http()
+        return captured["client_storage"]
+
+    before = _configure("disk-secret-number-one-with-entropy")
+    await before.put("client-a", {"client_id": "abc"}, collection="clients")
+    assert await before.get("client-a", collection="clients") == {"client_id": "abc"}
+
+    after = _configure("disk-secret-number-two-with-entropy")
+    assert await after.get("client-a", collection="clients") is None
+
+
+def test_external_provider_mode_says_the_store_is_not_used(
+    monkeypatch, captured, caplog
+):
+    """Pre-existing: ExternalOAuthProvider gets no client_storage.
+
+    Not fixed here, but the "Using ValkeyStore" line must not be left as the
+    operator's last word on which store is in effect.
+    """
+
+    class FakeExternalOAuthProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    _install_fake_valkey(monkeypatch)
+    _select_valkey(monkeypatch)
+    monkeypatch.setattr(
+        "auth.external_oauth_provider.ExternalOAuthProvider",
+        FakeExternalOAuthProvider,
+    )
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: True,
+            is_public_client=lambda: False,
+            is_external_oauth21_provider=lambda: True,
+            client_id="client-id",
+            client_secret="client-secret-with-plenty-of-entropy",
+            get_oauth_base_url=lambda: "https://workspace-mcp.example.test",
+            redirect_path="/oauth2callback",
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured, (
+        "pre-existing behaviour, pinned here so a later fix is a deliberate change"
+    )
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "is NOT used" in messages

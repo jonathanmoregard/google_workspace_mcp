@@ -222,9 +222,14 @@ class TestConsistency:
         Checked against the whole module rather than
         ``configure_server_for_http`` alone: the import now lives in
         ``_import_disk_store_factory``, which is guarded so that an
-        ``ImportError`` cannot leave an unencrypted store bound. Scoping the
-        assertion to the module keeps the same guarantee and covers wherever
-        the factory is reached from.
+        ``ImportError`` cannot leave an unencrypted store bound.
+
+        Scoping to the module widened what counts as "uses the factory", so the
+        two bypasses that matters are excluded explicitly: inlining the
+        sanitization config, and constructing ``FileTreeStore`` directly. The
+        behavioural half — that the store the server actually hands to the
+        provider carries the factory's strategy — is asserted in
+        ``test_oauth_proxy_client_storage.py``.
         """
         import inspect
 
@@ -237,3 +242,5 @@ class TestConsistency:
         )
         # Must NOT contain the old inline pattern
         assert "HybridSanitizationStrategy" not in source
+        # Must NOT bypass the factory with a direct construction
+        assert "FileTreeStore(" not in source

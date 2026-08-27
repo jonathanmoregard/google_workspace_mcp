@@ -76,22 +76,44 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
-def _normalize_parsed(parsed: ParseResult) -> Optional[str]:
-    if not parsed.scheme:
-        return None
-    if not parsed.hostname:
-        return None
+def _parse_url(value: str) -> Optional[ParseResult]:
+    """``urlparse``, with hostile input yielding None instead of ValueError.
+
+    ``urlparse`` is lazy: it accepts ``http://[evil`` without complaint and
+    raises only when ``.hostname`` or ``.port`` is read. Reading both here is
+    what lets every caller treat the result as safe, so an attacker-supplied
+    ``Origin`` or ``Host`` ends in a 403 rather than a 500 traceback.
+    """
     try:
-        port = parsed.port
+        parsed = urlparse(value)
+        _ = parsed.hostname
+        _ = parsed.port
     except ValueError:
         return None
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return parsed
+
+
+def _normalize_parsed(parsed: ParseResult) -> Optional[str]:
+    """Reduce a parsed URL to a comparable authority. Takes a _parse_url result."""
+    if not parsed.scheme:
+        return None
+    hostname = parsed.hostname
+    if not hostname:
+        return None
+    port = parsed.port
+    # A browser never spells the default port in an Origin, so an allowlist
+    # entry that does — ``https://x:443`` — would otherwise be permanently
+    # inert, and a legitimate cross-origin client refused for writing it out.
+    if port is not None and port == _DEFAULT_PORTS.get(parsed.scheme):
+        port = None
+    host = f"[{hostname}]" if ":" in hostname else hostname
     netloc = f"{host}:{port}" if port is not None else host
     return f"{parsed.scheme}://{netloc}"
 
 
 def _normalize_origin(origin: str) -> Optional[str]:
-    return _normalize_parsed(urlparse(origin))
+    parsed = _parse_url(origin)
+    return _normalize_parsed(parsed) if parsed is not None else None
 
 
 def _get_allowed_http_origins() -> set[str]:
@@ -111,7 +133,9 @@ def _get_allowed_http_origins() -> set[str]:
 
 
 def _is_origin_allowed(origin: str) -> bool:
-    parsed = urlparse(origin)
+    parsed = _parse_url(origin)
+    if parsed is None:
+        return False
     if parsed.scheme in TRUSTED_ORIGIN_SCHEMES:
         return True
     if parsed.hostname in _LOOPBACK_HOSTS:
@@ -139,58 +163,102 @@ def _configured_hostnames() -> set[str]:
     if config.external_url:
         candidates.append(config.external_url)
     for candidate in candidates:
-        hostname = urlparse(candidate).hostname
+        parsed = _parse_url(candidate)
+        if parsed is None:
+            continue
+        hostname = parsed.hostname
         if hostname:
             hostnames.add(hostname.lower())
     return hostnames
 
 
-def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
-    """Return True when the request is the server's own page calling back.
+def _is_configured_host(host_header: Optional[str]) -> bool:
+    """Does the Host header name a hostname this deployment answers on?
 
-    That means two things, and it used to mean only the first: the Origin's
-    authority matches the Host header, AND the Host header names a host this
-    deployment is actually configured to answer on.
-
-    The second half is what makes this safe. DNS rebinding — the very threat
-    the enclosing middleware exists to stop — works by serving the attacker's
-    page from a name that later resolves to this server, so the browser sends
-    ``Origin: http://evil.test`` and ``Host: evil.test`` TOGETHER. Their
-    authorities match perfectly, so an Origin-equals-Host test admits the
-    attack it was written to reject.
-
-    The unconfigured-Host case is kept exactly where it was needed and nowhere
-    else: OAuth 2.1 mode. FastMCP's OAuth proxy renders a consent form that
-    posts to itself, on whatever host served it, which a deployment may never
-    have enumerated — that is the case this escape hatch was added for. In that
-    mode every MCP request also carries a bearer token a rebound page does not
-    have, so admitting an unconfigured Host costs little. Legacy HTTP mode has
-    no protocol auth at all, so there an unconfigured Host IS the rebinding
-    case, and it is refused.
+    This is the check that stops DNS rebinding, and it has to run on EVERY
+    request. Rebinding serves the attacker's page from a name that later
+    resolves to this server, so the browser treats its requests back here as
+    same-origin — and per the Fetch standard a browser appends ``Origin`` only
+    for methods other than GET and HEAD. A rebound page's GETs therefore carry
+    no ``Origin`` at all, which is precisely the shape an Origin-gated check
+    never inspects. ``Host`` is present on every HTTP/1.1 request and on every
+    HTTP/2 ``:authority``, so it is the only header that can carry this.
     """
     if not host_header:
         return False
-    parsed = urlparse(origin)
-    if not parsed.hostname:
+    parsed = _parse_url(f"//{host_header}")
+    if parsed is None or not parsed.hostname:
         return False
-    host = urlparse(f"//{host_header}")
-    if not host.hostname:
+    return parsed.hostname.lower() in _configured_hostnames()
+
+
+def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
+    """Return True when the Origin's authority IS the Host that received it.
+
+    This admits the server's own page calling back on a host that is served but
+    was never enumerated as an *origin* — the OAuth consent form posts to
+    itself, on whatever host served it, and a deployment may only ever have set
+    ``WORKSPACE_EXTERNAL_URL``.
+
+    It carries no part of the rebinding defence. A rebound page sends the
+    attacker's name in BOTH headers, so their authorities match perfectly and
+    this test alone would admit the attack it was written to reject. What
+    refuses that request is :func:`_is_configured_host`, which the middleware
+    has already applied to every request by the time this runs.
+    """
+    if not host_header:
         return False
-    if (
-        host.hostname.lower() not in _configured_hostnames()
-        and not is_oauth21_enabled()
-    ):
+    parsed = _parse_url(origin)
+    if parsed is None or not parsed.hostname:
         return False
-    try:
-        origin_port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
-        host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
-    except ValueError:
+    host = _parse_url(f"//{host_header}")
+    if host is None or not host.hostname:
         return False
+    origin_port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
+    host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
     return parsed.hostname == host.hostname and origin_port == host_port
 
 
+def _refuse_request(
+    origin: Optional[str], host_header: Optional[str]
+) -> Optional[tuple[str, str]]:
+    """Return ``(client_error, operator_log)`` when the request must be refused.
+
+    Two checks, and this used to be only the second:
+
+    * the ``Host`` must name a hostname this deployment answers on, on every
+      request — see :func:`_is_configured_host` for why an Origin-gated check
+      cannot cover the requests DNS rebinding actually produces;
+    * an ``Origin``, when present, must be allowlisted or be the Host itself.
+
+    The two messages differ on purpose. The refusal an operator is most likely
+    to hit is the first one, from a reverse proxy passing through a hostname
+    the server was never told about, and "Origin not allowed" gave them nothing
+    to act on — the request they are debugging may carry no Origin at all.
+    """
+    if not _is_configured_host(host_header):
+        return (
+            "Host not allowed",
+            f"Rejected HTTP request: Host {host_header!r} is not a hostname this "
+            f"deployment is configured to answer on. If this deployment really "
+            f"serves that name, add it to OAUTH_ALLOWED_ORIGINS or set "
+            f"WORKSPACE_EXTERNAL_URL.",
+        )
+    if origin is None:
+        return None
+    if _is_origin_allowed(origin) or _is_same_origin_as_host(origin, host_header):
+        return None
+    return (
+        # !r on both, as above: these are attacker-controlled strings going into
+        # a log line, and repr is what keeps a newline in one from forging the
+        # next entry.
+        "Origin not allowed",
+        f"Rejected HTTP request from Origin: {origin!r} (Host: {host_header!r})",
+    )
+
+
 class OriginValidationMiddleware:
-    """Reject browser-originated HTTP requests from untrusted origins."""
+    """Reject HTTP requests this deployment is not configured to serve."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -199,19 +267,17 @@ class OriginValidationMiddleware:
         if scope["type"] == "http":
             headers = dict(scope.get("headers") or [])
             raw_origin = headers.get(b"origin")
-            if raw_origin:
-                origin = raw_origin.decode("latin-1")
-                raw_host = headers.get(b"host")
-                host_header = raw_host.decode("latin-1") if raw_host else None
-                if not _is_origin_allowed(origin) and not _is_same_origin_as_host(
-                    origin, host_header
-                ):
-                    logger.warning("Rejected HTTP request from Origin: %s", origin)
-                    response = JSONResponse(
-                        {"error": "Origin not allowed"}, status_code=403
-                    )
-                    await response(scope, receive, send)
-                    return
+            raw_host = headers.get(b"host")
+            refusal = _refuse_request(
+                raw_origin.decode("latin-1") if raw_origin else None,
+                raw_host.decode("latin-1") if raw_host else None,
+            )
+            if refusal:
+                client_error, operator_log = refusal
+                logger.warning("%s", operator_log)
+                response = JSONResponse({"error": client_error}, status_code=403)
+                await response(scope, receive, send)
+                return
 
         await self.app(scope, receive, send)
 

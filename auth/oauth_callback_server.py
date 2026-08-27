@@ -52,6 +52,15 @@ class MinimalOAuthServer:
         self.is_running = False
         self._reusing_external_listener = False
 
+        # Same origin/Host guard the streamable-http app runs. This is a second,
+        # separate ASGI application — stdio mode serves /oauth2callback and
+        # /attachments from here with no middleware of its own, which left a DNS
+        # rebinding path the guard in core.server never saw. Imported inside the
+        # constructor because core.server imports this module.
+        from core.server import OriginValidationMiddleware
+
+        self.app.add_middleware(OriginValidationMiddleware)
+
         # Setup the callback route
         self._setup_callback_route()
         # Setup attachment serving route

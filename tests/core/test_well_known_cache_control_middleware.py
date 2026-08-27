@@ -75,14 +75,23 @@ def test_origin_validation_rejects_untrusted_browser_origin(monkeypatch):
     )
     client = TestClient(app)
 
+    # Host is checked on every request now, so each of these has to name one
+    # the deployment answers on before the Origin half is reached at all.
     assert (
-        client.get("/health", headers={"Origin": "http://evil.test"}).status_code == 403
+        client.get(
+            "/health",
+            headers={"Origin": "http://evil.test", "Host": "localhost:8000"},
+        ).status_code
+        == 403
     )
     assert (
-        client.get("/health", headers={"Origin": "http://localhost:5173"}).status_code
+        client.get(
+            "/health",
+            headers={"Origin": "http://localhost:5173", "Host": "localhost:8000"},
+        ).status_code
         == 200
     )
-    assert client.get("/health").status_code == 200
+    assert client.get("/health", headers={"Host": "localhost:8000"}).status_code == 200
 
 
 def test_origin_validation_allows_configured_external_origin(monkeypatch):
@@ -106,7 +115,11 @@ def test_origin_validation_allows_configured_external_origin(monkeypatch):
     client = TestClient(app)
 
     response = client.get(
-        "/health", headers={"Origin": "https://workspace.example.com"}
+        "/health",
+        headers={
+            "Origin": "https://workspace.example.com",
+            "Host": "workspace.example.com",
+        },
     )
     assert response.status_code == 200
 
@@ -143,13 +156,20 @@ def test_origin_validation_trusts_any_vscode_webview_origin(monkeypatch):
     ):
         assert (
             client.get(
-                "/health", headers={"Origin": f"vscode-webview://{host}"}
+                "/health",
+                headers={
+                    "Origin": f"vscode-webview://{host}",
+                    "Host": "localhost:8000",
+                },
             ).status_code
             == 200
         )
     # A genuine browser web origin that is not configured is still rejected.
     assert (
-        client.get("/health", headers={"Origin": "https://evil.test"}).status_code
+        client.get(
+            "/health",
+            headers={"Origin": "https://evil.test", "Host": "localhost:8000"},
+        ).status_code
         == 403
     )
 
@@ -158,21 +178,16 @@ def test_origin_validation_allows_same_origin_request(monkeypatch):
     from core.server import OriginValidationMiddleware
 
     # The OAuth proxy consent form posts to itself (action=""), so the request is
-    # always same-origin with the host that served the page. A request whose Origin
-    # matches its own Host must be accepted even if that host was never added to the
-    # allowlist (e.g. WORKSPACE_EXTERNAL_URL unset or misconfigured).
-    #
-    # This now holds only in OAuth 2.1 mode, which is the mode the consent form
-    # exists in and the one where a rebound page has no bearer token to act
-    # with. In legacy HTTP mode there is no protocol auth, so an unconfigured
-    # Host is indistinguishable from DNS rebinding and is refused — see
-    # test_origin_host_validation.py.
+    # always same-origin with the host that served the page. That host has to be
+    # one the deployment declared — WORKSPACE_EXTERNAL_URL here — but it need not
+    # have been enumerated as an ORIGIN, which is what this route is for: the
+    # form is served on a port the allowlist never spells out.
     monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: True)
     monkeypatch.setattr(
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
             get_allowed_origins=lambda: ["http://localhost:8000"],
-            external_url=None,
+            external_url="https://app.example.com",
         ),
     )
 
@@ -185,12 +200,12 @@ def test_origin_validation_allows_same_origin_request(monkeypatch):
     )
     client = TestClient(app)
 
-    # Same-origin consent POST to an unconfigured external host is allowed.
+    # Same-origin consent POST on the declared host, at an unenumerated port.
     same_origin = client.post(
         "/consent",
         headers={
-            "Origin": "https://app.example.com",
-            "Host": "app.example.com",
+            "Origin": "https://app.example.com:8443",
+            "Host": "app.example.com:8443",
         },
     )
     assert same_origin.status_code == 200
@@ -204,6 +219,17 @@ def test_origin_validation_allows_same_origin_request(monkeypatch):
         },
     )
     assert cross_origin.status_code == 403
+
+    # And the host the deployment never declared is refused outright, whether or
+    # not the Origin agrees with it — OAuth 2.1 mode buys it nothing.
+    undeclared = client.post(
+        "/consent",
+        headers={
+            "Origin": "https://other.example.com",
+            "Host": "other.example.com",
+        },
+    )
+    assert undeclared.status_code == 403
 
 
 def test_configured_server_applies_no_cache_to_served_oauth_discovery_routes(
@@ -226,7 +252,10 @@ def test_configured_server_applies_no_cache_to_served_oauth_discovery_routes(
     core_server.configure_server_for_http()
 
     app = core_server.server.http_app(transport="streamable-http", path="/mcp")
-    client = TestClient(app)
+    # base_url drives the Host header, which is now checked on every request:
+    # TestClient's default "testserver" is not a hostname this deployment
+    # answers on, and would be refused before reaching any route.
+    client = TestClient(app, base_url="http://localhost:8000")
 
     authorization_server = client.get("/.well-known/oauth-authorization-server")
     assert authorization_server.status_code == 200
@@ -264,7 +293,8 @@ def test_external_oauth_metadata_matches_mcp_resource_and_challenge(monkeypatch)
     core_server.configure_server_for_http()
 
     app = core_server.server.http_app(transport="streamable-http", path="/mcp")
-    client = TestClient(app)
+    # See the note above: the Host has to be one this deployment answers on.
+    client = TestClient(app, base_url="https://workspace.example.com")
 
     protected_resource = client.get("/.well-known/oauth-protected-resource/mcp")
     assert protected_resource.status_code == 200

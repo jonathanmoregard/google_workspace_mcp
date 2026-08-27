@@ -159,6 +159,36 @@ First call after setup: `check_docs_review_capabilities(probe=true,
 document_id=<any doc you can edit>)`. That is the only way to confirm
 enrollment, and it cannot mutate the document (§3.3).
 
+#### HTTP transport: declare the hostname you serve on
+
+Only relevant with `--transport streamable-http`. `OriginValidationMiddleware`
+(`core/server.py`) checks the `Host` header of **every** request against the
+hostnames this deployment is configured to answer on — loopback, the host of
+every entry in `OAUTH_ALLOWED_ORIGINS`, and the host of `WORKSPACE_EXTERNAL_URL`.
+A request whose `Host` is not among them gets a 403 naming the header and what
+to set.
+
+This is the DNS-rebinding defence, and it has to run on every request rather
+than only on requests carrying an `Origin`: per the Fetch standard a browser
+appends `Origin` only for methods other than GET and HEAD, and a rebound page's
+requests are same-origin as far as the browser is concerned — so its GETs arrive
+with no `Origin` at all. `main.py` also defaults the HTTP bind to `0.0.0.0`,
+which is exactly the exposure rebinding targets.
+
+**Operational consequence.** Reaching the server on any name other than
+`localhost`/`127.0.0.1` — a LAN IP, or a reverse proxy that passes the original
+hostname through — now requires declaring that name:
+
+```bash
+WORKSPACE_EXTERNAL_URL=https://mcp.example.com   # or
+OAUTH_ALLOWED_ORIGINS=https://mcp.example.com,http://192.168.1.50:8000
+```
+
+An OAuth 2.1 deployment already needs `WORKSPACE_EXTERNAL_URL` for its issuer
+metadata to be correct (`core/server.py` passes `get_oauth_base_url()` to FastMCP
+as both `base_url` and `resource_server_url`), so in practice only legacy HTTP
+mode behind a proxy is newly affected.
+
 ---
 
 ## 3. The tools

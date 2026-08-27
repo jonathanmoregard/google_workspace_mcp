@@ -122,13 +122,51 @@ def _is_origin_allowed(origin: str) -> bool:
     return normalized in _get_allowed_http_origins()
 
 
-def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
-    """Return True when the Origin's authority matches the request's Host header.
+def _configured_hostnames() -> set[str]:
+    """Hostnames this deployment is configured to answer on.
 
-    A same-origin request is the server's own page calling back to the host that
-    served it, so it is never the cross-site/DNS-rebinding threat this middleware
-    guards against. Matching the Host header lets a single deployment answer on any
-    number of hostnames without enumerating each one in the allowlist.
+    Loopback, plus the host of every allowed origin and of the external URL.
+    This is the allowlist the Host header is checked against; see
+    :func:`_is_same_origin_as_host` for why that check has to exist.
+    """
+    # Local import, matching _get_allowed_http_origins: the module-level name
+    # is bound at import time, and the config is reloaded after .env is read.
+    from auth.oauth_config import get_oauth_config
+
+    hostnames = {host.lower() for host in _LOOPBACK_HOSTS}
+    config = get_oauth_config()
+    candidates = list(config.get_allowed_origins())
+    if config.external_url:
+        candidates.append(config.external_url)
+    for candidate in candidates:
+        hostname = urlparse(candidate).hostname
+        if hostname:
+            hostnames.add(hostname.lower())
+    return hostnames
+
+
+def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
+    """Return True when the request is the server's own page calling back.
+
+    That means two things, and it used to mean only the first: the Origin's
+    authority matches the Host header, AND the Host header names a host this
+    deployment is actually configured to answer on.
+
+    The second half is what makes this safe. DNS rebinding — the very threat
+    the enclosing middleware exists to stop — works by serving the attacker's
+    page from a name that later resolves to this server, so the browser sends
+    ``Origin: http://evil.test`` and ``Host: evil.test`` TOGETHER. Their
+    authorities match perfectly, so an Origin-equals-Host test admits the
+    attack it was written to reject.
+
+    The unconfigured-Host case is kept exactly where it was needed and nowhere
+    else: OAuth 2.1 mode. FastMCP's OAuth proxy renders a consent form that
+    posts to itself, on whatever host served it, which a deployment may never
+    have enumerated — that is the case this escape hatch was added for. In that
+    mode every MCP request also carries a bearer token a rebound page does not
+    have, so admitting an unconfigured Host costs little. Legacy HTTP mode has
+    no protocol auth at all, so there an unconfigured Host IS the rebinding
+    case, and it is refused.
     """
     if not host_header:
         return False
@@ -136,6 +174,13 @@ def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
     if not parsed.hostname:
         return False
     host = urlparse(f"//{host_header}")
+    if not host.hostname:
+        return False
+    if (
+        host.hostname.lower() not in _configured_hostnames()
+        and not is_oauth21_enabled()
+    ):
+        return False
     try:
         origin_port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
         host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
@@ -943,7 +988,7 @@ async def list_google_accounts() -> str:
     ),
 )
 async def start_google_auth(
-    service_name: str, user_google_email: str = USER_GOOGLE_EMAIL
+    service_name: str, user_google_email: Optional[str] = None
 ) -> str:
     """
     Manually initiate Google OAuth authentication flow.
@@ -973,6 +1018,15 @@ async def start_google_auth(
 
     if is_trust_gateway_identity():
         user_google_email = await get_verified_gateway_principal()
+
+    # Resolved here rather than bound as a default argument. A default is
+    # evaluated once, while this module is being imported — which in main.py is
+    # before load_dotenv() — so a default account configured only in .env was
+    # baked in as None AND advertised as None in the tool's schema, which
+    # list_tools does not re-patch because the parameter is optional rather
+    # than required. The rest of the server re-derives this value; so does this.
+    if not user_google_email:
+        user_google_email = resolve_default_account()
 
     if not user_google_email:
         raise ValueError("user_google_email must be provided.")

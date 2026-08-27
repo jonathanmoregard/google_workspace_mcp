@@ -55,6 +55,9 @@ def test_well_known_cache_control_middleware_rewrites_headers():
 def test_origin_validation_rejects_untrusted_browser_origin(monkeypatch):
     from core.server import OriginValidationMiddleware
 
+    # Legacy HTTP mode. The same-origin route consults this now, and the stub
+    # config below does not implement it.
+    monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
@@ -114,6 +117,7 @@ def test_origin_validation_trusts_any_vscode_webview_origin(monkeypatch):
     # VS Code assigns a fresh, random GUID authority to every webview, so its
     # origin can never be enumerated in an allowlist. The scheme is the trust
     # boundary; any vscode-webview origin must be accepted regardless of host.
+    monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
@@ -156,8 +160,14 @@ def test_origin_validation_allows_same_origin_request(monkeypatch):
     # The OAuth proxy consent form posts to itself (action=""), so the request is
     # always same-origin with the host that served the page. A request whose Origin
     # matches its own Host must be accepted even if that host was never added to the
-    # allowlist (e.g. WORKSPACE_EXTERNAL_URL unset or misconfigured) — a same-origin
-    # request is the server's own page, never the cross-site threat this guard stops.
+    # allowlist (e.g. WORKSPACE_EXTERNAL_URL unset or misconfigured).
+    #
+    # This now holds only in OAuth 2.1 mode, which is the mode the consent form
+    # exists in and the one where a rebound page has no bearer token to act
+    # with. In legacy HTTP mode there is no protocol auth, so an unconfigured
+    # Host is indistinguishable from DNS rebinding and is refused — see
+    # test_origin_host_validation.py.
+    monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: True)
     monkeypatch.setattr(
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(

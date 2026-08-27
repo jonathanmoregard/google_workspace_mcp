@@ -759,7 +759,14 @@ async def handle_auth_callback(
         # Allow partial scope grants without raising an exception.
         # When users decline some scopes on Google's consent screen,
         # oauthlib raises because the granted scopes differ from requested.
-        if "OAUTHLIB_RELAX_TOKEN_SCOPE" not in os.environ:
+        #
+        # Tested by value, not by presence. oauthlib reads this one the same
+        # way it reads OAUTHLIB_INSECURE_TRANSPORT — raw truthiness, at
+        # oauth2/rfc6749/parameters.py's validate_token_parameters — so a
+        # variable passed through empty is present but OFF. A presence check
+        # therefore skipped the assignment and left partial-scope callbacks
+        # raising. An operator's own non-empty value is still left alone.
+        if not os.environ.get("OAUTHLIB_RELAX_TOKEN_SCOPE", "").strip():
             os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
         store = get_oauth21_session_store()

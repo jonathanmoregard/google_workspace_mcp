@@ -268,6 +268,39 @@ def test_falsey_value_vetoes_even_the_loopback_grant(value, monkeypatch, caplog)
     )
 
 
+def test_an_unrecognised_value_vetoes_the_loopback_grant(monkeypatch, caplog):
+    """A typo declines, and the GUARD has to act on it — not just the banner.
+
+    The banner assertion alone was vacuous: dropping the decline from the
+    rejected-value path left the suite green because only the rendered string
+    mentioned "loopback". This drives the guard itself.
+    """
+    monkeypatch.setenv(_ENV_VAR, "ture")
+
+    with caplog.at_level("WARNING"):
+        _allow_insecure_transport_for_local_redirect(
+            "http://localhost:8000/oauth2callback"
+        )
+
+    assert insecure_transport_explicitly_declined()
+    assert _ENV_VAR not in os.environ
+    assert _https_enforced()
+    assert any(
+        "left in place for the loopback redirect" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_an_unrecognised_value_does_not_lift_https_on_a_public_redirect(monkeypatch):
+    monkeypatch.setenv(_ENV_VAR, "ture")
+
+    _allow_insecure_transport_for_local_redirect(
+        "https://mcp.example.com/oauth2callback"
+    )
+
+    assert _https_enforced()
+
+
 def test_public_deployment_with_a_loopback_looking_redirect_can_be_vetoed(monkeypatch):
     """The case the veto exists for.
 
@@ -407,6 +440,91 @@ async def test_start_auth_flow_guard_unchanged_for_localhost(patched_oauth):
     )
 
     assert os.environ.get(_ENV_VAR) == "1"
+
+
+# --------------------------------------------------------------------------
+# The sibling relax-scope flag, which oauthlib reads the same way
+# --------------------------------------------------------------------------
+
+_RELAX_VAR = "OAUTHLIB_RELAX_TOKEN_SCOPE"
+
+
+def _partial_scope_grant_raises() -> bool:
+    """Drive the real oauthlib path that consumes OAUTHLIB_RELAX_TOKEN_SCOPE."""
+    from oauthlib.oauth2.rfc6749.parameters import validate_token_parameters
+    from oauthlib.oauth2.rfc6749.tokens import OAuth2Token
+
+    params = OAuth2Token(
+        {"access_token": "tok", "token_type": "Bearer", "scope": "scope.a"},
+        old_scope="scope.a scope.b",
+    )
+    try:
+        validate_token_parameters(params)
+        return False
+    except Warning:
+        return True
+
+
+@pytest.fixture(autouse=True)
+def _restore_relax_token_scope():
+    original = os.environ.get(_RELAX_VAR)
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop(_RELAX_VAR, None)
+        else:
+            os.environ[_RELAX_VAR] = original
+
+
+def test_relax_token_scope_is_read_by_truthiness_not_presence(monkeypatch):
+    """Characterisation, against the installed library."""
+    monkeypatch.setenv(_RELAX_VAR, "")
+    assert _partial_scope_grant_raises()
+
+    monkeypatch.setenv(_RELAX_VAR, "1")
+    assert not _partial_scope_grant_raises()
+
+
+@pytest.mark.parametrize("passed_through", ["", "   "])
+@pytest.mark.asyncio
+async def test_callback_relaxes_scope_despite_an_empty_passthrough(
+    passed_through, patched_oauth, monkeypatch
+):
+    """Same bug class as the transport flag: present-but-empty is not set.
+
+    The callback guarded this assignment on ``not in os.environ``, so a
+    variable passed through empty stayed empty, and oauthlib — which reads it
+    by raw truthiness — kept raising on a partial scope grant, the exact case
+    the assignment exists to allow.
+    """
+    monkeypatch.setenv(_RELAX_VAR, passed_through)
+
+    await handle_auth_callback(
+        scopes=["scope.a"],
+        authorization_response="http://localhost:8000/oauth2callback?state=abc&code=c",
+        redirect_uri="http://localhost:8000/oauth2callback",
+        session_id="session-1",
+    )
+
+    assert os.environ[_RELAX_VAR] == "1"
+    assert not _partial_scope_grant_raises()
+
+
+@pytest.mark.asyncio
+async def test_callback_leaves_an_explicit_relax_scope_value_alone(
+    patched_oauth, monkeypatch
+):
+    monkeypatch.setenv(_RELAX_VAR, "yes")
+
+    await handle_auth_callback(
+        scopes=["scope.a"],
+        authorization_response="http://localhost:8000/oauth2callback?state=abc&code=c",
+        redirect_uri="http://localhost:8000/oauth2callback",
+        session_id="session-1",
+    )
+
+    assert os.environ[_RELAX_VAR] == "yes"
 
 
 # --------------------------------------------------------------------------

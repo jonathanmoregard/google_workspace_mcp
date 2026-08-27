@@ -52,6 +52,26 @@ def _session_id_log_fingerprint(session_id: Optional[str]) -> str:
     return f"sha256:{hashlib.sha256(session_id.encode()).hexdigest()[:12]}"
 
 
+def _allow_insecure_transport_for_local_redirect(redirect_uri: str) -> None:
+    """Relax oauthlib's HTTPS requirement, but only for a loopback redirect URI.
+
+    OAUTHLIB_INSECURE_TRANSPORT is process-wide: once set, oauthlib stops
+    requiring HTTPS for every OAuth exchange in this process. Local development
+    needs it because Google redirects to http://localhost, but a public
+    deployment must keep the HTTPS requirement intact. Every site that sets the
+    variable goes through this helper so the two OAuth halves (starting the flow
+    and handling the callback) cannot drift apart.
+    """
+    if "OAUTHLIB_INSECURE_TRANSPORT" in os.environ:
+        return
+    if not ("localhost" in redirect_uri or "127.0.0.1" in redirect_uri):
+        return
+    logger.warning(
+        "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost/local development."
+    )
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+
 # Constants
 def get_default_credentials_dir():
     """Get the default credentials directory path, preferring user-specific locations.
@@ -534,13 +554,7 @@ async def start_auth_flow(
     # Note: Caller should ensure OAuth callback is available before calling this function
 
     try:
-        if "OAUTHLIB_INSECURE_TRANSPORT" not in os.environ and (
-            "localhost" in redirect_uri or "127.0.0.1" in redirect_uri
-        ):  # Use passed redirect_uri
-            logger.warning(
-                "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost/local development."
-            )
-            os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        _allow_insecure_transport_for_local_redirect(redirect_uri)
 
         oauth_state = os.urandom(16).hex()
         current_scopes = get_current_scopes()
@@ -710,12 +724,9 @@ async def handle_auth_callback(
                 "The 'client_secrets_path' parameter is deprecated. Use GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables instead."
             )
 
-        # Allow HTTP for localhost in development
-        if "OAUTHLIB_INSECURE_TRANSPORT" not in os.environ:
-            logger.warning(
-                "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost development."
-            )
-            os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        # Allow HTTP for localhost in development. Public deployments keep
+        # oauthlib's HTTPS requirement — see the helper's docstring.
+        _allow_insecure_transport_for_local_redirect(redirect_uri)
 
         # Allow partial scope grants without raising an exception.
         # When users decline some scopes on Google's consent screen,

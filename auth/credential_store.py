@@ -16,6 +16,8 @@ from urllib.parse import quote, unquote
 
 from google.oauth2.credentials import Credentials
 
+from core.env_flags import parse_bool_env as _parse_bool_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -504,34 +506,6 @@ class GCSCredentialStore(CredentialStore):
             "users are looked up individually by email. Use "
             "LocalDirectoryCredentialStore if you need single-user mode."
         )
-
-
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_FALSE_VALUES = frozenset({"", "0", "false", "no", "off"})
-
-
-def _parse_bool_env(value: Optional[str]) -> bool:
-    """Parse a boolean env var value, failing loudly on anything unrecognised.
-
-    Accepts (case-insensitive, whitespace-trimmed):
-        true:  ``1``, ``true``, ``yes``, ``on``
-        false: ``0``, ``false``, ``no``, ``off``, empty string, None
-
-    Raises ValueError for any other input. The strict parsing matters for
-    security-relevant flags (e.g. ``WORKSPACE_MCP_GCS_REQUIRE_CMEK``) where
-    a typo like ``"treu"`` would otherwise silently disable the flag.
-    """
-    if value is None:
-        return False
-    normalised = value.strip().lower()
-    if normalised in _TRUE_VALUES:
-        return True
-    if normalised in _FALSE_VALUES:
-        return False
-    raise ValueError(
-        f"Invalid boolean env var value: {value!r}. "
-        f"Expected one of: {sorted((_TRUE_VALUES | _FALSE_VALUES) - {''})}"
-    )
 
 
 def get_selected_backend() -> str:

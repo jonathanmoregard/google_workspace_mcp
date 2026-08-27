@@ -34,6 +34,7 @@ from core.account_directory import (
     render_account_report,
     resolve_default_account,
 )
+from core.env_flags import parse_bool_env
 from core.config import (
     USER_GOOGLE_EMAIL,
     get_transport_mode,
@@ -393,9 +394,9 @@ def refresh_server_instructions() -> Optional[str]:
     return instructions
 
 
-def _parse_bool_env(value: str) -> bool:
-    """Parse environment variable string to boolean."""
-    return value.lower() in ("1", "true", "yes", "on")
+#: The one shared parser (``core.env_flags``), kept under the historical name
+#: so callers in this module read unchanged.
+_parse_bool_env = parse_bool_env
 
 
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:

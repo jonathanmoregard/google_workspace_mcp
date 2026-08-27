@@ -8,6 +8,7 @@ import sys
 from functools import partial
 from importlib import metadata, import_module
 from dotenv import load_dotenv
+from core.env_flags import parse_bool_env
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
 
 # Prevent any stray startup output on macOS (e.g. platform identifiers) from
@@ -321,9 +322,19 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
 
 
 def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
-    """Describe a boolean env var as a (label, value, state) display row."""
+    """Describe a boolean env var as a (label, value, state) display row.
+
+    Parsed with the one shared parser so the banner can never claim a flag is
+    on while the code reading it treats it as off.
+    """
     value = os.getenv(name, "false")
-    if value.strip().lower() not in {"true", "1", "yes"}:
+    try:
+        enabled = parse_bool_env(value)
+    except ValueError:
+        # Neither on nor off. Rendering a typo as "off" is how a flag silently
+        # fails to take effect, which is exactly what this row exists to catch.
+        return name, f"{value} · unrecognised", "warn"
+    if not enabled:
         return name, value, "off"
     return name, value, "warn" if warn_when_true else "on"
 
@@ -732,8 +743,9 @@ def main():
 
     # Set global single-user mode flag
     if args.single_user:
-        # Check for incompatible OAuth 2.1 mode
-        if os.getenv("MCP_ENABLE_OAUTH21", "false").lower() == "true":
+        # Check for incompatible OAuth 2.1 mode. Read through the OAuth config
+        # rather than re-parsing the env var, like the two checks below it.
+        if get_oauth_config().is_oauth21_enabled():
             ui.step(
                 "Single-user mode is incompatible with OAuth 2.1 mode", state="fail"
             )

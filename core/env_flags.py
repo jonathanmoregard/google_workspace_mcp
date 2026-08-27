@@ -31,6 +31,21 @@ _FALSE_VALUES = frozenset({"", "0", "false", "no", "off"})
 #: how to interpret. See ``normalize_insecure_transport_env``.
 INSECURE_TRANSPORT_ENV_VAR = "OAUTHLIB_INSECURE_TRANSPORT"
 
+#: Whether an operator explicitly set the flag to a value meaning "off".
+#:
+#: Held in process state rather than in the environment on purpose. The
+#: variable itself cannot carry this: oauthlib tests the truthiness of whatever
+#: string is there, so any marker we left behind would either read as "lift the
+#: HTTPS requirement" (any non-empty value) or be indistinguishable from unset
+#: (the empty string, which an earlier revision used and which silently
+#: suppressed the loopback grant for people who never typed anything).
+_explicitly_declined = False
+
+#: The raw value rejected by the strict parser, kept so the startup banner can
+#: still show a typo that normalisation has already removed from the
+#: environment.
+_rejected_value: Optional[str] = None
+
 
 def parse_bool_env(value: Optional[str]) -> bool:
     """Parse a boolean env var value, failing loudly on anything unrecognised.
@@ -79,21 +94,26 @@ def normalize_insecure_transport_env() -> bool:
     it is off, since oauthlib's only question is whether the string is
     non-empty.
 
-    Removed rather than left present-and-empty. The flag's sole meaning is
-    "lift the HTTPS requirement", so declining it means "do not lift it
-    globally" — it is not a request to break a loopback redirect, which cannot
-    use HTTPS in the first place and would simply fail. Turning it off
-    therefore leaves the process in the same state as never having set it, and
-    ``auth.google_auth``'s loopback grant still applies. Removing it also stops
-    a stale ``"0"`` being inherited by any child process, where it would read
-    as on.
+    Removed rather than left present-and-empty, because the empty string is a
+    value oauthlib can see, and an earlier revision's use of it as a marker
+    silently suppressed the loopback grant. Removing it also stops a stale
+    ``"0"`` being inherited by a child process, where it would read as on. The
+    operator's decline is recorded in process state instead, where oauthlib
+    cannot mistake it for a request to lift the requirement — see
+    :func:`insecure_transport_explicitly_declined`.
 
     An unrecognised value fails closed: a typo in a flag that disables a
     transport-security check must not be the thing that disables it. The value
-    is logged at ERROR so the mistake is not silent.
+    is logged at ERROR and kept for the startup banner, so the mistake is
+    neither silent nor invisible once the variable itself has been removed.
+
+    Only a variable that is present is read. Once a decline has been recorded,
+    later calls against the now-absent variable leave that decision standing.
 
     Returns True when the bypass is left enabled.
     """
+    global _explicitly_declined, _rejected_value
+
     raw = os.environ.get(INSECURE_TRANSPORT_ENV_VAR)
     if raw is None:
         return False
@@ -107,10 +127,45 @@ def normalize_insecure_transport_env() -> bool:
             INSECURE_TRANSPORT_ENV_VAR,
             raw,
         )
+        _rejected_value = raw
         enabled = False
+    else:
+        _rejected_value = None
 
     if enabled:
         os.environ[INSECURE_TRANSPORT_ENV_VAR] = "1"
-    else:
-        del os.environ[INSECURE_TRANSPORT_ENV_VAR]
-    return enabled
+        _explicitly_declined = False
+        return True
+
+    os.environ.pop(INSECURE_TRANSPORT_ENV_VAR, None)
+    _explicitly_declined = True
+    return False
+
+
+def insecure_transport_explicitly_declined() -> bool:
+    """Whether an operator asked for the HTTPS requirement to stand.
+
+    A decline is a veto, and it outranks the loopback auto-grant in
+    ``auth.google_auth``. That grant fires on a redirect URI that merely
+    *looks* like loopback, so this is the operator's only way to stop a
+    deployment that is in fact public from having the requirement lifted for
+    it. Nothing in the shipped configuration sets a falsey value, so a decline
+    only ever comes from someone typing one.
+    """
+    return _explicitly_declined
+
+
+def insecure_transport_rejected_value() -> Optional[str]:
+    """The unparseable value normalisation removed, if there was one."""
+    return _rejected_value
+
+
+def reset_insecure_transport_decision() -> None:
+    """Forget the recorded decision so the environment is read afresh.
+
+    The counterpart to ``auth.oauth_config.reload_oauth_config`` for this one
+    flag: used by tests, and by anything re-initialising a process in place.
+    """
+    global _explicitly_declined, _rejected_value
+    _explicitly_declined = False
+    _rejected_value = None

@@ -35,7 +35,6 @@
         "WORKSPACE_MCP_BASE_URI": "${user_config.WORKSPACE_MCP_BASE_URI}",
         "WORKSPACE_MCP_PORT": "${user_config.WORKSPACE_MCP_PORT}",
         "WORKSPACE_EXTERNAL_URL": "${user_config.WORKSPACE_EXTERNAL_URL}",
-        "OAUTHLIB_INSECURE_TRANSPORT": "${user_config.OAUTHLIB_INSECURE_TRANSPORT}",
         "GOOGLE_PSE_API_KEY": "${user_config.GOOGLE_PSE_API_KEY}",
         "GOOGLE_PSE_ENGINE_ID": "${user_config.GOOGLE_PSE_ENGINE_ID}"
       }
@@ -152,13 +151,6 @@
       "title": "External URL",
       "description": "External URL for reverse proxy setups (e.g., https://your-domain.com). Overrides base_uri:port for OAuth endpoints",
       "required": false
-    },
-    "OAUTHLIB_INSECURE_TRANSPORT": {
-      "type": "boolean",
-      "title": "OAuth Insecure Transport",
-      "description": "Allow OAuth over plain HTTP for every exchange in the process, a public deployment's included. Leave off unless you know you need it: a localhost redirect URI is already granted this automatically when the flow starts, so local development works with this off",
-      "required": false,
-      "default": false
     },
     "GOOGLE_PSE_API_KEY": {
       "type": "string",

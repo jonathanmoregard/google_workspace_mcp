@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from core.env_flags import (
     INSECURE_TRANSPORT_ENV_VAR,
     insecure_transport_bypass_active,
+    insecure_transport_explicitly_declined,
+    insecure_transport_rejected_value,
     normalize_insecure_transport_env,
     parse_bool_env,
 )
@@ -98,12 +100,6 @@ def _load_startup_dependencies():
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
-# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
-# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
-# Settle the value here, once .env has been read and long before any OAuth flow
-# or the startup banner, so what the operator wrote is what oauthlib does.
-normalize_insecure_transport_env()
-
 # Suppress googleapiclient discovery cache warning
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
@@ -129,6 +125,18 @@ logger = logging.getLogger(__name__)
 
 install_noisy_log_filters()
 configure_file_logging()
+
+# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
+# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
+# Settle the value once .env has been read and long before any OAuth flow or
+# the startup banner, so what the operator wrote is what oauthlib does.
+#
+# Deliberately after configure_file_logging(): rejecting an unparseable value
+# logs at ERROR, and run any earlier that record predates the file handler and
+# never appears in mcp_server_debug.log — measured, with the operator's only
+# durable record of their typo missing. Nothing between load_dotenv() and here
+# reads the variable or starts an OAuth flow.
+normalize_insecure_transport_env()
 
 
 def resolve_stdio_callback_port() -> None:
@@ -356,12 +364,22 @@ def _insecure_transport_field() -> tuple[str, str, str]:
     requirement; rendering the row through ``parse_bool_env`` printed "off" for
     ``OAUTHLIB_INSECURE_TRANSPORT=0`` while OAuth token exchange over plain HTTP
     was in fact being accepted. Startup normalisation means the banner should
-    only ever see "1" or the empty string, but the row states oauthlib's rule
+    only ever see "1" or an absent variable, but the row states oauthlib's rule
     directly so it stays true regardless of who set the variable, or when.
+
+    Normalisation removes the variable when it is off, so the three ways it can
+    be absent — never set, declined, and rejected as unparseable — have to be
+    told apart here. A typo is the case that most needs saying: it is the one
+    the operator did not intend, and the row is where they would notice.
     """
     name = INSECURE_TRANSPORT_ENV_VAR
+    rejected = insecure_transport_rejected_value()
+    if rejected is not None:
+        return name, f"{rejected} · unrecognised · treated as off", "warn"
     value = os.environ.get(name)
     if value is None:
+        if insecure_transport_explicitly_declined():
+            return name, "off · HTTPS enforced, loopback included", "off"
         return name, "not set", "off"
     if not insecure_transport_bypass_active():
         return name, "off · HTTPS enforced", "off"

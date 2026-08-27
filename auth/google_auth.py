@@ -35,6 +35,7 @@ from core.config import (
 )
 from core.env_flags import (
     INSECURE_TRANSPORT_ENV_VAR,
+    insecure_transport_explicitly_declined,
     normalize_insecure_transport_env,
 )
 from core.context import get_fastmcp_session_id
@@ -67,17 +68,28 @@ def _allow_insecure_transport_for_local_redirect(redirect_uri: str) -> None:
     variable goes through this helper so the two OAuth halves (starting the flow
     and handling the callback) cannot drift apart.
 
-    An operator who turned the flag on still wins over this grant, and now wins
-    by what the value *means* rather than by the variable merely being present:
+    The operator's explicit setting wins in both directions, and wins by what
+    the value *means* rather than by the variable merely being present:
     normalising first is what stops an explicit ``"0"`` from reading as "off"
-    to the operator and as "on" to oauthlib. Turning it off leaves the process
-    exactly as if it had never been set, so a loopback redirect is still
-    granted here — declining the global bypass is not a request to break local
-    development, and a loopback redirect cannot use HTTPS anyway.
+    to the operator and as "on" to oauthlib. A decline vetoes this grant too,
+    because the loopback test below is a substring match on a redirect URI that
+    a public deployment can still produce — declining is the only way to say
+    "never lift the requirement, not even for something that looks local".
+    Nothing this repo ships sets a falsey value, so that veto only ever comes
+    from an operator typing one.
     """
     if normalize_insecure_transport_env():
         return
     if not ("localhost" in redirect_uri or "127.0.0.1" in redirect_uri):
+        return
+    if insecure_transport_explicitly_declined():
+        logger.warning(
+            "%s was set to a value meaning off, so oauthlib's HTTPS requirement "
+            "is left in place for the loopback redirect %s. This OAuth flow will "
+            "fail against a plain-HTTP callback; unset the variable to allow it.",
+            INSECURE_TRANSPORT_ENV_VAR,
+            redirect_uri,
+        )
         return
     logger.warning(
         "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost/local development."

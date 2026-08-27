@@ -50,8 +50,11 @@ def test_tool_exposes_no_account_parameter():
 
 @pytest.mark.asyncio
 async def test_tool_returns_a_json_report(monkeypatch):
+    # setenv, not setattr on server_module.USER_GOOGLE_EMAIL: the tool reads the
+    # environment as it stands now, because that constant froze before .env was
+    # loaded. Rebinding it manufactures an update production never performs.
     _stub_directory(monkeypatch, ["solo@example.com", "work@example.com"])
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "solo@example.com")
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "solo@example.com")
 
     payload = json.loads(await list_google_accounts())
 
@@ -71,7 +74,7 @@ async def test_tool_makes_no_network_calls(monkeypatch):
         raise AssertionError("list_google_accounts must not build a Google service")
 
     _stub_directory(monkeypatch, ["solo@example.com"])
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "solo@example.com")
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "solo@example.com")
     monkeypatch.setattr("auth.service_decorator.build", fail_if_called)
 
     assert json.loads(await list_google_accounts())["probed"] is False
@@ -125,3 +128,57 @@ def test_tool_survives_tier_filtering_at_every_tier():
     for tier in ("core", "extended", "complete"):
         assert TOOL_NAME in loader.get_tools_up_to_tier(tier)
         assert TOOL_NAME in loader.get_tools_up_to_tier(tier, ["docs"])
+
+
+# --------------------------------------------------------------------------
+# R2-F1 — the report must read the default account from the environment as it
+# stands now, not from the value frozen when core.server was imported.
+#
+# main.py imports core.server BEFORE it calls load_dotenv(), so a
+# USER_GOOGLE_EMAIL that lives only in .env is None in core.config's constant.
+# The instructions string was fixed for exactly this in round 1
+# (resolve_default_account); the tool was not, so it reported
+# default_account: null while the handshake named a default.
+#
+# These tests deliberately do NOT monkeypatch server_module.USER_GOOGLE_EMAIL.
+# Rebinding that constant manufactures a post-.env update that production
+# never performs, which is what let the defect sit under a green suite.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_report_names_a_default_configured_after_import(monkeypatch):
+    _stub_directory(monkeypatch, ["late@example.com", "work@example.com"])
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "late@example.com")
+
+    # The premise: the import-time constant does not know about it.
+    assert server_module.USER_GOOGLE_EMAIL != "late@example.com"
+
+    payload = json.loads(await list_google_accounts())
+
+    assert payload["default_account"] == "late@example.com"
+    assert [a["is_default"] for a in payload["accounts"]] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_report_has_no_default_when_the_environment_has_none(monkeypatch):
+    """The control: reading the environment must not invent a default."""
+    _stub_directory(monkeypatch, ["work@example.com"])
+    monkeypatch.delenv("USER_GOOGLE_EMAIL", raising=False)
+
+    payload = json.loads(await list_google_accounts())
+
+    assert payload["default_account"] is None
+
+
+@pytest.mark.asyncio
+async def test_report_reports_no_default_in_oauth21_mode(monkeypatch):
+    """A configured USER_GOOGLE_EMAIL is not the principal in OAuth 2.1 mode."""
+    _stub_directory(monkeypatch, ["late@example.com"])
+    monkeypatch.setattr(account_directory, "is_oauth21_enabled", lambda: True)
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "late@example.com")
+
+    payload = json.loads(await list_google_accounts())
+
+    assert payload["default_account"] is None
+    assert payload["accounts_enumerated"] is False

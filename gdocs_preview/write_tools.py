@@ -1348,11 +1348,18 @@ async def _execute_preview_batch_update(
             # Name the other authenticated accounts as candidates -- and say
             # that nothing was attempted under them. Empty string unless there
             # really is another account, so single-account output is unchanged.
+            # State only what was observed. Saying "enrollment for the
+            # authenticated project" resolved by assertion a question that is
+            # genuinely open -- whether Developer Preview enrollment follows the
+            # Cloud project or the account is undocumented for the
+            # two-accounts-one-OAuth-client case -- and it contradicted the
+            # candidate hint appended one line below, which says so.
             raise UserInputError(
-                f"{tool_name} requires Google Workspace Developer Preview "
-                f"enrollment for the authenticated project. Enrollment steps: "
-                f"pending_for_human.md. Verify with "
-                f"check_docs_review_capabilities(probe=true)."
+                f"{tool_name} needs Google Workspace Developer Preview access, and "
+                f"the preview request was rejected as not enrolled for "
+                f"{user_google_email}. See docs/preview-api-reference.md for how to "
+                f"enroll and for what is still unknown about the scope of an "
+                f"enrollment. Verify with check_docs_review_capabilities(probe=true)."
                 + candidate_account_hint(user_google_email, HINT_PREVIEW_UNAVAILABLE)
             ) from error
         raise

@@ -698,3 +698,50 @@ def test_preview_hint_names_the_tool_when_it_is_registered(monkeypatch, tmp_path
     )
 
     assert "list_google_accounts" in hint
+
+
+# --------------------------------------------------------------------------
+# R2-F2 — no wording may license switching account on an error alone.
+#
+# The instructions offered two switch conditions: an explicit instruction from
+# the user, OR "when a tool error names one of the other accounts as the one to
+# use". Nothing this server emits ever designates an account that way — the
+# candidate hint NAMES accounts and then demands the user confirm before any
+# call. The second condition was therefore satisfiable only by misreading the
+# hint, which is precisely the automatic switch the whole feature exists to
+# prevent.
+# --------------------------------------------------------------------------
+
+
+def _multi_account_text(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
+    )
+    return account_directory.build_server_instructions("solo@example.com")
+
+
+def test_instructions_never_license_a_switch_on_an_error_alone(monkeypatch, tmp_path):
+    instructions = _multi_account_text(monkeypatch, tmp_path)
+
+    assert "as the one to use" not in instructions
+    # Whatever the wording, an error must route the agent back to the user.
+    assert "confirm" in instructions.lower()
+
+
+def test_routing_note_never_licenses_a_switch_on_an_error_alone():
+    note = account_directory._ROUTING_NOTE
+
+    assert "as the one to use" not in note
+    assert "confirm" in note.lower()
+
+
+def test_the_candidate_hint_and_the_instructions_agree(monkeypatch, tmp_path):
+    """The hint demands confirmation; the instructions must not contradict it."""
+    instructions = _multi_account_text(monkeypatch, tmp_path)
+    hint = account_directory.candidate_account_hint(
+        "solo@example.com", account_directory.HINT_404
+    )
+
+    assert "confirm that with the user" in hint
+    assert "confirm" in instructions.lower()

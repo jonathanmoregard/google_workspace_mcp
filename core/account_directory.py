@@ -42,10 +42,11 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 from auth.credential_store import peek_credential_store
 from auth.oauth_config import is_oauth21_enabled, is_trust_gateway_identity
+from core.email_identity import fold_email
 
 logger = logging.getLogger(__name__)
 
@@ -70,16 +71,13 @@ _UNKNOWN_CAPABILITY: Dict[str, Any] = {
 }
 
 
-def _fold(email: Optional[str]) -> str:
-    """The one spelling rule every email comparison in this module uses.
-
-    Addresses are trimmed and compared case-insensitively. Two spellings of one
-    address must not become two accounts — that is the abstraction this whole
-    module rests on. Comparing exactly in one place and folding in another is
-    how a case-variant ``USER_GOOGLE_EMAIL`` came to be reported as having no
-    stored credentials *and* listed as an alternate account to switch to.
-    """
-    return (email or "").strip().casefold()
+#: The one spelling rule, shared with :mod:`gdocs_preview.preview_status` so
+#: that a verdict cached under one spelling is found under the other. Kept under
+#: a short local name because this module compares addresses everywhere.
+#: Comparing exactly in one place and folding in another is how a case-variant
+#: ``USER_GOOGLE_EMAIL`` came to be reported as having no stored credentials
+#: *and* listed as an alternate account to switch to.
+_fold = fold_email
 
 
 def _distinct_accounts(emails: Iterable[str]) -> Tuple[str, ...]:
@@ -110,14 +108,19 @@ def _accounts_other_than(
     )
 
 
-def _list_accounts_tool_available() -> bool:
-    """Whether ``list_google_accounts`` survived ``--tools`` / ``--tool-tier``.
+def _tool_registered(tool_name: str) -> bool:
+    """Whether ``tool_name`` survived ``--tools`` / ``--tool-tier`` selection.
 
-    The tool is tiered under ``docs: core``, so a selection that excludes the
-    docs service drops it (``core/tool_registry.py``) — upstream parks
-    ``start_google_auth`` under ``gmail: complete`` the same way. Pointing an
-    agent at a tool that is not registered in its configuration is worse than
-    saying nothing, so every mention of it below is conditional on this.
+    ``list_google_accounts`` is tiered under ``docs: core`` and
+    ``check_docs_review_capabilities`` under ``docs_preview``, so a selection
+    that excludes those services drops them (``core/tool_registry.py``) —
+    upstream parks ``start_google_auth`` under ``gmail: complete`` the same way.
+    Pointing an agent at a tool that is not registered in its configuration is
+    worse than saying nothing, so every mention of one below is conditional on
+    this.
+
+    Fails CLOSED: if we cannot tell, we say nothing rather than name a tool that
+    may not be there.
 
     Imported lazily: ``core.tool_registry`` reads the enabled-tool set that
     ``main.py`` only populates during startup, and an import at module scope
@@ -126,10 +129,18 @@ def _list_accounts_tool_available() -> bool:
     try:
         from core.tool_registry import is_tool_enabled
 
-        return is_tool_enabled("list_google_accounts")
+        return is_tool_enabled(tool_name)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not check whether list_google_accounts is enabled: %s", exc)
-        return True
+        logger.debug("Could not check whether %s is enabled: %s", tool_name, exc)
+        return False
+
+
+def _list_accounts_tool_available() -> bool:
+    return _tool_registered("list_google_accounts")
+
+
+def _capabilities_tool_available() -> bool:
+    return _tool_registered("check_docs_review_capabilities")
 
 
 @dataclass(frozen=True)
@@ -259,10 +270,12 @@ def preview_capability(user_google_email: str) -> Dict[str, Any]:
 
 _ROUTING_NOTE = (
     "Use the default account. Switch only when the user explicitly names another "
-    "account, or when a tool error names one as the account to use. Never retry a "
-    "failed call under a different account on your own — a Google notFound means "
-    "either 'no access' or 'no such document', so an automatic retry would walk "
-    "every account in the wallet."
+    "account. A tool error may NAME other accounts as candidates; naming them is "
+    "not permission to use one — confirm the choice with the user, then call again "
+    "with user_google_email set to the account they named. Never retry a failed "
+    "call under a different account on your own — a Google notFound means either "
+    "'no access' or 'no such document', so an automatic retry would walk every "
+    "account in the wallet."
 )
 
 _WRITE_NOTE = (
@@ -321,13 +334,16 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
     preview_loaded = _preview_status_module() is not None
     notes: List[str] = []
 
+    # _distinct_accounts, not directory.emails: one address stored under two
+    # spellings is one account here too, or the report shows it twice and — now
+    # that is_default folds — marks BOTH of them the default.
     accounts = [
         {
             "email": email,
             "is_default": bool(default_email) and _fold(email) == _fold(default_email),
             "docs_preview": preview_capability(email),
         }
-        for email in directory.emails
+        for email in _distinct_accounts(directory.emails)
     ]
 
     if directory.status == STORE_UNREADABLE:
@@ -361,17 +377,25 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
             "credentials; it has not completed the Google consent flow on this server."
         )
 
+    # Never point at check_docs_review_capabilities unconditionally: when the
+    # docs_preview service is not loaded that tool is not registered either, so
+    # the old advice named a tool that could not exist whenever it was printed.
+    probe_hint = (
+        " Run check_docs_review_capabilities against one account to find out."
+        if _capabilities_tool_available()
+        else ""
+    )
     if not preview_loaded:
         notes.append(
             "The docs_preview service is not loaded in this process, so the Developer "
-            "Preview verdict is unknown for every account. It was not probed — run "
-            "check_docs_review_capabilities against one account to find out."
+            "Preview verdict is unknown for every account. Nothing was probed."
+            + probe_hint
         )
     else:
         notes.append(
             "Developer Preview verdicts are the last cached observation per account; "
             "'unknown' means nothing has been observed yet, not a capability miss. "
-            "Nothing was probed by this call."
+            "Nothing was probed by this call." + probe_hint
         )
 
     if len(accounts) > 1:
@@ -432,7 +456,7 @@ Also authenticated on this server: {named}
 
 When using Google Workspace tools, use `{user_google_email}` as the `user_google_email` parameter. Do not ask the user for their email address.
 
-Switch to another account only on an explicit instruction from the user, or when a tool error names one of the other accounts as the one to use. Never retry a failed call under a different account on your own: a Google `notFound` means either "no access" or "no such document", so an automatic retry would walk every account above. {_WRITE_NOTE}"""
+Switch to another account only on an explicit instruction from the user. A tool error may name the other accounts as candidates — that names them, it does not choose one, so confirm the choice with the user before calling under a different account. Never retry a failed call under a different account on your own: a Google `notFound` means either "no access" or "no such document", so an automatic retry would walk every account above. {_WRITE_NOTE}"""
     if _list_accounts_tool_available():
         body += _LIST_ACCOUNTS_SENTENCE
     return body
@@ -457,8 +481,16 @@ def build_server_instructions(
 ) -> Optional[str]:
     """Build the FastMCP ``instructions`` string for the configured default.
 
-    Returns ``None`` when there is no configured default, and in trusted-gateway
-    mode where the verified principal supersedes it.
+    Returns ``None`` when there is no configured default, and in both modes
+    where the server rather than the caller fixes the account: trusted-gateway,
+    where the verified principal supersedes the configured default, and OAuth
+    2.1, where the principal is the authenticated caller. The OAuth 2.1 guard is
+    defence in depth — every caller today passes
+    :func:`resolve_default_account`, which already answers ``None`` there — but
+    the credential store is shared across principals in that mode, so a caller
+    that passed a raw environment value would enumerate other tenants' accounts
+    into the handshake. The guard belongs where the enumeration is, not only in
+    the callers.
 
     ``enumerate_store=False`` produces the single-account string without reading
     the credential store at all. That is what :mod:`core.server` uses for the
@@ -472,7 +504,7 @@ def build_server_instructions(
     to the single-account string. A GCS deployment must not fail to start
     because of this feature.
     """
-    if not user_google_email or is_trust_gateway_identity():
+    if not user_google_email or _identity_mode() != "single_user":
         return None
 
     if enumerate_store:
@@ -508,6 +540,11 @@ HINT_404 = "http_404"
 #: A preview-gated tool refused because the cached verdict for this account is
 #: ``unavailable`` (the API rejected the preview request field itself).
 HINT_PREVIEW_UNAVAILABLE = "preview_unavailable"
+
+#: The three kinds, as a type. A bare ``str`` parameter made a typo'd kind a
+#: silent no-hint (logged and dropped); spelling the domain out makes it
+#: something a checker or an editor catches at the call site instead.
+HintKind = Literal["http_403", "http_404", "preview_unavailable"]
 
 _NOTFOUND_AMBIGUITY = (
     "A Google notFound means either that this account cannot reach that id or "
@@ -612,7 +649,7 @@ def _no_attempt_sentence(count: int) -> str:
     )
 
 
-def _candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
+def _candidate_account_hint(user_google_email: Optional[str], kind: HintKind) -> str:
     framing = _hint_framing(kind)
     if framing is None:
         logger.warning("Unknown candidate-account hint kind: %r", kind)
@@ -628,7 +665,7 @@ def _candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
     return " " + " ".join(part for part in parts if part)
 
 
-def candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
+def candidate_account_hint(user_google_email: Optional[str], kind: HintKind) -> str:
     """A sentence naming the other accounts, or ``""`` when there is none.
 
     The return value is meant to be appended verbatim to an existing error
@@ -650,17 +687,43 @@ def candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
         return ""
 
 
+#: Google returns 403 for throttling as well as for authorization. Naming other
+#: accounts on a throttle reads as "rotate identities until one is not rate
+#: limited" — an enumeration sweep with a different trigger, and the quota is
+#: usually per project rather than per user anyway, so it would not even work.
+_THROTTLING_REASONS = (
+    "rateLimitExceeded",
+    "userRateLimitExceeded",
+    "quotaExceeded",
+    "dailyLimitExceeded",
+    "sharingRateLimitExceeded",
+)
+
+
+def _is_throttling(error_details: Optional[str]) -> bool:
+    if not error_details:
+        return False
+    lowered = error_details.casefold()
+    return any(reason.casefold() in lowered for reason in _THROTTLING_REASONS)
+
+
 def http_error_account_hint(
-    user_google_email: Optional[str], status: Optional[int]
+    user_google_email: Optional[str],
+    status: Optional[int],
+    error_details: Optional[str] = None,
 ) -> str:
     """:func:`candidate_account_hint` for a Google HTTP status. Never raises.
 
     The single entry point ``core.utils.handle_http_errors`` calls, so that the
-    decision about WHICH statuses earn an affordance lives here rather than in
-    the upstream-owned hot path.
+    decision about WHICH failures earn an affordance lives here rather than in
+    the upstream-owned hot path. A 403 that is really a throttle earns none:
+    another account is not the answer to a rate limit, and saying so invites the
+    identity rotation this module exists to prevent.
     """
     kind = _STATUS_HINTS.get(status) if isinstance(status, int) else None
     if kind is None:
+        return ""
+    if kind == HINT_403 and _is_throttling(error_details):
         return ""
     return candidate_account_hint(user_google_email, kind)
 
@@ -676,9 +739,14 @@ def warn_on_arbitrary_account_pick(
     """Announce that single-user mode bound to one of several stored accounts.
 
     Diagnostic only — the caller still uses ``chosen``. Silent for zero or one
-    account, where there is nothing arbitrary about the choice.
+    account, where there is nothing arbitrary about the choice — including a
+    store holding one address under two spellings, which is one account.
     """
-    accounts = [email for email in (emails or ()) if email]
+    if isinstance(emails, str):
+        # A bare string would otherwise iterate into characters and warn about
+        # a wallet full of single letters.
+        emails = (emails,)
+    accounts = list(_distinct_accounts(emails or ()))
     if len(accounts) < 2:
         return
     logger.warning(

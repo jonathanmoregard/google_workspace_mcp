@@ -990,10 +990,20 @@ class TestPreviewGating:
         assert service.documents.return_value.batchUpdate.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_not_enrolled_message_is_unchanged_for_a_single_account(
+    async def test_not_enrolled_message_appends_nothing_for_a_single_account(
         self, monkeypatch, tmp_path
     ):
-        """The fork stays byte-identical to upstream with one account."""
+        """With one account the message is exactly itself — no hint appended.
+
+        The message text itself changed once, deliberately: it used to say
+        enrollment was "for the authenticated project", which resolves by
+        assertion a question that is genuinely open (whether Developer Preview
+        enrollment follows the Cloud project or the account is undocumented for
+        the two-accounts-one-OAuth-client case) and contradicted the candidate
+        hint appended to it in the multi-account case. It also named a private
+        notes file. What this test guards is the invariant that survived: a
+        single-account server appends no candidate-account sentence.
+        """
         _accounts(monkeypatch, tmp_path, [EMAIL])
         service = _failing_service(_http_error(400, NOT_ENROLLED_BODY))
         fn = _unwrap(write_tools.suggest_doc_edit)
@@ -1008,11 +1018,13 @@ class TestPreviewGating:
             )
 
         assert str(excinfo.value) == (
-            "suggest_doc_edit requires Google Workspace Developer Preview "
-            "enrollment for the authenticated project. Enrollment steps: "
-            "pending_for_human.md. Verify with "
+            "suggest_doc_edit needs Google Workspace Developer Preview access, and "
+            f"the preview request was rejected as not enrolled for {EMAIL}. See "
+            "docs/preview-api-reference.md for how to enroll and for what is still "
+            "unknown about the scope of an enrollment. Verify with "
             "check_docs_review_capabilities(probe=true)."
         )
+        assert "Other accounts authenticated on this server" not in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_semantic_400_reraises_http_error_and_records_available(self):

@@ -32,6 +32,8 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from core.email_identity import fold_email
+
 #: Substrings (lowercased) that mark a proto-parse failure, i.e. the API
 #: rejected the *request field itself* -- the caller is not enrolled in the
 #: Developer Preview, so the field does not exist for them.
@@ -199,7 +201,10 @@ def record(
     cannot say whose observation this is must not be able to file it where
     another caller will read it back as their own.
     """
-    key = user_google_email or ""
+    # Folded, so that a verdict recorded under one spelling of an address is
+    # found under any other. Two spellings of one address are one caller here,
+    # exactly as they are one account in core/account_directory.py.
+    key = fold_email(user_google_email)
     state = _states.pop(key, None) or dict(_INITIAL_STATE)
     state.update(
         availability=availability,
@@ -218,7 +223,7 @@ def get_status(user_google_email: str) -> dict[str, Any]:
     A caller nothing has been recorded for gets the initial ``unknown`` --
     not the last verdict some other caller happened to produce.
     """
-    state = _states.get(user_google_email or "")
+    state = _states.get(fold_email(user_google_email))
     status = dict(state) if state is not None else dict(_INITIAL_STATE)
     if status["evidence"] is not None:
         status["evidence"] = dict(status["evidence"])

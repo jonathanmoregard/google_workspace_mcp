@@ -914,7 +914,12 @@ async def list_google_accounts() -> str:
             accounts_enumerated, store_status, store_detail, docs_preview_loaded,
             probed, notes.
     """
-    return render_account_report(USER_GOOGLE_EMAIL)
+    # resolve_default_account(), not core.config.USER_GOOGLE_EMAIL: that constant
+    # froze while this module was being imported, which in main.py is before
+    # load_dotenv() runs. A default configured only in .env would otherwise be
+    # reported as "no default" here while the refreshed instructions name it —
+    # and an agent told there is no default has been invited to pick one.
+    return render_account_report(resolve_default_account())
 
 
 @server.tool(

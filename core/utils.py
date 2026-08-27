@@ -584,7 +584,7 @@ def handle_http_errors(
                             f"You might need to re-authenticate for user '{user_google_email}'. "
                             f"{auth_hint}"
                         ) + http_error_account_hint(
-                            user_google_email, error.resp.status
+                            user_google_email, error.resp.status, error_details
                         )
                     elif error.resp.status == 404:
                         # Ambiguous by Google's own documentation: notFound

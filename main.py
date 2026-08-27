@@ -375,15 +375,26 @@ def _insecure_transport_field() -> tuple[str, str, str]:
     name = INSECURE_TRANSPORT_ENV_VAR
     rejected = insecure_transport_rejected_value()
     if rejected is not None:
-        return name, f"{rejected} · unrecognised · treated as off", "warn"
-    value = os.environ.get(name)
-    if value is None:
-        if insecure_transport_explicitly_declined():
-            return name, "off · HTTPS enforced, loopback included", "off"
-        return name, "not set", "off"
-    if not insecure_transport_bypass_active():
-        return name, "off · HTTPS enforced", "off"
-    return name, f"{value} · HTTPS NOT enforced for OAuth", "warn"
+        # A rejected value is also a decline, and the decline is the stronger
+        # statement: it vetoes the loopback grant too. Say both, rather than
+        # letting "treated as off" imply the milder of the two.
+        return (
+            name,
+            f"{rejected} · unrecognised · off, loopback included",
+            "warn",
+        )
+    # Ask oauthlib's rule first, so the row stays true for a value set after
+    # startup that normalisation never saw — a whitespace-only string included,
+    # which is empty to a reader but non-empty, and so ON, to oauthlib.
+    if insecure_transport_bypass_active():
+        value = os.environ[name]
+        return name, f"{value} · HTTPS NOT enforced for OAuth", "warn"
+    # Nothing there: either an operator declined, or the variable was never
+    # meaningfully set. Present-but-empty lands here and reads as unset,
+    # because that is what normalisation makes of it.
+    if insecure_transport_explicitly_declined():
+        return name, "off · HTTPS enforced, loopback included", "off"
+    return name, "not set", "off"
 
 
 def _client_secret_field() -> tuple[str, str, str]:

@@ -39,6 +39,16 @@ INSECURE_TRANSPORT_ENV_VAR = "OAUTHLIB_INSECURE_TRANSPORT"
 #: HTTPS requirement" (any non-empty value) or be indistinguishable from unset
 #: (the empty string, which an earlier revision used and which silently
 #: suppressed the loopback grant for people who never typed anything).
+#:
+#: PROCESS-LOCAL, and deliberately so while the server runs in one process.
+#: The decline is not inherited: normalisation deletes the variable, so a
+#: child, a re-exec, or a forked worker starts with nothing set and therefore
+#: with no veto. Nothing here spawns one today. If this server ever grows
+#: multiple workers (``uvicorn --workers``, a process pool, a supervisor that
+#: re-execs), each of them must run ``normalize_insecure_transport_env`` over
+#: the ORIGINAL operator environment during its own startup — passing the
+#: post-normalisation environment down instead would silently drop the veto,
+#: because by then the variable is gone and a decline looks like an unset.
 _explicitly_declined = False
 
 #: The raw value rejected by the strict parser, kept so the startup banner can
@@ -116,6 +126,17 @@ def normalize_insecure_transport_env() -> bool:
 
     raw = os.environ.get(INSECURE_TRANSPORT_ENV_VAR)
     if raw is None:
+        return False
+
+    if not raw.strip():
+        # Present but empty is the ABSENCE of a value, not a decision. A blank
+        # line in a .env file, an unset shell variable expanded into a compose
+        # file, and an orchestrator passing a key through with nothing behind
+        # it all land here, and none of them is an operator declining anything.
+        # Reading it as a decline would veto the loopback grant and break local
+        # OAuth for people who never typed a value at all. Remove it so
+        # oauthlib sees nothing, and record no decision.
+        os.environ.pop(INSECURE_TRANSPORT_ENV_VAR, None)
         return False
 
     try:

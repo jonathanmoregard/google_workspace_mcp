@@ -12,6 +12,11 @@ the resulting *string* — see ``is_secure_transport`` in
 ``"off"`` each disabled the HTTPS requirement while reading as "off" to every
 human and to the startup banner. These tests pin the library's rule against the
 installed library rather than restating it, then pin our own handling to it.
+
+Three states, not two: unset, explicitly declined, and explicitly enabled. A
+decline vetoes the loopback grant; an unset does not. A present-but-empty value
+is an unset, because nobody chose it — that distinction is the one this file
+has had to relearn three times, so it is parametrised rather than assumed.
 """
 
 import json
@@ -68,10 +73,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: A plain-HTTP URL oauthlib would reject while its HTTPS requirement stands.
 _HTTP_TOKEN_URL = "http://token.example/token"
 
-#: Values an operator writes meaning "off". Every one of them used to turn the
-#: bypass on, because each is a non-empty string.
-_FALSEY_VALUES = ["", "0", "false", "FALSE", "no", "off"]
+#: Values an operator DELIBERATELY writes to mean off. Every one of them used
+#: to turn the bypass ON, because each is a non-empty string. Each is now a
+#: decline, and a decline vetoes the loopback grant.
+_FALSEY_VALUES = ["0", "false", "FALSE", "no", "off"]
 _TRUTHY_VALUES = ["1", "true", "TRUE", "yes", "on"]
+
+#: Present but carrying nothing: a blank line in a .env file, an unset shell
+#: variable expanded into a compose file, an orchestrator passing the key
+#: through empty. Nobody chose these, so they must mean unset, NOT declined.
+_EMPTY_VALUES = ["", "   ", "\t"]
 
 
 def _https_enforced() -> bool:
@@ -131,12 +142,29 @@ class _DummyCredentialStore:
 
 
 @pytest.fixture(autouse=True)
-def _clear_insecure_transport(monkeypatch):
-    """Start every case from an unset variable and no recorded decision."""
-    monkeypatch.delenv(_ENV_VAR, raising=False)
+def _clear_insecure_transport():
+    """Start every case from an unset variable and no recorded decision.
+
+    Restores explicitly rather than through monkeypatch. ``delenv`` on an
+    already-absent variable records nothing to undo, and the code under test
+    assigns ``os.environ[...]`` directly, so a granted ``"1"`` survived the
+    test and leaked into every later module in the session.
+
+    Takes no ``monkeypatch`` argument on purpose: an autouse fixture that
+    requests it is set up second and therefore torn down first, letting
+    monkeypatch's own undo run last and re-clear what we just restored.
+    """
+    original = os.environ.get(_ENV_VAR)
+    os.environ.pop(_ENV_VAR, None)
     reset_insecure_transport_decision()
-    yield
-    reset_insecure_transport_decision()
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop(_ENV_VAR, None)
+        else:
+            os.environ[_ENV_VAR] = original
+        reset_insecure_transport_decision()
 
 
 @pytest.fixture
@@ -274,6 +302,59 @@ def test_unset_still_grants_loopback_so_local_development_works(monkeypatch):
     assert not insecure_transport_explicitly_declined()
 
 
+@pytest.mark.parametrize("value", _EMPTY_VALUES)
+def test_present_but_empty_means_unset_not_declined(value, monkeypatch):
+    """An empty value is the absence of a value, so it must not veto anything.
+
+    Third instance of one bug class on this branch: a value nobody typed being
+    read as a deliberate choice. ``""`` is in the parser's false set, so
+    ``OAUTHLIB_INSECURE_TRANSPORT=`` — a blank .env line, or a key passed
+    through with nothing behind it — recorded a decline and broke local OAuth
+    for someone who had chosen nothing at all.
+    """
+    monkeypatch.setenv(_ENV_VAR, value)
+
+    assert normalize_insecure_transport_env() is False
+    assert not insecure_transport_explicitly_declined()
+    assert insecure_transport_rejected_value() is None
+    assert _ENV_VAR not in os.environ
+
+
+@pytest.mark.parametrize("value", _EMPTY_VALUES)
+def test_present_but_empty_still_allows_the_loopback_grant(value, monkeypatch):
+    monkeypatch.setenv(_ENV_VAR, value)
+
+    _allow_insecure_transport_for_local_redirect("http://localhost:8000/oauth2callback")
+
+    assert os.environ.get(_ENV_VAR) == "1"
+    assert not _https_enforced()
+
+
+@pytest.mark.parametrize("value", _EMPTY_VALUES)
+def test_present_but_empty_does_not_lift_https_on_a_public_redirect(value, monkeypatch):
+    """Meaning unset must not mean permissive."""
+    monkeypatch.setenv(_ENV_VAR, value)
+
+    _allow_insecure_transport_for_local_redirect(
+        "https://mcp.example.com/oauth2callback"
+    )
+
+    assert _ENV_VAR not in os.environ
+    assert _https_enforced()
+
+
+def test_an_empty_value_does_not_erase_an_earlier_decline(monkeypatch):
+    """Meaning "unset" is not the same as meaning "undo what was decided"."""
+    monkeypatch.setenv(_ENV_VAR, "0")
+    normalize_insecure_transport_env()
+    assert insecure_transport_explicitly_declined()
+
+    monkeypatch.setenv(_ENV_VAR, "")
+    normalize_insecure_transport_env()
+
+    assert insecure_transport_explicitly_declined()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("redirect_uri", _PUBLIC_REDIRECT_URIS)
 async def test_callback_does_not_disable_https_requirement_publicly(
@@ -337,6 +418,23 @@ def test_env_var_name_matches_the_one_oauthlib_reads():
     assert INSECURE_TRANSPORT_ENV_VAR == _ENV_VAR
 
 
+def test_the_loopback_grant_does_not_leak_out_of_this_module():
+    """The grant assigns os.environ directly, so the fixture must undo it.
+
+    Ordered to run after a granting test alphabetically would be fragile, so
+    this grants inline and then relies on the autouse fixture of the NEXT test
+    to have cleaned up — which is what the sibling assertion below checks.
+    """
+    _allow_insecure_transport_for_local_redirect("http://localhost:8000/oauth2callback")
+    assert os.environ.get(_ENV_VAR) == "1"
+
+
+def test_the_previous_test_left_nothing_behind():
+    """Companion to the test above; fails if the fixture stops restoring."""
+    assert _ENV_VAR not in os.environ
+    assert not insecure_transport_explicitly_declined()
+
+
 @pytest.mark.parametrize("value", ["0", "false", "no", "off", "1", "true", "anything"])
 def test_oauthlib_lifts_https_for_any_non_empty_value(value, monkeypatch):
     """Characterisation: oauthlib tests the truthiness of the raw string.
@@ -359,7 +457,7 @@ def test_oauthlib_requires_https_when_absent_or_empty(value, monkeypatch):
 
 def test_bypass_predicate_matches_oauthlib_exactly(monkeypatch):
     """Our predicate must be oauthlib's rule, not the shared boolean parser."""
-    for value in _FALSEY_VALUES + _TRUTHY_VALUES + ["treu", None]:
+    for value in _FALSEY_VALUES + _TRUTHY_VALUES + _EMPTY_VALUES + ["treu", None]:
         if value is None:
             monkeypatch.delenv(_ENV_VAR, raising=False)
         else:
@@ -415,7 +513,7 @@ def test_normalise_fails_closed_and_loudly_on_an_unrecognised_value(
     assert any("treu" in record.getMessage() for record in caplog.records)
 
 
-@pytest.mark.parametrize("value", _FALSEY_VALUES + _TRUTHY_VALUES)
+@pytest.mark.parametrize("value", _FALSEY_VALUES + _TRUTHY_VALUES + _EMPTY_VALUES)
 def test_normalise_is_idempotent(value, monkeypatch):
     monkeypatch.setenv(_ENV_VAR, value)
     first_result = normalize_insecure_transport_env()
@@ -444,6 +542,30 @@ def test_banner_state_agrees_with_oauthlib(value, monkeypatch):
     bypassed = not _https_enforced()
 
     assert (state == "warn") is bypassed, (value, state)
+
+
+def test_banner_reports_whitespace_as_on_because_oauthlib_does(monkeypatch):
+    """Empty to a reader, non-empty to oauthlib. The row follows oauthlib.
+
+    Normalisation removes such a value, so the banner should not see it in a
+    real startup — but the row must not lie if something sets it afterwards.
+    """
+    monkeypatch.setenv(_ENV_VAR, "   ")
+
+    _, _, state = _banner_row(_ENV_VAR)
+
+    assert not _https_enforced()
+    assert state == "warn"
+
+
+@pytest.mark.parametrize("value", _EMPTY_VALUES)
+def test_banner_reads_a_normalised_empty_value_as_unset(value, monkeypatch):
+    monkeypatch.setenv(_ENV_VAR, value)
+    normalize_insecure_transport_env()
+
+    _, shown, state = _banner_row(_ENV_VAR)
+
+    assert (shown, state) == ("not set", "off")
 
 
 def test_banner_reports_an_unset_variable_as_off(monkeypatch):
@@ -479,6 +601,9 @@ def test_banner_still_shows_a_typo_that_normalisation_removed(monkeypatch):
     assert state == "warn"
     assert "ture" in value
     assert "unrecognised" in value
+    # A typo also vetoes the loopback grant, which is stricter than plain
+    # "off". The row has to say the stronger thing, not the milder one.
+    assert "loopback" in value
 
 
 def test_banner_distinguishes_a_decline_from_never_having_been_set(monkeypatch):

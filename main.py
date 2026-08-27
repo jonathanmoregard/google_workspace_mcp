@@ -8,7 +8,12 @@ import sys
 from functools import partial
 from importlib import metadata, import_module
 from dotenv import load_dotenv
-from core.env_flags import parse_bool_env
+from core.env_flags import (
+    INSECURE_TRANSPORT_ENV_VAR,
+    insecure_transport_bypass_active,
+    normalize_insecure_transport_env,
+    parse_bool_env,
+)
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
 
 # Prevent any stray startup output on macOS (e.g. platform identifiers) from
@@ -92,6 +97,12 @@ def _load_startup_dependencies():
 
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=dotenv_path)
+
+# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
+# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
+# Settle the value here, once .env has been read and long before any OAuth flow
+# or the startup banner, so what the operator wrote is what oauthlib does.
+normalize_insecure_transport_env()
 
 # Suppress googleapiclient discovery cache warning
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
@@ -321,7 +332,7 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
     return name, collapse_home(os.path.expanduser(value)) if path else value, "on"
 
 
-def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
+def _flag_field(name: str) -> tuple[str, str, str]:
     """Describe a boolean env var as a (label, value, state) display row.
 
     Parsed with the one shared parser so the banner can never claim a flag is
@@ -334,9 +345,27 @@ def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, s
         # Neither on nor off. Rendering a typo as "off" is how a flag silently
         # fails to take effect, which is exactly what this row exists to catch.
         return name, f"{value} · unrecognised", "warn"
-    if not enabled:
-        return name, value, "off"
-    return name, value, "warn" if warn_when_true else "on"
+    return name, value, "on" if enabled else "off"
+
+
+def _insecure_transport_field() -> tuple[str, str, str]:
+    """Describe OAUTHLIB_INSECURE_TRANSPORT the way oauthlib itself reads it.
+
+    This is the one flag the shared parser must not describe. oauthlib checks
+    the truthiness of the raw string, so every non-empty value lifts its HTTPS
+    requirement; rendering the row through ``parse_bool_env`` printed "off" for
+    ``OAUTHLIB_INSECURE_TRANSPORT=0`` while OAuth token exchange over plain HTTP
+    was in fact being accepted. Startup normalisation means the banner should
+    only ever see "1" or the empty string, but the row states oauthlib's rule
+    directly so it stays true regardless of who set the variable, or when.
+    """
+    name = INSECURE_TRANSPORT_ENV_VAR
+    value = os.environ.get(name)
+    if value is None:
+        return name, "not set", "off"
+    if not insecure_transport_bypass_active():
+        return name, "off · HTTPS enforced", "off"
+    return name, f"{value} · HTTPS NOT enforced for OAuth", "warn"
 
 
 def _client_secret_field() -> tuple[str, str, str]:
@@ -380,7 +409,7 @@ def describe_mode_config() -> list[tuple[str, str, str]]:
         _flag_field("MCP_SINGLE_USER_MODE"),
         _flag_field("MCP_ENABLE_OAUTH21"),
         _flag_field("WORKSPACE_MCP_STATELESS_MODE"),
-        _flag_field("OAUTHLIB_INSECURE_TRANSPORT", warn_when_true=True),
+        _insecure_transport_field(),
     ]
 
 

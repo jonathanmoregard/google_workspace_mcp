@@ -156,9 +156,9 @@
     "OAUTHLIB_INSECURE_TRANSPORT": {
       "type": "boolean",
       "title": "OAuth Insecure Transport",
-      "description": "Allow OAuth over HTTP for development (enable for development only)",
+      "description": "Allow OAuth over plain HTTP. Leave off: a localhost redirect URI already relaxes this automatically, and turning it on removes the HTTPS requirement from every OAuth exchange in the process, including a public deployment's",
       "required": false,
-      "default": true
+      "default": false
     },
     "GOOGLE_PSE_API_KEY": {
       "type": "string",

@@ -107,9 +107,12 @@ env:
   # Service, so OAuth 2.1 is the safe default for network-reachable deployments.
   MCP_ENABLE_OAUTH21: "true"
   
-  # Development only - set to "1" for local development
-  OAUTHLIB_INSECURE_TRANSPORT: "0"
-  
+  # OAUTHLIB_INSECURE_TRANSPORT is deliberately absent. oauthlib checks only
+  # whether the string is non-empty, so shipping "0" here disabled its HTTPS
+  # requirement for every OAuth exchange in the pod while reading as "off".
+  # Local development only, and never for a cluster reachable off-host:
+  #   OAUTHLIB_INSECURE_TRANSPORT: "1"
+
   # Optional: Google Custom Search
   # GOOGLE_PSE_API_KEY: ""
   # GOOGLE_PSE_ENGINE_ID: ""

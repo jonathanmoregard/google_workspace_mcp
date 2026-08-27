@@ -33,6 +33,10 @@ from core.config import (
     get_transport_mode,
     get_oauth_redirect_uri,
 )
+from core.env_flags import (
+    INSECURE_TRANSPORT_ENV_VAR,
+    normalize_insecure_transport_env,
+)
 from core.context import get_fastmcp_session_id
 
 # Try to import FastMCP dependencies (may not be available in all environments)
@@ -62,15 +66,23 @@ def _allow_insecure_transport_for_local_redirect(redirect_uri: str) -> None:
     deployment must keep the HTTPS requirement intact. Every site that sets the
     variable goes through this helper so the two OAuth halves (starting the flow
     and handling the callback) cannot drift apart.
+
+    The operator's own setting still wins over the loopback auto-grant, but it
+    now wins by what it *means* rather than by being present: normalising first
+    is what stops an explicit ``"0"`` from reading as "off" to the operator and
+    as "on" to oauthlib.
     """
-    if "OAUTHLIB_INSECURE_TRANSPORT" in os.environ:
+    if normalize_insecure_transport_env():
+        return
+    if INSECURE_TRANSPORT_ENV_VAR in os.environ:
+        # Normalised to "", i.e. the operator asked for the requirement to stand.
         return
     if not ("localhost" in redirect_uri or "127.0.0.1" in redirect_uri):
         return
     logger.warning(
         "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost/local development."
     )
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+    os.environ[INSECURE_TRANSPORT_ENV_VAR] = "1"
 
 
 # Constants

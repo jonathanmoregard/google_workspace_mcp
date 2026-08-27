@@ -13,6 +13,14 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
+from core.env_flags import normalize_insecure_transport_env
+
+# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
+# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
+# This entry point is HTTPS-hosted; settle the value before anything can start
+# an OAuth flow against it.
+normalize_insecure_transport_env()
+
 from auth.oauth_config import reload_oauth_config, is_stateless_mode
 from core.log_formatter import (
     EnhancedLogFormatter,

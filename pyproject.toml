@@ -169,20 +169,3 @@ constraint-dependencies = [
     "mcp>=1.28.1",    # GHSA: HTTP principal verification, WS Host/Origin, cross-client tasks
     "pyasn1>=0.6.4",  # GHSA: REAL-decode resource consumption, quadratic OID DoS
 ]
-
-[tool.ruff]
-# CI (.github/workflows/ruff.yml) runs an *unpinned* `uvx ruff`, so it uses
-# whatever release is current that day, while the dev group pins 0.15.10.
-# Both the rule set and the file set are therefore pinned here on purpose:
-# left implicit, a newer ruff widens its own defaults and turns CI red on code
-# that never changed. Do not delete this section to "use ruff's defaults" --
-# these *are* the defaults, just frozen.
-target-version = "py310"
-# Ruff's default file set through 0.15. 0.16 added Markdown, and formatting
-# fenced code inside .md corrupts identifiers (`mcp__google-workspace__x`
-# becomes `mcp__google - workspace__x`), so keep ruff on Python only.
-include = ["*.py", "*.pyi", "**/pyproject.toml", "*.ipynb"]
-
-[tool.ruff.lint]
-# Ruff's default selection, made explicit.
-select = ["E4", "E7", "E9", "F"]

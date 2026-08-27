@@ -612,6 +612,78 @@ def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
     return uris or None
 
 
+#: Documented install hint for the optional Valkey client-storage backend.
+_VALKEY_DEPENDENCY_HINT = (
+    "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed (%s). "
+    "Install 'workspace-mcp[valkey]' (or 'py-key-value-aio[valkey]', which includes 'valkey-glide') "
+    "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST."
+)
+
+
+def _import_valkey_dependencies() -> Optional[tuple]:
+    """Import the Valkey backend's dependencies, or warn and return ``None``.
+
+    Both imports happen up front, before any store is constructed. The Glide
+    import used to sit *after* ``ValkeyStore(...)``, so an ``ImportError``
+    raised by it was caught by a handler that left the bare, unencrypted store
+    bound as ``client_storage``. Importing first removes that window entirely,
+    and matches the disk-backed branch, whose only import likewise precedes the
+    store it builds.
+    """
+    try:
+        from key_value.aio.stores.valkey import ValkeyStore
+        from glide_shared.config import AdvancedGlideClientConfiguration
+    except ImportError as exc:
+        logger.warning(_VALKEY_DEPENDENCY_HINT, exc)
+        return None
+    return ValkeyStore, AdvancedGlideClientConfiguration
+
+
+def _valkey_int_env(name: str, default: int) -> int:
+    """Read an integer Valkey setting, naming the variable when it is malformed.
+
+    ``int()``'s own ``ValueError`` ("invalid literal for int() with base 10")
+    does not say which knob was mistyped, and this whole block used to swallow
+    it as an unspecified "invalid Valkey configuration".
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}.") from exc
+
+
+def _valkey_optional_int_env(name: str) -> Optional[int]:
+    """Same as :func:`_valkey_int_env`, but unset means "leave the default"."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}.") from exc
+
+
+def _valkey_bool_env(name: str, default: bool) -> bool:
+    """Read a boolean Valkey setting through the one strict parser.
+
+    ``parse_bool_env`` exists to fail loudly on a typo; every other call site in
+    the repo lets its ``ValueError`` propagate. This one used to catch it
+    alongside crypto failures, so ``...VALKEY_USE_TLS=treu`` silently discarded
+    the entire Valkey configuration. Re-raising with the variable's name keeps
+    the failure loud *and* attributable.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return _parse_bool_env(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}") from exc
+
+
 def set_transport_mode(mode: str):
     """Sets the transport mode for the server."""
     _set_transport_mode(mode)
@@ -704,43 +776,40 @@ def configure_server_for_http():
             use_disk = storage_backend == "disk"
 
             if use_valkey:
-                try:
-                    from key_value.aio.stores.valkey import ValkeyStore
+                # Three distinct failure causes, kept distinct:
+                #
+                #   * missing dependency  -> warn with the install hint and leave
+                #     client_storage unset, so FastMCP uses its own default. This
+                #     is the disk-backed branch's ImportError contract.
+                #   * malformed config    -> raise, naming the environment
+                #     variable. parse_bool_env is built to fail loudly and every
+                #     other call site in the repo lets it.
+                #   * rejected key        -> raise. The disk branch does not catch
+                #     ValueError at all, so a crypto failure aborts startup there;
+                #     this branch used to swallow it.
+                #
+                # In none of them may an unencrypted store survive: the store is
+                # constructed only after its Fernet is known good, into a local,
+                # and client_storage is assigned the wrapper and nothing else.
+                valkey_dependencies = _import_valkey_dependencies()
+                if valkey_dependencies is not None:
+                    valkey_store_cls, glide_advanced_config_cls = valkey_dependencies
 
-                    valkey_port_raw = os.getenv(
-                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_PORT", "6379"
-                    ).strip()
-                    valkey_db_raw = os.getenv(
-                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_DB", "0"
-                    ).strip()
-
-                    valkey_port = int(valkey_port_raw)
-                    valkey_db = int(valkey_db_raw)
-                    valkey_use_tls_raw = os.getenv(
-                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", ""
-                    ).strip()
-                    valkey_use_tls = (
-                        _parse_bool_env(valkey_use_tls_raw)
-                        if valkey_use_tls_raw
-                        else valkey_port == 6380
+                    valkey_port = _valkey_int_env(
+                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_PORT", 6379
                     )
-
-                    valkey_request_timeout_ms_raw = os.getenv(
-                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_REQUEST_TIMEOUT_MS", ""
-                    ).strip()
-                    valkey_connection_timeout_ms_raw = os.getenv(
-                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_CONNECTION_TIMEOUT_MS", ""
-                    ).strip()
-
-                    valkey_request_timeout_ms = (
-                        int(valkey_request_timeout_ms_raw)
-                        if valkey_request_timeout_ms_raw
-                        else None
+                    valkey_db = _valkey_int_env(
+                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_DB", 0
                     )
-                    valkey_connection_timeout_ms = (
-                        int(valkey_connection_timeout_ms_raw)
-                        if valkey_connection_timeout_ms_raw
-                        else None
+                    valkey_use_tls = _valkey_bool_env(
+                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS",
+                        default=valkey_port == 6380,
+                    )
+                    valkey_request_timeout_ms = _valkey_optional_int_env(
+                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_REQUEST_TIMEOUT_MS"
+                    )
+                    valkey_connection_timeout_ms = _valkey_optional_int_env(
+                        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_CONNECTION_TIMEOUT_MS"
                     )
 
                     valkey_username = (
@@ -759,7 +828,28 @@ def configure_server_for_http():
                     if not valkey_host:
                         valkey_host = "localhost"
 
-                    client_storage = ValkeyStore(
+                    jwt_signing_key = validate_and_derive_jwt_key(
+                        jwt_signing_key_override, config.client_secret
+                    )
+
+                    storage_encryption_key = derive_jwt_key(
+                        high_entropy_material=jwt_signing_key.decode(),
+                        salt="fastmcp-storage-encryption-key",
+                    )
+
+                    try:
+                        storage_fernet = Fernet(key=storage_encryption_key)
+                    except ValueError as exc:
+                        logger.error(
+                            "OAuth 2.1: Valkey client_storage encryption key was rejected (%s). "
+                            "Refusing to start rather than persist OAuth client credentials unencrypted.",
+                            exc,
+                        )
+                        raise
+
+                    # Encryption is known good, so the plaintext store can now be
+                    # built. It stays in a local that is never handed to anyone.
+                    valkey_store = valkey_store_cls(
                         host=valkey_host,
                         port=valkey_port,
                         db=valkey_db,
@@ -769,7 +859,7 @@ def configure_server_for_http():
 
                     # Configure TLS and timeouts on the underlying Glide client config.
                     # ValkeyStore currently doesn't expose these settings directly.
-                    glide_config = getattr(client_storage, "_client_config", None)
+                    glide_config = getattr(valkey_store, "_client_config", None)
                     if glide_config is not None:
                         glide_config.use_tls = valkey_use_tls
 
@@ -787,28 +877,13 @@ def configure_server_for_http():
                         ):
                             valkey_connection_timeout_ms = 10000
                         if valkey_connection_timeout_ms is not None:
-                            from glide_shared.config import (
-                                AdvancedGlideClientConfiguration,
+                            glide_config.advanced_config = glide_advanced_config_cls(
+                                connection_timeout=valkey_connection_timeout_ms
                             )
-
-                            glide_config.advanced_config = (
-                                AdvancedGlideClientConfiguration(
-                                    connection_timeout=valkey_connection_timeout_ms
-                                )
-                            )
-
-                    jwt_signing_key = validate_and_derive_jwt_key(
-                        jwt_signing_key_override, config.client_secret
-                    )
-
-                    storage_encryption_key = derive_jwt_key(
-                        high_entropy_material=jwt_signing_key.decode(),
-                        salt="fastmcp-storage-encryption-key",
-                    )
 
                     client_storage = FernetEncryptionWrapper(
-                        key_value=client_storage,
-                        fernet=Fernet(key=storage_encryption_key),
+                        key_value=valkey_store,
+                        fernet=storage_fernet,
                     )
                     logger.info(
                         "OAuth 2.1: Using ValkeyStore for FastMCP OAuth proxy client_storage (host=%s, port=%s, db=%s, tls=%s)",
@@ -829,18 +904,6 @@ def configure_server_for_http():
                         )
                     logger.info(
                         "OAuth 2.1: Applied Fernet encryption wrapper to Valkey client_storage (key derived from FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY or GOOGLE_OAUTH_CLIENT_SECRET)."
-                    )
-                except ImportError as exc:
-                    logger.warning(
-                        "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed (%s). "
-                        "Install 'workspace-mcp[valkey]' (or 'py-key-value-aio[valkey]', which includes 'valkey-glide') "
-                        "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST.",
-                        exc,
-                    )
-                except ValueError as exc:
-                    logger.warning(
-                        "OAuth 2.1: Invalid Valkey configuration; falling back to default storage (%s).",
-                        exc,
                     )
             elif use_disk:
                 try:

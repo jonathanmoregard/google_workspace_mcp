@@ -189,6 +189,12 @@ set_enabled_tool_names(None)  # Don't filter individual tools - enable all
 # Filter tools based on configuration
 filter_server_tools(server)
 
+# Rebuild the instructions once tool selection is final, so the same invariant
+# holds in both entry points: nothing names a tool that filtering removed.
+# No-op today (this entry point disables tier filtering above) — it is here so
+# that changing line 187 cannot silently make the instructions stale.
+refresh_server_instructions()
+
 # Configure authentication after scopes are known
 configure_server_for_http()
 

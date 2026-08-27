@@ -70,6 +70,68 @@ _UNKNOWN_CAPABILITY: Dict[str, Any] = {
 }
 
 
+def _fold(email: Optional[str]) -> str:
+    """The one spelling rule every email comparison in this module uses.
+
+    Addresses are trimmed and compared case-insensitively. Two spellings of one
+    address must not become two accounts — that is the abstraction this whole
+    module rests on. Comparing exactly in one place and folding in another is
+    how a case-variant ``USER_GOOGLE_EMAIL`` came to be reported as having no
+    stored credentials *and* listed as an alternate account to switch to.
+    """
+    return (email or "").strip().casefold()
+
+
+def _distinct_accounts(emails: Iterable[str]) -> Tuple[str, ...]:
+    """The stored accounts, one entry per address; first spelling wins.
+
+    Folding here is what stops one address stored under two spellings from
+    counting as two accounts — which would otherwise turn multi-account output
+    on for a store that really holds one.
+    """
+    seen: set = set()
+    distinct: List[str] = []
+    for email in emails or ():
+        folded = _fold(email)
+        if not folded or folded in seen:
+            continue
+        seen.add(folded)
+        distinct.append(email)
+    return tuple(distinct)
+
+
+def _accounts_other_than(
+    emails: Iterable[str], caller: Optional[str]
+) -> Tuple[str, ...]:
+    """Every distinct stored account that is not ``caller``."""
+    folded_caller = _fold(caller)
+    return tuple(
+        email for email in _distinct_accounts(emails) if _fold(email) != folded_caller
+    )
+
+
+def _list_accounts_tool_available() -> bool:
+    """Whether ``list_google_accounts`` survived ``--tools`` / ``--tool-tier``.
+
+    The tool is tiered under ``docs: core``, so a selection that excludes the
+    docs service drops it (``core/tool_registry.py``) — upstream parks
+    ``start_google_auth`` under ``gmail: complete`` the same way. Pointing an
+    agent at a tool that is not registered in its configuration is worse than
+    saying nothing, so every mention of it below is conditional on this.
+
+    Imported lazily: ``core.tool_registry`` reads the enabled-tool set that
+    ``main.py`` only populates during startup, and an import at module scope
+    would also widen this module's import graph for no gain.
+    """
+    try:
+        from core.tool_registry import is_tool_enabled
+
+        return is_tool_enabled("list_google_accounts")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not check whether list_google_accounts is enabled: %s", exc)
+        return True
+
+
 @dataclass(frozen=True)
 class AccountDirectory:
     """What the credential store could be made to say, and how confidently."""
@@ -262,7 +324,7 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
     accounts = [
         {
             "email": email,
-            "is_default": bool(default_email) and email == default_email,
+            "is_default": bool(default_email) and _fold(email) == _fold(default_email),
             "docs_preview": preview_capability(email),
         }
         for email in directory.emails
@@ -289,7 +351,11 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
             + (f" {directory.detail}" if directory.detail else "")
         )
 
-    if default_email and directory.enumerated and default_email not in directory.emails:
+    if (
+        default_email
+        and directory.enumerated
+        and not any(_fold(email) == _fold(default_email) for email in directory.emails)
+    ):
         notes.append(
             f"The configured default account {default_email} has no stored "
             "credentials; it has not completed the Google consent flow on this server."
@@ -347,17 +413,29 @@ def _single_account_instructions(user_google_email: str) -> str:
 When using Google Workspace tools, always use `{user_google_email}` as the `user_google_email` parameter. Do not ask the user for their email address."""
 
 
-def _multi_account_instructions(user_google_email: str, emails: Sequence[str]) -> str:
-    others = ", ".join(email for email in emails if email != user_google_email)
-    return f"""Connected Google account: {user_google_email}
+#: Appended to the multi-account instructions only when the tool is registered.
+_LIST_ACCOUNTS_SENTENCE = """
 
-Also authenticated on this server: {others}
+`list_google_accounts` reports the authenticated accounts and their cached Google Docs Developer Preview status without making any API call."""
+
+
+def _multi_account_instructions(user_google_email: str, others: Sequence[str]) -> str:
+    """The instructions string for a store holding more than one account.
+
+    ``others`` is already filtered and folded by :func:`_accounts_other_than`,
+    so this never has to decide what counts as a different account.
+    """
+    named = ", ".join(others)
+    body = f"""Connected Google account: {user_google_email}
+
+Also authenticated on this server: {named}
 
 When using Google Workspace tools, use `{user_google_email}` as the `user_google_email` parameter. Do not ask the user for their email address.
 
-Switch to another account only on an explicit instruction from the user, or when a tool error names one of the other accounts as the one to use. Never retry a failed call under a different account on your own: a Google `notFound` means either "no access" or "no such document", so an automatic retry would walk every account above. {_WRITE_NOTE}
-
-`list_google_accounts` reports the authenticated accounts and their cached Google Docs Developer Preview status without making any API call."""
+Switch to another account only on an explicit instruction from the user, or when a tool error names one of the other accounts as the one to use. Never retry a failed call under a different account on your own: a Google `notFound` means either "no access" or "no such document", so an automatic retry would walk every account above. {_WRITE_NOTE}"""
+    if _list_accounts_tool_available():
+        body += _LIST_ACCOUNTS_SENTENCE
+    return body
 
 
 def resolve_default_account() -> Optional[str]:
@@ -400,8 +478,15 @@ def build_server_instructions(
     if enumerate_store:
         try:
             directory = enumerate_accounts()
-            if directory.enumerated and len(directory.emails) > 1:
-                return _multi_account_instructions(user_google_email, directory.emails)
+            # More than one DISTINCT stored account, exactly as before — two
+            # spellings of one address are one account, and a single stored
+            # account that is not the configured default is still one account.
+            distinct = _distinct_accounts(directory.emails)
+            if directory.enumerated and len(distinct) > 1:
+                return _multi_account_instructions(
+                    user_google_email,
+                    _accounts_other_than(distinct, user_google_email),
+                )
         except Exception as exc:  # pragma: no cover - enumerate_accounts absorbs these
             logger.warning(
                 "Could not inspect the credential store for multi-account server "
@@ -439,16 +524,35 @@ _NOTFOUND_AMBIGUITY = (
 _PREVIEW_GRANULARITY = (
     "Whether Developer Preview enrollment follows the account or the Cloud "
     "project is an open question, so this failure is evidence about this "
-    "account only; list_google_accounts reports each account's last observed "
-    "verdict without probing anything."
+    "account only."
 )
 
-#: kind -> (sentence before the naming, sentence after it).
-_HINT_FRAMING: Dict[str, Tuple[str, str]] = {
-    HINT_403: ("", ""),
-    HINT_404: (_NOTFOUND_AMBIGUITY, ""),
-    HINT_PREVIEW_UNAVAILABLE: ("", _PREVIEW_GRANULARITY),
-}
+#: Only appended when ``list_google_accounts`` is registered in this process.
+_PREVIEW_GRANULARITY_TOOL = (
+    " list_google_accounts reports each account's last observed verdict without "
+    "probing anything."
+)
+
+
+def _hint_framing(kind: str) -> Optional[Tuple[str, str]]:
+    """``(sentence before the naming, sentence after it)`` for a hint kind.
+
+    Built per call rather than held in a table: the pointer at
+    ``list_google_accounts`` is only true when that tool survived tier
+    filtering, and that is not known at import time. See
+    :func:`_list_accounts_tool_available`.
+    """
+    if kind == HINT_403:
+        return "", ""
+    if kind == HINT_404:
+        return _NOTFOUND_AMBIGUITY, ""
+    if kind == HINT_PREVIEW_UNAVAILABLE:
+        trailing = _PREVIEW_GRANULARITY
+        if _list_accounts_tool_available():
+            trailing += _PREVIEW_GRANULARITY_TOOL
+        return "", trailing
+    return None
+
 
 #: HTTP status -> hint kind. 401 is deliberately absent: it means nobody is
 #: authenticated for this call, not that the wrong identity was used, and the
@@ -488,13 +592,10 @@ def other_accounts(user_google_email: Optional[str]) -> Tuple[str, ...]:
     if not directory.enumerated:
         return ()
 
-    folded = caller.casefold()
-    if not any(email.strip().casefold() == folded for email in directory.emails):
+    if not any(_fold(email) == _fold(caller) for email in directory.emails):
         return ()
 
-    return tuple(
-        email for email in directory.emails if email.strip().casefold() != folded
-    )
+    return _accounts_other_than(directory.emails, caller)
 
 
 def _no_attempt_sentence(count: int) -> str:
@@ -512,7 +613,7 @@ def _no_attempt_sentence(count: int) -> str:
 
 
 def _candidate_account_hint(user_google_email: Optional[str], kind: str) -> str:
-    framing = _HINT_FRAMING.get(kind)
+    framing = _hint_framing(kind)
     if framing is None:
         logger.warning("Unknown candidate-account hint kind: %r", kind)
         return ""

@@ -547,3 +547,154 @@ def test_arbitrary_pick_warning_is_silent_for_no_accounts(caplog):
         account_directory.warn_on_arbitrary_account_pick([], None)
 
     assert caplog.text == ""
+
+
+# --------------------------------------------------------------------------
+# F3 — one address, one account, however it is spelled
+#
+# `other_accounts()` folded case while `is_default`, the default-missing note
+# and the instructions filter compared exactly. A case-variant
+# USER_GOOGLE_EMAIL therefore reported "no stored credentials" AND listed the
+# default as an account to switch to. Two spellings of one address must not
+# become two accounts.
+# --------------------------------------------------------------------------
+
+
+def test_case_variant_default_is_recognised_as_the_default(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(monkeypatch, _local_store(tmp_path, ["Solo@Example.com"]))
+
+    report = account_directory.build_account_report("solo@example.com")
+
+    assert [account["is_default"] for account in report["accounts"]] == [True]
+    assert not any("has no stored credentials" in note for note in report["notes"])
+
+
+def test_case_variant_default_is_not_listed_as_another_account(monkeypatch, tmp_path):
+    """The store's spelling differs from USER_GOOGLE_EMAIL's; still one account."""
+    _single_user_mode(monkeypatch)
+    _use_store(monkeypatch, _local_store(tmp_path, ["Solo@Example.com"]))
+
+    assert (
+        account_directory.build_server_instructions("solo@example.com")
+        == EXPECTED_SINGLE_ACCOUNT_INSTRUCTIONS
+    )
+
+
+def test_two_spellings_of_one_address_are_not_two_accounts(monkeypatch, tmp_path):
+    """A store holding both spellings must not produce multi-account output."""
+    _single_user_mode(monkeypatch)
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "SOLO@example.com"])
+    )
+
+    assert (
+        account_directory.build_server_instructions("solo@example.com")
+        == EXPECTED_SINGLE_ACCOUNT_INSTRUCTIONS
+    )
+
+
+def test_other_accounts_folds_case_for_the_caller_and_the_others(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _use_store(
+        monkeypatch,
+        _local_store(
+            tmp_path, ["Solo@Example.com", "solo@example.com", "work@example.com"]
+        ),
+    )
+
+    others = account_directory.other_accounts("SOLO@EXAMPLE.COM")
+
+    assert others == ("work@example.com",)
+
+
+def test_a_default_absent_from_the_store_is_still_reported_missing(
+    monkeypatch, tmp_path
+):
+    """The folding fix must not swallow the genuinely-missing-default note."""
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(monkeypatch, _local_store(tmp_path, ["work@example.com"]))
+
+    report = account_directory.build_account_report("solo@example.com")
+
+    assert any("has no stored credentials" in note for note in report["notes"])
+
+
+# --------------------------------------------------------------------------
+# F4 — never name a tool this process did not register
+#
+# `list_google_accounts` is tiered `docs: core`, so `--tools calendar
+# --tool-tier core` drops it while the instructions and the preview hint still
+# told the agent to call it.
+# --------------------------------------------------------------------------
+
+
+def _tier_filter(monkeypatch, enabled):
+    """Pin core.tool_registry's enabled-tool set for the duration of a test."""
+    import core.tool_registry as tool_registry
+
+    monkeypatch.setattr(tool_registry, "_enabled_tools", enabled)
+
+
+def test_instructions_name_the_tool_when_it_is_registered(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _tier_filter(monkeypatch, None)  # no --tool-tier filtering: everything enabled
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
+    )
+
+    instructions = account_directory.build_server_instructions("solo@example.com")
+
+    assert "list_google_accounts" in instructions
+
+
+def test_instructions_omit_the_tool_when_tier_filtering_dropped_it(
+    monkeypatch, tmp_path
+):
+    _single_user_mode(monkeypatch)
+    _tier_filter(monkeypatch, {"get_events", "list_calendars"})
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
+    )
+
+    instructions = account_directory.build_server_instructions("solo@example.com")
+
+    assert "list_google_accounts" not in instructions
+    # The routing rule is the load-bearing half and must survive.
+    assert "work@example.com" in instructions
+    assert "never retry" in instructions.lower()
+
+
+def test_preview_hint_omits_the_tool_when_tier_filtering_dropped_it(
+    monkeypatch, tmp_path
+):
+    _single_user_mode(monkeypatch)
+    _tier_filter(monkeypatch, {"get_events"})
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
+    )
+
+    hint = account_directory.candidate_account_hint(
+        "solo@example.com", account_directory.HINT_PREVIEW_UNAVAILABLE
+    )
+
+    assert "work@example.com" in hint
+    assert "list_google_accounts" not in hint
+    # The open-question sentence is not the part being dropped.
+    assert "open question" in hint
+
+
+def test_preview_hint_names_the_tool_when_it_is_registered(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _tier_filter(monkeypatch, None)
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
+    )
+
+    hint = account_directory.candidate_account_hint(
+        "solo@example.com", account_directory.HINT_PREVIEW_UNAVAILABLE
+    )
+
+    assert "list_google_accounts" in hint

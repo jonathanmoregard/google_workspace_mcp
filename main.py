@@ -714,6 +714,11 @@ def main():
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     tools_removed = filter_server_tools(server)
 
+    # Rebuild the instructions now that tool selection is final. The call at
+    # module scope ran before --tools / --tool-tier were parsed, so it could
+    # still name list_google_accounts in a configuration that just dropped it.
+    refresh_server_instructions()
+
     ui.section("Services")
     ui.grid([(SERVICE_ICONS.get(t, "🔧"), t.title()) for t in loaded])
     ui.blank()

@@ -97,10 +97,40 @@ spec:
             - name: TOOLS
               value: {{ .Values.tools.enabled | join " " | quote }}
             {{- end }}
-            # Environment variables from values
+            # Environment variables from values. An empty value is skipped
+            # rather than emitted: it is not a configured value, and emitting
+            # it would both shadow the ingress-derived defaults below and hand
+            # the process a set-but-empty variable, which is not the same thing
+            # as an unset one.
             {{- range $key, $value := .Values.env }}
+            {{- if $value }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.ingress.enabled }}
+            {{- $scheme := ternary "https" "http" (gt (len .Values.ingress.tls) 0) }}
+            {{- $ingressOrigins := list }}
+            {{- range .Values.ingress.hosts }}
+            {{- if .host }}
+            {{- $ingressOrigins = append $ingressOrigins (printf "%s://%s" $scheme .host) }}
+            {{- end }}
+            {{- end }}
+            {{- if $ingressOrigins }}
+            # Enabling the ingress declares the names this deployment answers
+            # on, so they are also the names its anti-rebinding Host allowlist
+            # has to hold. Left underived, ingress.enabled=true rendered a
+            # chart that 403s every request it routes. An explicit value in
+            # .Values.env always wins.
+            {{- if not .Values.env.WORKSPACE_EXTERNAL_URL }}
+            - name: WORKSPACE_EXTERNAL_URL
+              value: {{ first $ingressOrigins | quote }}
+            {{- end }}
+            {{- if not .Values.env.OAUTH_ALLOWED_ORIGINS }}
+            - name: OAUTH_ALLOWED_ORIGINS
+              value: {{ join "," $ingressOrigins | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           {{- if .Values.command.override }}
           command: {{ .Values.command.override }}

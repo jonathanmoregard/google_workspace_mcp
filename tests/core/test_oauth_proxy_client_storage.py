@@ -236,16 +236,19 @@ def test_rejected_encryption_key_does_not_leave_an_unencrypted_valkey_store(
     assert "encryption" in messages.lower()
 
 
-def test_import_failure_after_store_construction_does_not_leave_plaintext_store(
+def test_missing_glide_config_degrades_without_losing_the_store(
     monkeypatch, captured, caplog
 ):
     """The Glide timeout import used to run *after* ``ValkeyStore(...)``.
 
     An ``ImportError`` there was caught by the dependency handler, which logged
     "dependencies are not installed" and left the already-constructed,
-    unencrypted store bound. Both Valkey imports now happen before anything is
-    built, so this can only end with no store at all.
+    unencrypted store bound. It now runs before anything is built — and because
+    it carries only the connection-timeout knob, its absence costs that knob
+    rather than the shared store the operator explicitly asked for.
     """
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
     _install_fake_valkey(
         monkeypatch, store_cls=FakeValkeyStoreWithGlideConfig, with_glide=False
     )
@@ -258,20 +261,32 @@ def test_import_failure_after_store_construction_does_not_leave_plaintext_store(
     with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
         server_module.configure_server_for_http()
 
-    assert captured["client_storage"] is None, (
-        "a missing Valkey dependency must leave client_storage unset, "
-        "never a raw unencrypted store"
+    client_storage = captured["client_storage"]
+    assert isinstance(client_storage, FernetEncryptionWrapper), (
+        "a missing tuning symbol must not disqualify the requested store"
     )
-    assert FakeValkeyStore.instances == [], (
-        "the store must not be constructed before its dependencies import"
-    )
+    store = client_storage.key_value
+    assert store._client_config.use_tls is False
+    assert store._client_config.request_timeout == 5000
+    assert store._client_config.advanced_config is None
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AdvancedGlideClientConfiguration is unavailable" in messages
+    assert "connection timeout cannot be applied" in messages
 
 
 def test_missing_valkey_dependency_falls_back_without_a_store(
     monkeypatch, captured, caplog
 ):
-    """Matches the disk branch: warn with the install hint, leave storage unset."""
-    monkeypatch.delitem(sys.modules, VALKEY_MODULE, raising=False)
+    """Warn with the install hint and leave storage unset.
+
+    ``setitem(..., None)`` rather than ``delitem``: deleting the entry only
+    evicts the cache, so the next ``from ... import`` re-imports from disk and
+    the test would pass for the wrong reason (this venv has no valkey extra) and
+    flip the moment the extra is installed. A ``None`` entry makes the import
+    machinery raise regardless of what is installed.
+    """
+    monkeypatch.setitem(sys.modules, VALKEY_MODULE, None)
     _select_valkey(monkeypatch)
 
     with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
@@ -320,3 +335,111 @@ def test_malformed_port_aborts_and_names_the_variable(monkeypatch, captured):
 
     assert "client_storage" not in captured
     assert FakeValkeyStore.instances == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_PORT",
+        "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_DB",
+    ],
+)
+def test_blank_integer_setting_aborts_rather_than_taking_the_default(
+    monkeypatch, captured, name
+):
+    """A blanked-out variable is a typo, not an absent one.
+
+    ``int('')`` raised before these helpers existed; treating blank as "use the
+    default" would quietly widen exactly the strictness they were added for.
+    """
+    _install_fake_valkey(monkeypatch)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv(name, "   ")
+
+    with pytest.raises(ValueError, match=f"{name} is set but empty"):
+        server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+    assert FakeValkeyStore.instances == []
+
+
+def test_disk_store_is_wrapped_in_encryption_on_the_happy_path(
+    monkeypatch, captured, tmp_path
+):
+    """Baseline for the disk-backed branch."""
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+    from key_value.aio.stores.filetree import FileTreeStore
+
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "disk")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+
+    server_module.configure_server_for_http()
+
+    client_storage = captured["client_storage"]
+    assert isinstance(client_storage, FernetEncryptionWrapper)
+    assert isinstance(client_storage.key_value, FileTreeStore)
+
+
+def test_disk_import_failure_after_construction_leaves_no_plaintext_store(
+    monkeypatch, captured, caplog, tmp_path
+):
+    """The disk branch has the same shape the Valkey branch had.
+
+    ``client_storage`` is assigned the raw ``FileTreeStore`` and only later
+    reassigned to the encryption wrapper, with ``except ImportError`` sitting
+    between the two. Any ``ImportError`` raised in that window — a lazy import
+    inside a dependency is the realistic source — is caught by a handler that
+    logs "Falling back to default storage" while the plaintext store stays
+    bound.
+
+    ``FernetEncryptionWrapper`` is re-imported from its own module on every
+    call, so patching it there injects a single failure at exactly the point
+    where the wrap was supposed to happen — after the plaintext store exists and
+    after ``jwt_signing_key`` is already derived.
+    """
+
+    def _raise_import_error(**kwargs):
+        raise ImportError("simulated lazy import failure inside the encryption wrapper")
+
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "disk")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+    monkeypatch.setattr(
+        "key_value.aio.wrappers.encryption.FernetEncryptionWrapper",
+        _raise_import_error,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        with pytest.raises(ImportError):
+            server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured, (
+        "an ImportError in the disk branch must not leave the unencrypted "
+        "FileTreeStore bound as client_storage"
+    )
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Falling back to" not in messages, (
+        "the handler must not claim a fallback it did not perform"
+    )
+
+
+def test_missing_disk_dependency_falls_back_without_a_store(
+    monkeypatch, captured, caplog, tmp_path
+):
+    """The disk branch's guarded import: warn and leave storage unset."""
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "disk")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+    monkeypatch.setitem(sys.modules, "core.storage", None)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert captured["client_storage"] is None
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Disk storage requested but its dependencies are not available" in messages
+    assert "Fernet-encrypted local file store" in messages

@@ -612,31 +612,76 @@ def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
     return uris or None
 
 
+#: What the OAuth proxy actually uses when ``client_storage`` is left unset.
+#: Verified against fastmcp's ``OAuthProxy.__init__``: it builds a
+#: ``FileTreeStore`` under ``<fastmcp home>/oauth-proxy/<key fingerprint>`` and
+#: wraps it in a ``FernetEncryptionWrapper``. Encrypted, but node-local, so a
+#: multi-replica deployment loses its shared OAuth client registrations.
+_DEFAULT_STORAGE_DESCRIPTION = (
+    "Falling back to FastMCP's default client storage, a Fernet-encrypted local "
+    "file store; it is per-instance, so replicas will not share OAuth client "
+    "registrations."
+)
+
 #: Documented install hint for the optional Valkey client-storage backend.
 _VALKEY_DEPENDENCY_HINT = (
     "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed (%s). "
     "Install 'workspace-mcp[valkey]' (or 'py-key-value-aio[valkey]', which includes 'valkey-glide') "
-    "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST."
+    "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST. "
+    + _DEFAULT_STORAGE_DESCRIPTION
 )
 
 
 def _import_valkey_dependencies() -> Optional[tuple]:
     """Import the Valkey backend's dependencies, or warn and return ``None``.
 
-    Both imports happen up front, before any store is constructed. The Glide
-    import used to sit *after* ``ValkeyStore(...)``, so an ``ImportError``
-    raised by it was caught by a handler that left the bare, unencrypted store
-    bound as ``client_storage``. Importing first removes that window entirely,
-    and matches the disk-backed branch, whose only import likewise precedes the
-    store it builds.
+    Returns ``(ValkeyStore, AdvancedGlideClientConfiguration | None)``. The
+    imports happen up front, before any store is constructed: the Glide import
+    used to sit *after* ``ValkeyStore(...)``, so an ``ImportError`` raised by it
+    was caught by a handler that left the bare, unencrypted store bound as
+    ``client_storage``.
+
+    ``ValkeyStore`` is required. ``AdvancedGlideClientConfiguration`` only
+    carries the connection-timeout setting, so its absence degrades that one
+    knob rather than disqualifying a store the operator explicitly asked for —
+    it was not needed at all pre-change for a plain localhost, non-TLS endpoint.
     """
     try:
         from key_value.aio.stores.valkey import ValkeyStore
-        from glide_shared.config import AdvancedGlideClientConfiguration
     except ImportError as exc:
         logger.warning(_VALKEY_DEPENDENCY_HINT, exc)
         return None
+
+    try:
+        from glide_shared.config import AdvancedGlideClientConfiguration
+    except ImportError as exc:
+        logger.warning(
+            "OAuth 2.1: glide_shared.config.AdvancedGlideClientConfiguration is unavailable (%s); "
+            "the Valkey connection timeout cannot be applied. Continuing with the Valkey store.",
+            exc,
+        )
+        return ValkeyStore, None
+
     return ValkeyStore, AdvancedGlideClientConfiguration
+
+
+def _import_disk_store_factory():
+    """Import the disk-backed store factory, or warn and return ``None``.
+
+    Same discipline as :func:`_import_valkey_dependencies`: the import happens
+    before anything is constructed, so no ``ImportError`` can leave a plaintext
+    ``FileTreeStore`` bound as ``client_storage``.
+    """
+    try:
+        from core.storage import make_sanitized_file_store
+    except ImportError as exc:
+        logger.warning(
+            "OAuth 2.1: Disk storage requested but its dependencies are not available (%s). "
+            + _DEFAULT_STORAGE_DESCRIPTION,
+            exc,
+        )
+        return None
+    return make_sanitized_file_store
 
 
 def _valkey_int_env(name: str, default: int) -> int:
@@ -645,18 +690,31 @@ def _valkey_int_env(name: str, default: int) -> int:
     ``int()``'s own ``ValueError`` ("invalid literal for int() with base 10")
     does not say which knob was mistyped, and this whole block used to swallow
     it as an unspecified "invalid Valkey configuration".
+
+    A variable that is present but blank is malformed, not absent: blanking a
+    value out is a plausible typo, and ``int('')`` raised before this helper
+    existed. Only an entirely unset variable takes the default.
     """
-    raw = os.getenv(name, "").strip()
-    if not raw:
+    raw = os.environ.get(name)
+    if raw is None:
         return default
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError(f"{name} is set but empty; unset it to use the default.")
     try:
-        return int(raw)
+        return int(stripped)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer, got {raw!r}.") from exc
 
 
 def _valkey_optional_int_env(name: str) -> Optional[int]:
-    """Same as :func:`_valkey_int_env`, but unset means "leave the default"."""
+    """Same as :func:`_valkey_int_env`, but for the settings with no default.
+
+    Blank stays permissive here, unlike ``_valkey_int_env``, because that is
+    what these two timeouts already did: they were read as
+    ``int(raw) if raw else None``, so an empty value has always meant "no
+    timeout" rather than an error.
+    """
     raw = os.getenv(name, "").strip()
     if not raw:
         return None
@@ -779,18 +837,20 @@ def configure_server_for_http():
                 # Three distinct failure causes, kept distinct:
                 #
                 #   * missing dependency  -> warn with the install hint and leave
-                #     client_storage unset, so FastMCP uses its own default. This
-                #     is the disk-backed branch's ImportError contract.
+                #     client_storage unset, so FastMCP uses its own default
+                #     (itself an encrypted file store).
                 #   * malformed config    -> raise, naming the environment
                 #     variable. parse_bool_env is built to fail loudly and every
                 #     other call site in the repo lets it.
-                #   * rejected key        -> raise. The disk branch does not catch
-                #     ValueError at all, so a crypto failure aborts startup there;
-                #     this branch used to swallow it.
+                #   * rejected key        -> raise, so startup aborts rather than
+                #     persisting client credentials unencrypted.
                 #
                 # In none of them may an unencrypted store survive: the store is
                 # constructed only after its Fernet is known good, into a local,
                 # and client_storage is assigned the wrapper and nothing else.
+                # The disk branch below now follows the same rules. It did not
+                # before — its ImportError handler was fail-open too, which is
+                # why this comment no longer cites it as the precedent.
                 valkey_dependencies = _import_valkey_dependencies()
                 if valkey_dependencies is not None:
                     valkey_store_cls, glide_advanced_config_cls = valkey_dependencies
@@ -877,9 +937,17 @@ def configure_server_for_http():
                         ):
                             valkey_connection_timeout_ms = 10000
                         if valkey_connection_timeout_ms is not None:
-                            glide_config.advanced_config = glide_advanced_config_cls(
-                                connection_timeout=valkey_connection_timeout_ms
-                            )
+                            if glide_advanced_config_cls is None:
+                                # Already warned at import time. A missing tuning
+                                # symbol must not cost the operator the shared
+                                # store they asked for.
+                                valkey_connection_timeout_ms = None
+                            else:
+                                glide_config.advanced_config = (
+                                    glide_advanced_config_cls(
+                                        connection_timeout=valkey_connection_timeout_ms
+                                    )
+                                )
 
                     client_storage = FernetEncryptionWrapper(
                         key_value=valkey_store,
@@ -906,9 +974,16 @@ def configure_server_for_http():
                         "OAuth 2.1: Applied Fernet encryption wrapper to Valkey client_storage (key derived from FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY or GOOGLE_OAUTH_CLIENT_SECRET)."
                     )
             elif use_disk:
-                try:
-                    from core.storage import make_sanitized_file_store
-
+                # This branch had the same fail-open as the Valkey one above:
+                # client_storage was assigned the raw FileTreeStore and only
+                # later reassigned to the wrapper, with `except ImportError`
+                # between the two, so an ImportError raised in that window
+                # logged "Falling back to default storage" while handing the
+                # plaintext store to GoogleProvider. Reproduced, then fixed the
+                # same way — import first, encrypt first, and assign
+                # client_storage the wrapper and nothing else.
+                disk_store_factory = _import_disk_store_factory()
+                if disk_store_factory is not None:
                     disk_directory = os.getenv(
                         "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", ""
                     ).strip()
@@ -922,8 +997,6 @@ def configure_server_for_http():
                                 "~/.fastmcp/oauth-proxy"
                             )
 
-                    client_storage = make_sanitized_file_store(disk_directory)
-
                     jwt_signing_key = validate_and_derive_jwt_key(
                         jwt_signing_key_override, config.client_secret
                     )
@@ -933,19 +1006,25 @@ def configure_server_for_http():
                         salt="fastmcp-storage-encryption-key",
                     )
 
+                    try:
+                        storage_fernet = Fernet(key=storage_encryption_key)
+                    except ValueError as exc:
+                        logger.error(
+                            "OAuth 2.1: Disk client_storage encryption key was rejected (%s). "
+                            "Refusing to start rather than persist OAuth client credentials unencrypted.",
+                            exc,
+                        )
+                        raise
+
+                    disk_store = disk_store_factory(disk_directory)
+
                     client_storage = FernetEncryptionWrapper(
-                        key_value=client_storage,
-                        fernet=Fernet(key=storage_encryption_key),
+                        key_value=disk_store,
+                        fernet=storage_fernet,
                     )
                     logger.info(
                         "OAuth 2.1: Using FileTreeStore for FastMCP OAuth proxy client_storage (directory=%s)",
                         disk_directory,
-                    )
-                except ImportError as exc:
-                    logger.warning(
-                        "OAuth 2.1: Disk storage requested but dependencies not available (%s). "
-                        "Falling back to default storage.",
-                        exc,
                     )
             elif storage_backend == "memory":
                 from key_value.aio.stores.memory import MemoryStore

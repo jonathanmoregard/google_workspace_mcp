@@ -109,29 +109,38 @@ def _accounts_other_than(
 
 
 def _tool_registered(tool_name: str) -> bool:
-    """Whether ``tool_name`` survived ``--tools`` / ``--tool-tier`` selection.
+    """Whether ``tool_name`` is actually registered on the running server.
 
-    ``list_google_accounts`` is tiered under ``docs: core`` and
-    ``check_docs_review_capabilities`` under ``docs_preview``, so a selection
-    that excludes those services drops them (``core/tool_registry.py``) —
-    upstream parks ``start_google_auth`` under ``gmail: complete`` the same way.
     Pointing an agent at a tool that is not registered in its configuration is
     worse than saying nothing, so every mention of one below is conditional on
     this.
 
+    The registered component table, NOT ``is_tool_enabled``. That function reads
+    the ``--tools`` / ``--tool-tier`` selection set, which is ``None`` — meaning
+    "no tier filtering", so ``True`` for every name that was ever asked about —
+    in the default configuration and under a plain ``--tools`` selection. It
+    also cannot see the other two filters ``filter_server_tools`` applies,
+    read-only mode and granular permissions. Worse, a service that was never
+    imported registers nothing at all, which no filter set records. All of that
+    lands in the component table, which is why the table is the question to ask.
+
     Fails CLOSED: if we cannot tell, we say nothing rather than name a tool that
     may not be there.
 
-    Imported lazily: ``core.tool_registry`` reads the enabled-tool set that
-    ``main.py`` only populates during startup, and an import at module scope
-    would also widen this module's import graph for no gain.
+    Read out of ``sys.modules`` rather than imported. :mod:`core.server` imports
+    this module, so importing it back would be a cycle; and an absent entry
+    means no server has been built in this process, which is not a
+    configuration in which anything reads these strings.
     """
+    server = getattr(sys.modules.get("core.server"), "server", None)
+    if server is None:
+        return False
     try:
-        from core.tool_registry import is_tool_enabled
+        from core.tool_registry import get_tool_components
 
-        return is_tool_enabled(tool_name)
+        return tool_name in get_tool_components(server)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not check whether %s is enabled: %s", tool_name, exc)
+        logger.debug("Could not check whether %s is registered: %s", tool_name, exc)
         return False
 
 
@@ -139,7 +148,12 @@ def _list_accounts_tool_available() -> bool:
     return _tool_registered("list_google_accounts")
 
 
-def _capabilities_tool_available() -> bool:
+def capabilities_tool_available() -> bool:
+    """Whether ``check_docs_review_capabilities`` is registered in this process.
+
+    Public because :mod:`gdocs_preview.write_tools` asks the same question about
+    the same tool, and two copies of that reasoning would drift apart.
+    """
     return _tool_registered("check_docs_review_capabilities")
 
 
@@ -278,6 +292,15 @@ _ROUTING_NOTE = (
     "account in the wallet."
 )
 
+_NO_DEFAULT_ROUTING_NOTE = (
+    "No default account is configured (USER_GOOGLE_EMAIL is unset) and this "
+    "server holds more than one. Ask the user which account to use and pass it "
+    "as user_google_email; do not choose one yourself, and do not infer one from "
+    "the order they are listed in. Never retry a failed call under a different "
+    "account — a Google notFound means either 'no access' or 'no such document', "
+    "so an automatic retry would walk every account in the wallet."
+)
+
 _WRITE_NOTE = (
     "Comments and suggestions are authored as the account and are visible to "
     "everyone with the document, so no write may switch identity."
@@ -367,22 +390,42 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
             + (f" {directory.detail}" if directory.detail else "")
         )
 
-    if (
-        default_email
-        and directory.enumerated
-        and not any(_fold(email) == _fold(default_email) for email in directory.emails)
-    ):
-        notes.append(
-            f"The configured default account {default_email} has no stored "
-            "credentials; it has not completed the Google consent flow on this server."
+    if default_email and directory.enumerated:
+        # Folding decides IDENTITY, but the credential store keys its files by
+        # the exact spelling (auth/credential_store.py:_get_credential_path). So
+        # "same account" and "loadable under this spelling" are two questions,
+        # and answering only the first would report a case-variant default as
+        # authenticated while every call under it failed to find a credential.
+        stored_exactly = any(email == default_email for email in directory.emails)
+        stored_folded = next(
+            (
+                email
+                for email in directory.emails
+                if _fold(email) == _fold(default_email)
+            ),
+            None,
         )
+        if stored_folded is None:
+            notes.append(
+                f"The configured default account {default_email} has no stored "
+                "credentials; it has not completed the Google consent flow on this "
+                "server."
+            )
+        elif not stored_exactly:
+            notes.append(
+                f"The configured default {default_email} differs only in case from "
+                f"the stored account {stored_folded}. Google treats those as one "
+                f"address, but the credential store keys its files by the exact "
+                f"spelling, so loading credentials for {default_email} will fail. "
+                f"Set USER_GOOGLE_EMAIL to {stored_folded}."
+            )
 
     # Never point at check_docs_review_capabilities unconditionally: when the
     # docs_preview service is not loaded that tool is not registered either, so
     # the old advice named a tool that could not exist whenever it was printed.
     probe_hint = (
         " Run check_docs_review_capabilities against one account to find out."
-        if _capabilities_tool_available()
+        if capabilities_tool_available()
         else ""
     )
     if not preview_loaded:
@@ -399,7 +442,11 @@ def build_account_report(default_email: Optional[str]) -> Dict[str, Any]:
         )
 
     if len(accounts) > 1:
-        notes.append(_ROUTING_NOTE)
+        # "Use the default account" is not advice an agent can follow when there
+        # is no default. That case is real — a store with several accounts and
+        # no USER_GOOGLE_EMAIL — and single-user mode then binds to whichever
+        # address sorts first, which is exactly what the agent must not imitate.
+        notes.append(_ROUTING_NOTE if default_email else _NO_DEFAULT_ROUTING_NOTE)
         notes.append(_WRITE_NOTE)
 
     return {

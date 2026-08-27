@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import core.account_directory as account_directory
+import core.server  # noqa: F401 - _tool_registered reads the server from sys.modules
 from auth.credential_store import LocalDirectoryCredentialStore
 
 # The verbatim single-account instructions as of core/server.py:310-312. Written
@@ -134,7 +135,7 @@ def test_multi_account_instructions_state_the_routing_rule(monkeypatch, tmp_path
     lowered = instructions.lower()
     # use the default
     assert "solo@example.com" in instructions
-    # switch only on an explicit instruction, or when an error names one
+    # switch only on an explicit instruction from the user
     assert "explicit" in lowered
     # never retry another account automatically
     assert "never retry" in lowered
@@ -632,15 +633,34 @@ def test_a_default_absent_from_the_store_is_still_reported_missing(
 
 
 def _tier_filter(monkeypatch, enabled):
-    """Pin core.tool_registry's enabled-tool set for the duration of a test."""
+    """Pin which tools are REGISTERED on the server, for one test.
+
+    Registration, not ``core.tool_registry._enabled_tools``: that set is
+    ``None`` — "no tier filtering", hence True for every name — in the default
+    configuration and under a plain ``--tools`` selection, and it cannot see
+    read-only or granular-permissions filtering, or a service that was never
+    imported. The component table is where all of those land, so it is what
+    :func:`core.account_directory._tool_registered` consults.
+
+    ``core.server`` is imported at the top of this module on purpose:
+    ``_tool_registered`` reads the server out of ``sys.modules`` and answers
+    False when no server has been built, so without that import these tests
+    would pass for the wrong reason.
+    """
     import core.tool_registry as tool_registry
 
-    monkeypatch.setattr(tool_registry, "_enabled_tools", enabled)
+    monkeypatch.setattr(
+        tool_registry,
+        "get_tool_components",
+        lambda server: {name: object() for name in enabled},
+    )
 
 
 def test_instructions_name_the_tool_when_it_is_registered(monkeypatch, tmp_path):
     _single_user_mode(monkeypatch)
-    _tier_filter(monkeypatch, None)  # no --tool-tier filtering: everything enabled
+    _tier_filter(
+        monkeypatch, {"list_google_accounts", "check_docs_review_capabilities"}
+    )
     _use_store(
         monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
     )
@@ -688,7 +708,7 @@ def test_preview_hint_omits_the_tool_when_tier_filtering_dropped_it(
 
 def test_preview_hint_names_the_tool_when_it_is_registered(monkeypatch, tmp_path):
     _single_user_mode(monkeypatch)
-    _tier_filter(monkeypatch, None)
+    _tier_filter(monkeypatch, {"list_google_accounts"})
     _use_store(
         monkeypatch, _local_store(tmp_path, ["solo@example.com", "work@example.com"])
     )
@@ -745,3 +765,108 @@ def test_the_candidate_hint_and_the_instructions_agree(monkeypatch, tmp_path):
 
     assert "confirm that with the user" in hint
     assert "confirm" in instructions.lower()
+
+
+# --------------------------------------------------------------------------
+# Round 3 — the fold rule is about IDENTITY, not about loadability
+#
+# The credential store keys its files by the exact spelling it was given. So
+# folding, which decides whether two spellings are one account, must not be
+# read as deciding whether a credential can be loaded under either of them.
+# Marking a case-variant default "authenticated" while every call under it
+# failed to find a file is a worse answer than the one it replaced.
+# --------------------------------------------------------------------------
+
+
+def test_a_case_variant_default_is_reported_as_unloadable(monkeypatch, tmp_path):
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(monkeypatch, _local_store(tmp_path, ["Solo@Example.com"]))
+
+    report = account_directory.build_account_report("solo@example.com")
+    note = " ".join(report["notes"])
+
+    assert "differs only in case" in note
+    # It must name the spelling that actually works.
+    assert "Set USER_GOOGLE_EMAIL to Solo@Example.com" in note
+    # And it is still the same account, so it is still the default.
+    assert [a["is_default"] for a in report["accounts"]] == [True]
+
+
+def test_an_exactly_matching_default_gets_no_case_warning(monkeypatch, tmp_path):
+    """The control: the warning must not fire for the ordinary case."""
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(monkeypatch, _local_store(tmp_path, ["solo@example.com"]))
+
+    note = " ".join(account_directory.build_account_report("solo@example.com")["notes"])
+
+    assert "differs only in case" not in note
+    assert "has no stored credentials" not in note
+
+
+# --------------------------------------------------------------------------
+# Round 3 — "use the default account" is not advice when there is no default
+# --------------------------------------------------------------------------
+
+
+def test_routing_note_tells_the_agent_to_ask_when_there_is_no_default(
+    monkeypatch, tmp_path
+):
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["amy@example.com", "zoe@example.com"])
+    )
+
+    note = " ".join(account_directory.build_account_report(None)["notes"])
+
+    assert "Ask the user which account to use" in note
+    assert "do not choose one yourself" in note
+    # The agent must not be told to use a default that does not exist.
+    assert "Use the default account" not in note
+    # And the no-retry rule survives in this variant too.
+    assert "Never retry" in note
+
+
+def test_routing_note_names_the_default_when_there_is_one(monkeypatch, tmp_path):
+    """The control: with a default configured the original note is used."""
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _use_store(
+        monkeypatch, _local_store(tmp_path, ["amy@example.com", "zoe@example.com"])
+    )
+
+    note = " ".join(account_directory.build_account_report("amy@example.com")["notes"])
+
+    assert "Use the default account" in note
+    assert "Ask the user which account to use" not in note
+
+
+# --------------------------------------------------------------------------
+# Round 3 — _tool_registered asks about registration, not the selection set
+# --------------------------------------------------------------------------
+
+
+def test_tool_is_not_named_when_the_service_was_never_imported(monkeypatch, tmp_path):
+    """The case the selection set cannot see.
+
+    ``--tools docs`` leaves ``_enabled_tools`` as None, so the old check
+    answered True for every name — including tools belonging to a service that
+    was never imported and therefore registered nothing at all.
+    """
+    _single_user_mode(monkeypatch)
+    _no_preview_module(monkeypatch)
+    _tier_filter(monkeypatch, {"get_doc_content", "list_google_accounts"})
+    _use_store(monkeypatch, _local_store(tmp_path, ["solo@example.com"]))
+
+    note = " ".join(account_directory.build_account_report("solo@example.com")["notes"])
+
+    assert "check_docs_review_capabilities" not in note
+
+
+def test_nothing_is_named_when_no_server_has_been_built(monkeypatch):
+    """Fails closed: no server in the process means no claim about its tools."""
+    monkeypatch.delitem(sys.modules, "core.server", raising=False)
+
+    assert account_directory._tool_registered("list_google_accounts") is False

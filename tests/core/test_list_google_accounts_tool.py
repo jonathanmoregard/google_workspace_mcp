@@ -104,7 +104,10 @@ async def test_call_tool_does_not_inject_email_into_a_tool_without_the_parameter
 
 @pytest.mark.asyncio
 async def test_call_tool_still_injects_the_default_for_tools_that_take_it(monkeypatch):
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "configured@example.com")
+    # setenv: the injection re-derives the default rather than reading the
+    # constant that froze before .env was loaded.
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "configured@example.com")
+    monkeypatch.setattr(account_directory, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_trust_gateway_identity", lambda: False)
 

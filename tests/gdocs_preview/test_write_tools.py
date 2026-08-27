@@ -936,7 +936,14 @@ class TestPreviewGating:
     choke point for all four write tools)."""
 
     @pytest.mark.asyncio
-    async def test_not_enrolled_400_raises_actionable_user_input_error(self):
+    async def test_not_enrolled_400_raises_actionable_user_input_error(
+        self, monkeypatch
+    ):
+        # The verify sentence is conditional on check_docs_review_capabilities
+        # being registered, which depends on which services this process
+        # imported — so pin it rather than let the assertion depend on which
+        # other tests ran first.
+        monkeypatch.setattr(write_tools, "capabilities_tool_available", lambda: True)
         service = _failing_service(_http_error(400, NOT_ENROLLED_BODY))
         fn = _unwrap(write_tools.suggest_doc_edit)
 
@@ -1005,6 +1012,10 @@ class TestPreviewGating:
         single-account server appends no candidate-account sentence.
         """
         _accounts(monkeypatch, tmp_path, [EMAIL])
+        # Pin the verify sentence on: whether check_docs_review_capabilities is
+        # registered depends on which services this process imported, and that
+        # is not what this test is about.
+        monkeypatch.setattr(write_tools, "capabilities_tool_available", lambda: True)
         service = _failing_service(_http_error(400, NOT_ENROLLED_BODY))
         fn = _unwrap(write_tools.suggest_doc_edit)
 
@@ -1019,10 +1030,8 @@ class TestPreviewGating:
 
         assert str(excinfo.value) == (
             "suggest_doc_edit needs Google Workspace Developer Preview access, and "
-            f"the preview request was rejected as not enrolled for {EMAIL}. See "
-            "docs/preview-api-reference.md for how to enroll and for what is still "
-            "unknown about the scope of an enrollment. Verify with "
-            "check_docs_review_capabilities(probe=true)."
+            f"the preview request was rejected as not enrolled for {EMAIL}."
+            " Verify with check_docs_review_capabilities(probe=true)."
         )
         assert "Other accounts authenticated on this server" not in str(excinfo.value)
 

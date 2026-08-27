@@ -4,8 +4,23 @@ from types import SimpleNamespace
 import pytest
 
 import auth.service_decorator as service_decorator
+import core.account_directory as account_directory
 import core.server as server_module
 from core.server import SecureFastMCP
+
+
+def _configured_default(monkeypatch, email):
+    """Configure the default account the way production does.
+
+    Via the ENVIRONMENT, not by rebinding ``server_module.USER_GOOGLE_EMAIL``.
+    That constant freezes while ``core.server`` is imported, which in
+    ``main.py`` is before ``load_dotenv()``, so the schema patching and the
+    call_tool injection both re-derive it through ``resolve_default_account()``.
+    Rebinding the constant would test a code path production does not have.
+    """
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", email)
+    monkeypatch.setattr(account_directory, "is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr(account_directory, "is_trust_gateway_identity", lambda: False)
 
 
 def _sample_sig():
@@ -42,7 +57,7 @@ def test_extract_oauth20_user_email_raises_without_arg_or_env(monkeypatch):
 async def test_list_tools_marks_user_google_email_optional_when_default_configured(
     monkeypatch,
 ):
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "configured@example.com")
+    _configured_default(monkeypatch, "configured@example.com")
     monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_trust_gateway_identity", lambda: False)
 
@@ -68,7 +83,8 @@ async def test_list_tools_marks_user_google_email_optional_when_default_configur
 
 @pytest.mark.asyncio
 async def test_list_tools_leaves_schema_unchanged_without_default(monkeypatch):
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", None)
+    monkeypatch.delenv("USER_GOOGLE_EMAIL", raising=False)
+    monkeypatch.setattr(account_directory, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_trust_gateway_identity", lambda: False)
 
@@ -91,7 +107,7 @@ async def test_list_tools_leaves_schema_unchanged_without_default(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_call_tool_injects_default_email_before_validation(monkeypatch):
-    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "configured@example.com")
+    _configured_default(monkeypatch, "configured@example.com")
     monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
     monkeypatch.setattr(server_module, "is_trust_gateway_identity", lambda: False)
 

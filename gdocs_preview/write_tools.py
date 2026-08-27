@@ -52,7 +52,11 @@ from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
-from core.account_directory import HINT_PREVIEW_UNAVAILABLE, candidate_account_hint
+from core.account_directory import (
+    HINT_PREVIEW_UNAVAILABLE,
+    candidate_account_hint,
+    capabilities_tool_available,
+)
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, review_page, suggestion_ledger
@@ -1354,12 +1358,21 @@ async def _execute_preview_batch_update(
             # Cloud project or the account is undocumented for the
             # two-accounts-one-OAuth-client case -- and it contradicted the
             # candidate hint appended one line below, which says so.
+            # The verify sentence is conditional for the same reason the
+            # account-directory notes are: check_docs_review_capabilities is
+            # tiered docs_preview:extended, so --tool-tier core drops it while
+            # these write tools stay. No file path either -- an agent on the
+            # other side of MCP cannot read this server's disk.
+            verify = (
+                " Verify with check_docs_review_capabilities(probe=true)."
+                if capabilities_tool_available()
+                else ""
+            )
             raise UserInputError(
                 f"{tool_name} needs Google Workspace Developer Preview access, and "
                 f"the preview request was rejected as not enrolled for "
-                f"{user_google_email}. See docs/preview-api-reference.md for how to "
-                f"enroll and for what is still unknown about the scope of an "
-                f"enrollment. Verify with check_docs_review_capabilities(probe=true)."
+                f"{user_google_email}."
+                + verify
                 + candidate_account_hint(user_google_email, HINT_PREVIEW_UNAVAILABLE)
             ) from error
         raise

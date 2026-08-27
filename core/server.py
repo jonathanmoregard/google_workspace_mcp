@@ -263,7 +263,14 @@ class SecureFastMCP(FastMCP):
                 schema.update(required=required, properties=properties)
                 patched.append(tool.model_copy(update={"parameters": schema}))
             return patched
-        if not USER_GOOGLE_EMAIL or is_oauth21_enabled():
+        # resolve_default_account(), not the import-frozen core.config constant:
+        # main.py imports this module before load_dotenv(), so a default living
+        # only in .env is invisible to that constant. The instructions were
+        # moved onto the live value; leaving the SCHEMA on the frozen one would
+        # tell the agent "do not ask the user for their email address" while
+        # still marking the parameter required and never injecting it.
+        default_account = resolve_default_account()
+        if not default_account or is_oauth21_enabled():
             return tools
         patched = []
         for tool in tools:
@@ -273,7 +280,7 @@ class SecureFastMCP(FastMCP):
                 required = [r for r in required if r != "user_google_email"]
                 props = {k: dict(v) for k, v in schema.get("properties", {}).items()}
                 if "user_google_email" in props:
-                    props["user_google_email"]["default"] = USER_GOOGLE_EMAIL
+                    props["user_google_email"]["default"] = default_account
                 schema = dict(schema, required=required, properties=props)
                 patched.append(tool.model_copy(update={"parameters": schema}))
             else:
@@ -321,13 +328,14 @@ class SecureFastMCP(FastMCP):
                 for key, value in arguments.items()
                 if key != "user_google_email"
             }
-        elif (
-            not is_oauth21_enabled()
-            and USER_GOOGLE_EMAIL
-            and "user_google_email" not in arguments
-            and self._tool_takes_user_email(name)
-        ):
-            arguments = {**arguments, "user_google_email": USER_GOOGLE_EMAIL}
+        elif "user_google_email" not in arguments and self._tool_takes_user_email(name):
+            # Live value, for the same reason list_tools patches the schema from
+            # one: the import-time constant cannot see a default set in .env,
+            # and a schema that says "optional, defaults to X" must be backed by
+            # an injection that actually supplies X.
+            default_account = resolve_default_account()
+            if default_account:
+                arguments = {**arguments, "user_google_email": default_account}
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
@@ -901,7 +909,10 @@ async def list_google_accounts() -> str:
     (USER_GOOGLE_EMAIL), and the last known Google Docs Developer Preview verdict
     (available / unavailable / unknown) with its source and timestamp. "unknown"
     means nothing has been observed for that account yet — it is not a capability
-    miss. Run `check_docs_review_capabilities` against an account to find out.
+    miss. Where `check_docs_review_capabilities` is available, running it against
+    an account is what settles the verdict; the `notes` in this tool's own output
+    say whether it is, since this description is static text that cannot know
+    which tools a given server was started with.
 
     Use this to see which accounts exist before asking the user which one to use.
     Seeing an account here is NOT permission to use it: keep using the default

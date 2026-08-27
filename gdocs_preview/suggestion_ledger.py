@@ -56,6 +56,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+from core.email_identity import fold_email
 from gdocs_preview.address import ADDRESS_FIELDS
 
 #: Documents tracked at once, per process. Eviction is oldest-touched-first.
@@ -195,7 +196,11 @@ def _now() -> str:
 
 
 def _key(user_google_email: str, document_id: str) -> tuple[str, str]:
-    return (user_google_email or "", document_id or "")
+    # Folded for the same reason gdocs_preview.preview_status folds: two
+    # spellings of one address are one caller. Splitting the ledger between them
+    # would make explain_missing tell the principal who just read a document
+    # that "this session has not read this document".
+    return (fold_email(user_google_email), document_id or "")
 
 
 def _entry(user_google_email: str, document_id: str) -> _Entry:

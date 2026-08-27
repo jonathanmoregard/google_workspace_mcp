@@ -138,13 +138,17 @@ _INITIAL_STATE: dict[str, Any] = {
     "checked_at": None,
 }
 
-#: Callers tracked at once, per process. Eviction is oldest-touched-first,
-#: matching :data:`gdocs_preview.suggestion_ledger.MAX_DOCUMENTS`. An evicted
-#: caller falls back to ``unknown``, i.e. to re-probing -- never to somebody
-#: else's verdict.
+#: Callers tracked at once, per process. Eviction is oldest-RECORDED-first:
+#: :func:`get_status` deliberately does not re-insert, so a read never
+#: reorders. Refreshing on read would make a probe-free capability report
+#: mutate shared state, and the cost of getting it wrong is one extra probe.
+#: (It previously said "oldest-touched-first", which a read is not.) Kept
+#: aligned with :data:`gdocs_preview.suggestion_ledger.MAX_DOCUMENTS`. An
+#: evicted caller falls back to ``unknown``, i.e. to re-probing -- never to
+#: somebody else's verdict.
 MAX_USERS = 64
 
-#: user_google_email -> state. Insertion order is the LRU order.
+#: folded user_google_email -> state. Insertion order is the eviction order.
 _states: dict[str, dict[str, Any]] = {}
 
 
@@ -205,6 +209,16 @@ def record(
     # found under any other. Two spellings of one address are one caller here,
     # exactly as they are one account in core/account_directory.py.
     key = fold_email(user_google_email)
+    if not key:
+        # The evidence embeds this caller's document ids. A call site that
+        # cannot say whose observation this is must not be able to file it
+        # where the next such caller reads it back as their own -- and every
+        # blank address folds to the same key, so "" is exactly that shared
+        # drawer. Refusing is the only answer that keeps the docstring true.
+        raise ValueError(
+            "user_google_email must identify a caller; refusing to record a "
+            "Developer Preview observation under an empty key."
+        )
     state = _states.pop(key, None) or dict(_INITIAL_STATE)
     state.update(
         availability=availability,

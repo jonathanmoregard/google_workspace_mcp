@@ -55,23 +55,29 @@ The preview request types (`insertComment`, `acceptSuggestion`,
 and the thread-bearing read only exist for **enrolled projects**. Apply at
 <https://developers.google.com/workspace/preview>.
 
-- The repo treats enrollment as a property of the **GCP project** the OAuth
-  client belongs to, not of the Google account — that is what the error
-  message says (`_execute_preview_batch_update` in
-  `gdocs_preview/write_tools.py`: "enrollment for the authenticated project")
-  and what `read_for_review` in `gdocs_preview/preview_read.py` relies
-  on. **Caveat, stated honestly:** whether enrollment propagates per-project
-  or per-account is still listed as an open UNCERTAIN item
-  (`docs/preview-api-reference.md:443`, item 3; §7.2) — it has been tested
-  neither with a second, non-enrolled project nor with a second Google account
-  against this one. So the *wording* of that error is a claim the repo cannot
-  back. The **cached verdict** behind it deliberately makes no such claim: it
-  is keyed by `user_google_email` (`gdocs_preview/preview_status.py`) and an
-  account nothing has been observed for reads `unknown`. Per-account and
-  unknown-until-observed is the model that stays correct under either answer —
-  §3.6. Either way, the requester having org-level approval does not
-  automatically cover a *new* GCP project: register the project you actually
-  build the OAuth client in.
+- **Whether enrollment is a property of the GCP project, of the Google account,
+  or of both, is an open question and the repo no longer claims an answer.** It
+  has been tested neither with a second, non-enrolled project nor with a second
+  Google account against this one; it stays listed as an open UNCERTAIN item
+  (`docs/preview-api-reference.md`, item 3; §7.2), with the two experiments that
+  would settle it.
+
+  This used to read the other way. The not-enrolled error in
+  `_execute_preview_batch_update` (`gdocs_preview/write_tools.py`) said
+  "enrollment for the authenticated project", and this section cited that
+  wording as evidence for the per-project reading — a claim resting on nothing
+  but its own error message. The error now states only what was observed: that
+  the preview request was rejected as not enrolled for that account.
+
+  Everything downstream already modelled it correctly and is unchanged. The
+  cached verdict is keyed by `user_google_email`
+  (`gdocs_preview/preview_status.py`) and an account nothing has been observed
+  for reads `unknown`. Per-account and unknown-until-observed is the model that
+  stays correct under **either** answer — §3.6.
+
+  One thing that is known independently of all this: the requester having
+  org-level approval does not automatically cover a *new* GCP project, so
+  register the project you actually build the OAuth client in.
 - Without enrollment the server still starts and every read still answers —
   see §4.6.
 

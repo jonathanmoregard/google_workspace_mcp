@@ -627,6 +627,75 @@ async def test_disk_client_secret_rotation_degrades_to_a_miss(
     assert await after.get("client-a", collection="clients") is None
 
 
+_PLAINTEXT_PURGE_HINT = "may hold OAuth client records written unencrypted"
+
+
+def test_persistent_backends_warn_about_unremediated_plaintext(
+    monkeypatch, captured, caplog, tmp_path
+):
+    """The fix stops new plaintext; it does not purge old.
+
+    An unencrypted record is returned as-is rather than rejected, so a store
+    that survived a pre-fix build keeps serving it. Only persistent backends can
+    be holding any, so only those are warned.
+    """
+    _install_fake_valkey(monkeypatch)
+    _select_valkey(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    valkey_messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert _PLAINTEXT_PURGE_HINT in valkey_messages
+
+    caplog.clear()
+    captured.clear()
+    monkeypatch.delenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", raising=False)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "disk")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert _PLAINTEXT_PURGE_HINT in "\n".join(
+        record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("backend", ["memory", ""])
+def test_non_persistent_backends_do_not_warn_about_plaintext(
+    monkeypatch, captured, caplog, backend
+):
+    """Nothing survives a restart in these, so the warning would be noise.
+
+    ``""`` is the unset case, where FastMCP builds its own default store.
+    """
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", backend)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert _PLAINTEXT_PURGE_HINT not in messages
+
+
+def test_no_plaintext_warning_when_the_valkey_store_was_not_built(
+    monkeypatch, captured, caplog
+):
+    """Valkey requested but unavailable: there is no persistent store to purge."""
+    monkeypatch.setitem(sys.modules, VALKEY_MODULE, None)
+    _select_valkey(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert captured["client_storage"] is None
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert _PLAINTEXT_PURGE_HINT not in messages
+
+
 def test_external_provider_mode_says_the_store_is_not_used(
     monkeypatch, captured, caplog
 ):

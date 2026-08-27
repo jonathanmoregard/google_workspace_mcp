@@ -1066,6 +1066,20 @@ def configure_server_for_http():
                 )
             # else: client_storage remains None, FastMCP uses its default
 
+            # This fix stops NEW plaintext from being written; it does not
+            # remediate old. An unencrypted record is returned as-is by the
+            # encryption wrapper rather than rejected, so anything a pre-fix
+            # build wrote in the clear stays readable and trusted. Only a
+            # persistent backend can be holding any, so only those are told.
+            if client_storage is not None and (use_valkey or use_disk):
+                logger.warning(
+                    "OAuth 2.1: if this deployment ever ran a build from before the client_storage "
+                    "fail-open fix, its persistent store may hold OAuth client records written "
+                    "unencrypted. Those are still read and trusted, not rejected. Purge the "
+                    "configured client-storage backend to be certain; the only cost is that "
+                    "dynamically registered clients re-register."
+                )
+
             # Ensure JWT signing key is always derived for all storage backends
             if "jwt_signing_key" not in locals():
                 jwt_signing_key = validate_and_derive_jwt_key(

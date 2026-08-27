@@ -62,6 +62,8 @@ def test_origin_validation_rejects_untrusted_browser_origin(monkeypatch):
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
             get_allowed_origins=lambda: ["http://localhost:8000"],
+            get_custom_allowed_origins=lambda: [],
+            base_url="http://localhost:8000",
             external_url=None,
         ),
     )
@@ -101,6 +103,8 @@ def test_origin_validation_allows_configured_external_origin(monkeypatch):
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
             get_allowed_origins=lambda: ["http://localhost:8000"],
+            get_custom_allowed_origins=lambda: [],
+            base_url="http://localhost:8000",
             external_url="https://workspace.example.com/mcp",
         ),
     )
@@ -135,6 +139,8 @@ def test_origin_validation_trusts_any_vscode_webview_origin(monkeypatch):
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
             get_allowed_origins=lambda: ["http://localhost:8000"],
+            get_custom_allowed_origins=lambda: [],
+            base_url="http://localhost:8000",
             external_url=None,
         ),
     )
@@ -187,6 +193,8 @@ def test_origin_validation_allows_same_origin_request(monkeypatch):
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
             get_allowed_origins=lambda: ["http://localhost:8000"],
+            get_custom_allowed_origins=lambda: [],
+            base_url="http://localhost:8000",
             external_url="https://app.example.com",
         ),
     )

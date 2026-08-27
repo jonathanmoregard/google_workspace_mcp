@@ -29,13 +29,29 @@ from starlette.testclient import TestClient
 from core.server import OriginValidationMiddleware
 
 
-def _configure(monkeypatch, *, allowed_origins, external_url=None, oauth21=False):
+def _configure(
+    monkeypatch,
+    *,
+    allowed_origins,
+    external_url=None,
+    oauth21=False,
+    base_url="http://localhost:8000",
+):
+    """Stub the config surface the middleware actually reads.
+
+    ``get_custom_allowed_origins`` is the operator-supplied list; the Host
+    allowlist is built from that plus base_url and external_url, and
+    deliberately NOT from ``get_allowed_origins``, which also carries hardcoded
+    browser-client origins that are not this deployment's own names.
+    """
     monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: oauth21)
     monkeypatch.setattr(
         "auth.oauth_config.get_oauth_config",
         lambda: SimpleNamespace(
-            get_allowed_origins=lambda: list(allowed_origins),
+            get_allowed_origins=lambda: [base_url, *allowed_origins],
+            get_custom_allowed_origins=lambda: list(allowed_origins),
             external_url=external_url,
+            base_url=base_url,
         ),
     )
 

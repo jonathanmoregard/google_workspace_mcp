@@ -159,9 +159,17 @@ def _configured_hostnames() -> set[str]:
 
     hostnames = {host.lower() for host in _LOOPBACK_HOSTS}
     config = get_oauth_config()
-    candidates = list(config.get_allowed_origins())
+    # Deliberately NOT get_allowed_origins(): that answers "which browser
+    # origins may talk to us", and hardcodes https://vscode.dev and
+    # https://github.dev. Those are other people's hosts, never names this
+    # deployment serves on, and harvesting them here put them in the
+    # anti-rebinding Host allowlist — `Host: vscode.dev` passed on every
+    # deployment. This answers the different question "which names do we
+    # answer on", so it takes only the operator-supplied origins.
+    candidates = [config.base_url]
     if config.external_url:
         candidates.append(config.external_url)
+    candidates.extend(config.get_custom_allowed_origins())
     for candidate in candidates:
         parsed = _parse_url(candidate)
         if parsed is None:
@@ -219,6 +227,21 @@ def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
     return parsed.hostname == host.hostname and origin_port == host_port
 
 
+def _sole_header(
+    raw_headers: List[tuple[bytes, bytes]], name: bytes
+) -> tuple[Optional[str], bool]:
+    """Return ``(first value, was it repeated)`` for one raw ASGI header.
+
+    FIRST, not last, because that is what Starlette's ``request.headers.get``
+    returns — the guard and the application must read the same bytes. The
+    repeat flag is reported rather than resolved: see the caller.
+    """
+    found = [value for key, value in raw_headers if key == name]
+    if not found:
+        return None, False
+    return found[0].decode("latin-1"), len(found) > 1
+
+
 def _refuse_request(
     origin: Optional[str], host_header: Optional[str]
 ) -> Optional[tuple[str, str]]:
@@ -265,13 +288,27 @@ class OriginValidationMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            headers = dict(scope.get("headers") or [])
-            raw_origin = headers.get(b"origin")
-            raw_host = headers.get(b"host")
-            refusal = _refuse_request(
-                raw_origin.decode("latin-1") if raw_origin else None,
-                raw_host.decode("latin-1") if raw_host else None,
-            )
+            raw_headers = scope.get("headers") or []
+            origin, origin_dup = _sole_header(raw_headers, b"origin")
+            host_header, host_dup = _sole_header(raw_headers, b"host")
+            if origin_dup or host_dup:
+                # A repeated Origin or Host is never legitimate, and letting one
+                # through is a full bypass rather than a nuisance: dict(headers)
+                # keeps the LAST value while Starlette's request.headers.get
+                # returns the FIRST, so the guard validated one name and the
+                # application consumed another. Measured: Host: evil.test plus
+                # Host: localhost:8000 was admitted as loopback and served to a
+                # route that saw evil.test.
+                logger.warning(
+                    "Rejected HTTP request: repeated %s header",
+                    "Origin" if origin_dup else "Host",
+                )
+                response = JSONResponse(
+                    {"error": "Malformed request headers"}, status_code=400
+                )
+                await response(scope, receive, send)
+                return
+            refusal = _refuse_request(origin, host_header)
             if refusal:
                 client_error, operator_log = refusal
                 logger.warning("%s", operator_log)

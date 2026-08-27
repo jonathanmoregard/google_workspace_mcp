@@ -5,7 +5,9 @@ code, so it points at files rather than restating them; everything below that
 is load-bearing is stated outright.
 
 Verified against the tree at commit `df64924` on branch `docs-preview`,
-2026-08-01 (rounds 1-4 of the cross-vendor review loop applied).
+2026-08-01 (rounds 1-4 of the cross-vendor review loop applied). §3.6 and the
+enrollment item in §7.2 were written against `00420aa` on branch
+`feat/multi-account-routing`, 2026-08-27.
 
 ---
 
@@ -60,10 +62,16 @@ and the thread-bearing read only exist for **enrolled projects**. Apply at
   and what `read_for_review` in `gdocs_preview/preview_read.py` relies
   on. **Caveat, stated honestly:** whether enrollment propagates per-project
   or per-account is still listed as an open UNCERTAIN item
-  (`docs/preview-api-reference.md:420`, item 3) — it has never been tested
-  with a second, non-enrolled project. Either way, the requester having org-level
-  approval does not automatically cover a *new* GCP project: register the
-  project you actually build the OAuth client in.
+  (`docs/preview-api-reference.md:443`, item 3; §7.2) — it has been tested
+  neither with a second, non-enrolled project nor with a second Google account
+  against this one. So the *wording* of that error is a claim the repo cannot
+  back. The **cached verdict** behind it deliberately makes no such claim: it
+  is keyed by `user_google_email` (`gdocs_preview/preview_status.py`) and an
+  account nothing has been observed for reads `unknown`. Per-account and
+  unknown-until-observed is the model that stays correct under either answer —
+  §3.6. Either way, the requester having org-level approval does not
+  automatically cover a *new* GCP project: register the project you actually
+  build the OAuth client in.
 - Without enrollment the server still starts and every read still answers —
   see §4.6.
 
@@ -294,6 +302,194 @@ consequence. Because the factory is instantiated three times
 `gslides/slides_tools.py:477`), this lands as `manage_document_comment`,
 `manage_spreadsheet_comment` **and** `manage_presentation_comment` at once.
 This is the obviously upstreamable piece (§8).
+
+### 3.6 More than one account on one server
+
+`list_google_accounts` — registered in `core/server.py`, tiered `docs: core`
+in `core/tool_tiers.yaml` — reports every account the credential store holds,
+which one is the default, and each one's cached Developer Preview verdict.
+**It makes no API call and never probes an account.** Probing another identity,
+even read-only, is itself an access attempt and has to be an explicit decision,
+never an implementation detail inside a resolver. It sits at the `core` tier
+rather than `extended` because a tool absent from every tier is silently
+dropped for every `--tool-tier` user, and knowing which accounts exist is a
+prerequisite for using any of them.
+
+The whole feature lives in one fork-owned module,
+[`core/account_directory.py`](core/account_directory.py) — enumeration, the
+report, the server-instructions string, the arbitrary-pick warning — so what
+upstream files carry is an import and a one-line delegation each (§5.2).
+
+**Adding a second account.**
+
+```
+start_google_auth(service_name="docs", user_google_email="other@example.com")
+```
+
+Its credentials land beside the first in the same directory, one file per
+account named from the URL-encoded address
+(`LocalDirectoryCredentialStore._get_credential_path`), resolved in the same
+order as §2.3: `WORKSPACE_MCP_CREDENTIALS_DIR`, then
+`GOOGLE_MCP_CREDENTIALS_DIR`, then `~/.google_workspace_mcp/credentials`.
+Nothing else needs configuring —
+`enumerate_accounts()` reads the store rather than any registry of its own.
+
+**Name the account explicitly, or you re-authenticate the one you have.**
+`start_google_auth`'s signature defaults `user_google_email` to
+`USER_GOOGLE_EMAIL`, *and* the `call_tool` override below injects that same
+default into any call that omits it. `start_google_auth(service_name="docs")`
+therefore runs the consent flow for the account already configured. Naming the
+new address is the whole operation.
+
+**The routing rule.** `USER_GOOGLE_EMAIL` (`core/config.py`; forced to `None`
+under OAuth 2.1) is the default, and `SecureFastMCP.call_tool` in
+`core/server.py` injects it into any call that omits `user_google_email` —
+*before* FastMCP validates arguments against the function signature, since
+pydantic would otherwise reject the call for the missing field. Switching
+accounts is therefore exactly one thing: pass `user_google_email` yourself.
+Two guards around that injection, both load-bearing:
+
+- `_tool_takes_user_email()` checks the registered signature first. Injecting
+  the default into a tool that has no such parameter is a pydantic
+  `unexpected_keyword_argument`, which would have made `list_google_accounts`
+  — which takes no arguments at all — uncallable on exactly the servers where
+  it is worth having. An unknown tool name answers `True`, so it still fails
+  the way FastMCP makes it fail.
+- In trusted-gateway mode nothing is injected and a caller-supplied
+  `user_google_email` is *dropped* rather than validated: the verified gateway
+  assertion is authoritative, and older clients may still hold the pre-gateway
+  schema.
+
+**Substitution is refused, not silently performed.** Under `--single-user`
+(`MCP_SINGLE_USER_MODE=1`, set in `main.py`), `auth.google_auth.get_credentials`
+branches on whether an email was named. Named: it loads *that* user's
+credentials from the store, and on a miss returns `None` — logging "no
+credentials for requested user …; not falling back to another user". Unnamed:
+`_find_any_credentials()` takes `users[0]`, which is the alphabetically first
+address, since `LocalDirectoryCredentialStore.list_users()` returns
+`sorted(users)`. That pick used to be silent; it now goes through
+`warn_on_arbitrary_account_pick()`, which names every account found, names the
+one it bound, and says `USER_GOOGLE_EMAIL` pins it. Silent for zero or one
+account, where nothing about the choice is arbitrary.
+
+**Why there is no automatic fallback.** The obvious feature — 404 under one
+account, retry under the next — is refused on two independent grounds, either
+of which is sufficient alone.
+
+*The trigger is unreliable by construction.* Google documents `404 notFound`
+as covering **both** "the user does not have read access to the file" **and**
+"the file does not exist"
+(<https://developers.google.com/workspace/drive/api/guides/handle-errors>).
+Nothing in the response separates the two. A fallback keyed on that error
+cannot tell a document that another identity really can read from a document
+id with a typo in it — and on the typo it does not fail fast, it walks every
+credential in the wallet, turning one mistyped character into an enumeration
+sweep across identities. The cost grows with the number of accounts held,
+which is the wrong direction for a feature whose entire purpose is holding
+several.
+
+*A retried write cannot be taken back.* Comments and edit suggestions are
+authored **as** the account and are visible to everyone else with the document
+— §3.1: both thread-write tools return the stored object carrying its
+`author`, which is exactly the field a reader sees. A retry under a second
+identity permanently attributes a comment or suggestion to the wrong person in
+someone else's document. Deleting it afterwards does not unsend it to anyone
+who already read it, and the owner's notification has already gone out. There
+is no post-hoc repair, so there is no tolerable error rate.
+
+So the design **surfaces the affordance and does not take the action.** The
+contract on an error path:
+
+> On a 403, a 404, or a preview verdict of `unavailable`, the error NAMES the
+> other authenticated accounts and says outright that no call was attempted
+> under any of them. Using one is a second, explicit call, with
+> `user_google_email` set — never the accounts tried in turn.
+
+`candidate_account_hint()` in `core/account_directory.py` produces that
+sentence, to be appended verbatim to an existing error message. Naming costs a
+directory listing and nothing else; attempting costs an access under an
+identity nobody chose. Four properties are worth knowing before you rely on
+it:
+
+- **401 is deliberately not in `_STATUS_HINTS`.** It means nobody is
+  authenticated for this call, not that the wrong identity was used, so the
+  fix is to re-authenticate — pointing at a second account there would invite
+  exactly the retry this feature exists to prevent.
+- **`other_accounts()` returns empty rather than guess**, in four cases: the
+  two managed-identity modes (those addresses belong to other tenants); a
+  store that could not be enumerated ("there are no other accounts" must never
+  be inferred from "the store could not be read"); a caller whose own account
+  is unknown (`handle_http_errors` substitutes `"N/A"` for a tool with no
+  `user_google_email` keyword); and a store that does not contain the caller's
+  account, where the enumeration is describing a different world from the one
+  the call ran in.
+- **It is empty with zero or one account**, so the inherited error messages
+  stay byte-identical on a single-account server.
+- The 404 variant carries the `notFound` ambiguity above, and the
+  preview-`unavailable` variant carries the §7.2 caveat — the verdict is about
+  the calling account only and says nothing about the others'.
+
+The rule is stated to the model in three further places, because it is the one
+thing an agent will otherwise do on its own initiative: `list_google_accounts`'s
+docstring ("Seeing an account here is NOT permission to use it"), the report's
+own `notes` (`_ROUTING_NOTE` and `_WRITE_NOTE`, appended only when the store
+holds more than one account), and the multi-account server instructions.
+
+**Capability is per-account and unknown-until-observed.**
+`gdocs_preview/preview_status.py` keys the Developer Preview verdict by
+`user_google_email` (§3.3), bounded to `MAX_USERS = 64` with the oldest-touched
+evicted, and `get_status()` answers `unknown` — never `unavailable` — for an
+account nothing has been recorded for. An evicted account also falls back to
+`unknown`, i.e. to re-probing, never to somebody else's verdict.
+`account_directory.preview_capability()` projects three fields from that state
+(`availability`, `source`, `checked_at`) and deliberately drops `evidence`:
+evidence is the failed call's error text, and `HttpError.__str__` embeds the
+request URI, i.e. a **document id** belonging to whichever account produced
+it.
+
+`unknown` is the honest answer while §7.2's question is open, and it is the
+cheap one under either resolution. If enrollment turns out to be per-project,
+every account on one OAuth client shares one verdict and per-account keying
+costs one redundant probe per account. If enrollment has a per-account
+component, a shared verdict is a wrong belief about an identity that was never
+tested. That asymmetry is the whole reason the key is what it is. **An
+`available` verdict for one account is not evidence about another**, and
+nothing in this repo treats it as one.
+
+**The two managed-identity modes are not enumerated at all.** In
+trusted-gateway and OAuth 2.1 multi-user mode the credential store is shared
+across principals, so `build_account_report` returns
+`store_status: not_enumerated` with an empty account list and a note saying
+why (`_managed_identity_report`). Handing one caller the other callers' email
+addresses is a cross-tenant leak, and the caller could not route to them
+anyway: the account is fixed per request by the gateway assertion or by the
+authenticated principal. Note that `_identity_mode()` labels everything else
+`single_user`, which here means *neither gateway nor OAuth 2.1* — a broader
+set than the `--single-user` flag, which is what gates the refusal branch
+above.
+
+**One account behaves exactly as before.** `build_server_instructions` emits
+the multi-account string only when the store enumerates successfully *and*
+holds more than one account. One account, zero accounts, one account that is
+not the configured default, or any store failure all yield
+`_single_account_instructions`, whose bytes a test asserts literally
+(`tests/core/test_account_directory.py::test_single_account_instructions_are_byte_identical`)
+precisely so a fork that means to stay merge-friendly cannot drift the
+single-account surface. That builder runs at **import time** — FastMCP's
+constructor needs the value — so it uses `peek_credential_store()` rather than
+the cached `get_credential_store()` (caching a store built before `main.py`
+loads `.env` would hand every later caller the wrong credentials directory),
+and absorbs every store failure rather than raising: a GCS deployment must not
+fail to start because of this feature.
+
+Enumeration also distinguishes "no accounts" from "could not read the store".
+`LocalDirectoryCredentialStore.list_users()` returns `[]` for a missing
+directory *and* for one it cannot read — it swallows `OSError` — so
+`_describe_local_directory()` looks at the directory itself before the report
+is allowed to say zero. `store_status` carries the difference (`ok`,
+`unreadable`, `unsupported`, `unavailable`, `not_enumerated`) and
+`accounts_enumerated` is the flag every absence claim rests on, the same way
+`complete` is for a read (§4.6).
 
 ---
 
@@ -843,13 +1039,65 @@ Two API facts worth carrying forward, both found twice independently:
 ### 7.2 Still open — and why
 
 - **Does preview enrollment propagate per-project or per-account?**
-  (UNCERTAIN 3.) Needs a **second GCP project that is not enrolled**, with its
-  own OAuth client and an interactive consent grant. That is a human in a
-  browser; no amount of probing from an enrolled project substitutes. What the
-  classifier work above *does* establish is that the marker strings match real
-  proto-parse errors — it does not establish what a non-enrolled project
-  returns for a recognised-but-ungated request type. The bridge between the two
-  is inference, and it is labelled as inference in the code.
+  (UNCERTAIN 3.) **Still open** — and it is two questions wearing one label,
+  with a separate experiment for each half.
+
+  *Experiment A — vary the project, hold the account fixed.* Specified in
+  `pending_for_human.md` steps 1-6: a **second GCP project that is not
+  enrolled**, with its own OAuth client and an interactive consent grant for
+  the *same* Google account. That is a human in a browser; no amount of probing
+  from an enrolled project substitutes. Same account, unenrolled project:
+  `available` ⇒ the project is not the gate; `unavailable` ⇒ it is, and the
+  classifier's documented inference becomes a measurement.
+
+  *Experiment B — vary the account, hold the project fixed.* Not previously
+  written down, and much the cheaper of the two: **one OAuth client, one GCP
+  project, two different Google accounts** — one in a Workspace org that is
+  enrolled, one that is not. Authenticate both into the same credential store
+  (§3.6), then run `check_docs_review_capabilities(probe=true, document_id=…)`
+  under each and compare the verdicts. Prerequisite: the second account has to
+  be a test user on the same consent screen (§2.2 step 3). Decision rule,
+  fixed before the data:
+
+  > Both `available` ⇒ the gate is per-project; the account is irrelevant.
+  > One `available` and one `unavailable` ⇒ there is a per-account component.
+
+  Any other pair settles nothing. In particular an `unknown` from either probe
+  means it never reached the question — §3.3's table says which outcomes those
+  are — and must be re-run, not interpreted.
+
+  *What the public documentation establishes, and what it does not* (web
+  research, 2026-08-25). Google's **Classroom** preview page states the gate as
+  a property of the project: "The calling Google Cloud project must be enrolled
+  in the Google Workspace Developer Preview Program and allow listed by Google"
+  (<https://developers.google.com/workspace/classroom/reference/preview>). The
+  **program page** ties access to Google Group membership of an individual: "If
+  your email address cannot be added to the Google Group, you won't be able to
+  access the dedicated client library, and you won't get access to some of the
+  features" (<https://developers.google.com/workspace/preview>). Neither page
+  addresses the two-accounts-one-client case, and the Docs-API-specific preview
+  page was not retrieved. **The documentation supports both readings and
+  settles neither.** That is why the repo models capability as per-account and
+  unknown-until-observed (§3.6) — the one model that is correct whichever way
+  this lands, and whose cost if it lands the other way is a redundant probe.
+
+  *The confound that makes any probe ambiguous.* The preview request types are
+  absent from the public discovery document and no label brings them back —
+  `labels=DEVELOPER_PREVIEW`, `PREVIEW`, `TRUSTED_TESTER` and
+  `LIMITED_AVAILABILITY` each return the byte-identical public document
+  ([`errors-and-discovery.md`](docs/findings/errors-and-discovery.md)). So a
+  failure can mean not-enrolled *or* a client-library / payload problem, and
+  the error text does not separate them. The same document records the related
+  case measured live: "`insertcomment` is an unknown name, not a
+  case-insensitive match — so a non-enrolled caller and a typo are
+  indistinguishable from the message alone." Run either experiment with a
+  payload already observed to work under an enrolled account, or a negative
+  result proves nothing.
+
+  What the classifier work above *does* establish is that the marker strings
+  match real proto-parse errors — it does not establish what a non-enrolled
+  project returns for a recognised-but-ungated request type. The bridge between
+  the two is inference, and it is labelled as inference in the code.
 - **The discovery type names for the two `status` enums** (UNCERTAIN 2).
   Every labelled variant (`DEVELOPER_PREVIEW`, `PREVIEW`, `TRUSTED_TESTER`,
   `LIMITED_AVAILABILITY`) returns the byte-identical public document;
@@ -932,6 +1180,7 @@ id at all).
 | how does suggesting mode work | `docs/plans/2026-07-30-suggestion-mock-spec.md` |
 | how do I get credentials | [`e2e/README.md`](e2e/README.md), `pending_for_human.md` |
 | is the preview surface reachable right now | `check_docs_review_capabilities(probe=true, document_id=…)` |
+| which accounts exist, and which one am I acting as | `list_google_accounts` (no API call), then §3.6 for the routing rule |
 
 **Never commit**: `credentials/`, `e2e/last_run.md`, `e2e/_artifacts/`,
 `llmux/runner/reports/`. All four are gitignored and contain account

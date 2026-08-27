@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from ipaddress import ip_address
 from typing import List, Optional
 from importlib import metadata
 from urllib.parse import urlparse, ParseResult
@@ -147,11 +148,11 @@ def _is_origin_allowed(origin: str) -> bool:
 
 
 def _configured_hostnames() -> set[str]:
-    """Hostnames this deployment is configured to answer on.
+    """DNS names this deployment is configured to answer on.
 
     Loopback, plus the host of every allowed origin and of the external URL.
-    This is the allowlist the Host header is checked against; see
-    :func:`_is_same_origin_as_host` for why that check has to exist.
+    This is the allowlist a *name* in the Host header is checked against — an
+    IP literal never reaches it, see :func:`_is_configured_host`.
     """
     # Local import, matching _get_allowed_http_origins: the module-level name
     # is bound at import time, and the config is reloaded after .env is read.
@@ -181,7 +182,10 @@ def _configured_hostnames() -> set[str]:
 
 
 def _is_configured_host(host_header: Optional[str]) -> bool:
-    """Does the Host header name a hostname this deployment answers on?
+    """Is this Host header one the deployment may answer? Absent or malformed: no.
+
+    An IP literal is allowed unconditionally; a DNS name must be one this
+    deployment is configured to answer on.
 
     This is the check that stops DNS rebinding, and it has to run on EVERY
     request. Rebinding serves the attacker's page from a name that later
@@ -191,13 +195,42 @@ def _is_configured_host(host_header: Optional[str]) -> bool:
     no ``Origin`` at all, which is precisely the shape an Origin-gated check
     never inspects. ``Host`` is present on every HTTP/1.1 request and on every
     HTTP/2 ``:authority``, so it is the only header that can carry this.
+
+    The IP-literal carve-out is not a convenience: **rebinding requires a
+    name.** The attacker's only lever is a DNS record, and the browser writes
+    the authority it was asked for into ``Host``, so ``Host: 10.42.0.7:8000``
+    means no name was resolved and nothing was rebound. Insisting on the
+    allowlist there refuses only requests that were never the threat — a
+    kubelet dialling the pod IP for ``/health``, a LAN client reaching a server
+    bound to ``0.0.0.0`` by address. Vite reached the same conclusion and
+    allows every IP-literal Host by default (``server.allowedHosts``); Jupyter
+    allows only loopback literals, which is the same idea drawn tighter and is
+    the friction that pushes its users to switch the check off entirely.
+
+    It takes every IP, not just loopback and RFC1918: IPv6 clusters hand pods
+    globally routable addresses. What it does NOT do is condition enforcement
+    on the bind address — reachability is not name authorization, and the bind
+    here defaults to ``0.0.0.0`` (``main.py``), so that design would ship with
+    the guard off.
     """
     if not host_header:
         return False
     parsed = _parse_url(f"//{host_header}")
     if parsed is None or not parsed.hostname:
         return False
-    return parsed.hostname.lower() in _configured_hostnames()
+    hostname = parsed.hostname.lower()
+    try:
+        # urlparse has already stripped the brackets from an IPv6 authority,
+        # and ip_address keeps a zone id (fe80::1%eth0) — still a literal, so
+        # still not something a name could have been rebound to. It is strict
+        # about everything else: 2130706433, 0x7f000001 and 010.0.0.1 all raise
+        # and fall through to the allowlist as the names they are, which is
+        # what keeps the carve-out from becoming a spelling contest.
+        ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    return hostname in _configured_hostnames()
 
 
 def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
@@ -249,9 +282,10 @@ def _refuse_request(
 
     Two checks, and this used to be only the second:
 
-    * the ``Host`` must name a hostname this deployment answers on, on every
-      request — see :func:`_is_configured_host` for why an Origin-gated check
-      cannot cover the requests DNS rebinding actually produces;
+    * the ``Host`` must be an IP literal, or a DNS name this deployment answers
+      on, on every request — see :func:`_is_configured_host` for why an
+      Origin-gated check cannot cover the requests DNS rebinding actually
+      produces, and why an IP literal is never one of them;
     * an ``Origin``, when present, must be allowlisted or be the Host itself.
 
     The two messages differ on purpose. The refusal an operator is most likely
@@ -262,7 +296,7 @@ def _refuse_request(
     if not _is_configured_host(host_header):
         return (
             "Host not allowed",
-            f"Rejected HTTP request: Host {host_header!r} is not a hostname this "
+            f"Rejected HTTP request: Host {host_header!r} is not a name this "
             f"deployment is configured to answer on. If this deployment really "
             f"serves that name, add it to OAUTH_ALLOWED_ORIGINS or set "
             f"WORKSPACE_EXTERNAL_URL.",
@@ -281,7 +315,11 @@ def _refuse_request(
 
 
 class OriginValidationMiddleware:
-    """Reject HTTP requests this deployment is not configured to serve."""
+    """Reject HTTP requests this deployment is not configured to serve.
+
+    Every request's ``Host`` must be an IP literal or a configured DNS name,
+    and an ``Origin``, when present, must be allowlisted or be the Host itself.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

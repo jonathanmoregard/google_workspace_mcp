@@ -67,15 +67,15 @@ def _allow_insecure_transport_for_local_redirect(redirect_uri: str) -> None:
     variable goes through this helper so the two OAuth halves (starting the flow
     and handling the callback) cannot drift apart.
 
-    The operator's own setting still wins over the loopback auto-grant, but it
-    now wins by what it *means* rather than by being present: normalising first
-    is what stops an explicit ``"0"`` from reading as "off" to the operator and
-    as "on" to oauthlib.
+    An operator who turned the flag on still wins over this grant, and now wins
+    by what the value *means* rather than by the variable merely being present:
+    normalising first is what stops an explicit ``"0"`` from reading as "off"
+    to the operator and as "on" to oauthlib. Turning it off leaves the process
+    exactly as if it had never been set, so a loopback redirect is still
+    granted here — declining the global bypass is not a request to break local
+    development, and a loopback redirect cannot use HTTPS anyway.
     """
     if normalize_insecure_transport_env():
-        return
-    if INSECURE_TRANSPORT_ENV_VAR in os.environ:
-        # Normalised to "", i.e. the operator asked for the requirement to stand.
         return
     if not ("localhost" in redirect_uri or "127.0.0.1" in redirect_uri):
         return

@@ -156,7 +156,7 @@
     "OAUTHLIB_INSECURE_TRANSPORT": {
       "type": "boolean",
       "title": "OAuth Insecure Transport",
-      "description": "Allow OAuth over plain HTTP. Leave off: a localhost redirect URI already relaxes this automatically, and turning it on removes the HTTPS requirement from every OAuth exchange in the process, including a public deployment's",
+      "description": "Allow OAuth over plain HTTP for every exchange in the process, a public deployment's included. Leave off unless you know you need it: a localhost redirect URI is already granted this automatically when the flow starts, so local development works with this off",
       "required": false,
       "default": false
     },

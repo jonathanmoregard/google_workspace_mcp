@@ -34,6 +34,19 @@ from core.env_flags import (
     normalize_insecure_transport_env,
 )
 
+# main is imported here, at collection, rather than lazily inside the banner
+# helper. Its module body runs load_dotenv(), so deferring it to the first test
+# that happens to need a banner row let a developer .env repopulate the variable
+# *after* the autouse fixture had cleared it — which test ran first then decided
+# whether the suite passed. Importing once up front puts that side effect before
+# every fixture. Modes are pinned first for the same reason
+# tests/core/test_env_flags.py pins them: OAuth 2.1 changes tool schemas at
+# decoration time, so neither module's import may be steered by a local .env.
+os.environ.setdefault("MCP_ENABLE_OAUTH21", "false")
+os.environ.setdefault("WORKSPACE_MCP_STATELESS_MODE", "false")
+
+import main  # noqa: E402
+
 _ENV_VAR = "OAUTHLIB_INSECURE_TRANSPORT"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -166,19 +179,57 @@ def test_helper_does_not_override_explicit_operator_setting(value, monkeypatch):
 
 
 @pytest.mark.parametrize("value", _FALSEY_VALUES)
-def test_helper_honours_an_explicit_off_even_on_loopback(value, monkeypatch):
+def test_falsey_value_does_not_lift_https_on_a_public_redirect(value, monkeypatch):
     """A value that reads as off must switch the bypass off, not on.
 
-    This is the defect: the helper returned early on *presence* of the variable
-    and left the operator's ``"0"`` in place, where oauthlib read it as a
-    non-empty string and stopped requiring HTTPS. Setting it explicitly is now
-    the only way to decline the loopback auto-grant, so it has to be honoured
-    here rather than overwritten.
+    This is the defect: the helper returned early on *presence* of the
+    variable and left the operator's ``"0"`` in place, where oauthlib read it
+    as a non-empty string and stopped requiring HTTPS for the whole process.
+    """
+    monkeypatch.setenv(_ENV_VAR, value)
+    _allow_insecure_transport_for_local_redirect(
+        "https://mcp.example.com/oauth2callback"
+    )
+    assert not insecure_transport_bypass_active()
+    assert _https_enforced()
+    assert _ENV_VAR not in os.environ
+
+
+@pytest.mark.parametrize("value", _FALSEY_VALUES)
+def test_falsey_value_still_leaves_loopback_development_working(value, monkeypatch):
+    """Declining the global bypass must not break local OAuth.
+
+    Turning the flag off means "do not lift the HTTPS requirement globally".
+    It is not a request to break a loopback redirect, which cannot use HTTPS
+    and would just fail. So a falsey value has to leave the process exactly as
+    an unset one does, and the loopback grant still applies.
+
+    Regression: an earlier revision normalised falsey to the empty string to
+    record "the operator declined". The helper's presence check then returned
+    before the loopback branch, and stdio OAuth against http://localhost died
+    with InsecureTransportError for anyone who wrote ``=0`` meaning off.
     """
     monkeypatch.setenv(_ENV_VAR, value)
     _allow_insecure_transport_for_local_redirect("http://localhost:8000/oauth2callback")
-    assert not insecure_transport_bypass_active()
-    assert _https_enforced()
+    assert os.environ.get(_ENV_VAR) == "1"
+    assert not _https_enforced()
+
+
+@pytest.mark.parametrize("substituted", ["false", "", "0"])
+def test_manifest_substitution_of_a_declined_toggle_keeps_local_auth_working(
+    substituted, monkeypatch
+):
+    """Whatever a bundler substitutes for a declined boolean toggle, stdio works.
+
+    ``manifest.json`` offers this flag as a boolean user_config and passes it
+    through as ``"${user_config.OAUTHLIB_INSECURE_TRANSPORT}"``. We could not
+    establish from here whether the bundler omits the key or substitutes a
+    literal for a false value, so the behaviour must not depend on the answer:
+    every plausible substitution has to leave the loopback grant intact.
+    """
+    monkeypatch.setenv(_ENV_VAR, substituted)
+    _allow_insecure_transport_for_local_redirect("http://localhost:8000/oauth2callback")
+    assert os.environ.get(_ENV_VAR) == "1"
 
 
 @pytest.mark.asyncio
@@ -285,9 +336,10 @@ def test_normalise_turns_a_falsey_value_into_a_real_off(value, monkeypatch):
 
     assert normalize_insecure_transport_env() is False
     assert _https_enforced()
-    # Kept present-but-empty rather than deleted, so the loopback guard can
-    # still tell "operator declined" from "operator said nothing".
-    assert os.environ[_ENV_VAR] == ""
+    # Removed, not blanked: off has to leave the process indistinguishable from
+    # never having set it, or the loopback grant reads it as an operator veto.
+    # It also stops a stale "0" reaching a child process, where it reads as on.
+    assert _ENV_VAR not in os.environ
 
 
 @pytest.mark.parametrize("value", _TRUTHY_VALUES)
@@ -317,17 +369,18 @@ def test_normalise_fails_closed_and_loudly_on_an_unrecognised_value(
         assert normalize_insecure_transport_env() is False
 
     assert _https_enforced()
-    assert os.environ[_ENV_VAR] == ""
+    assert _ENV_VAR not in os.environ
     assert any("treu" in record.getMessage() for record in caplog.records)
 
 
-def test_normalise_is_idempotent(monkeypatch):
-    monkeypatch.setenv(_ENV_VAR, "0")
-    normalize_insecure_transport_env()
-    first = os.environ[_ENV_VAR]
+@pytest.mark.parametrize("value", _FALSEY_VALUES + _TRUTHY_VALUES)
+def test_normalise_is_idempotent(value, monkeypatch):
+    monkeypatch.setenv(_ENV_VAR, value)
+    first_result = normalize_insecure_transport_env()
+    first_state = os.environ.get(_ENV_VAR, "<absent>")
 
-    assert normalize_insecure_transport_env() is False
-    assert os.environ[_ENV_VAR] == first
+    assert normalize_insecure_transport_env() is first_result
+    assert os.environ.get(_ENV_VAR, "<absent>") == first_state
 
 
 # --------------------------------------------------------------------------
@@ -336,10 +389,6 @@ def test_normalise_is_idempotent(monkeypatch):
 
 
 def _banner_row(name: str) -> tuple[str, str, str]:
-    # Imported lazily: main's module body loads .env and settles OAuth 2.1 mode
-    # at decoration time, which must not happen merely by collecting this file.
-    import main
-
     rows = {row[0]: row for row in main.describe_mode_config()}
     return rows[name]
 

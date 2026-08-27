@@ -75,10 +75,18 @@ def normalize_insecure_transport_env() -> bool:
     """Make ``OAUTHLIB_INSECURE_TRANSPORT`` mean what its value says.
 
     Reads the variable with the strict parser and rewrites it to a form oauthlib
-    reads the same way a human does: ``"1"`` when it is on, the empty string
-    when it is off. Empty rather than deleted, because "the operator declined"
-    and "the operator said nothing" are different — only the latter may be
-    overridden by the loopback auto-grant in ``auth.google_auth``.
+    reads the same way a human does: ``"1"`` when it is on, and *removed* when
+    it is off, since oauthlib's only question is whether the string is
+    non-empty.
+
+    Removed rather than left present-and-empty. The flag's sole meaning is
+    "lift the HTTPS requirement", so declining it means "do not lift it
+    globally" — it is not a request to break a loopback redirect, which cannot
+    use HTTPS in the first place and would simply fail. Turning it off
+    therefore leaves the process in the same state as never having set it, and
+    ``auth.google_auth``'s loopback grant still applies. Removing it also stops
+    a stale ``"0"`` being inherited by any child process, where it would read
+    as on.
 
     An unrecognised value fails closed: a typo in a flag that disables a
     transport-security check must not be the thing that disables it. The value
@@ -101,5 +109,8 @@ def normalize_insecure_transport_env() -> bool:
         )
         enabled = False
 
-    os.environ[INSECURE_TRANSPORT_ENV_VAR] = "1" if enabled else ""
+    if enabled:
+        os.environ[INSECURE_TRANSPORT_ENV_VAR] = "1"
+    else:
+        del os.environ[INSECURE_TRANSPORT_ENV_VAR]
     return enabled

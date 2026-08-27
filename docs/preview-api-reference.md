@@ -160,15 +160,20 @@ SUGGEST-mode batch:
 - `updateDocumentTabProperties`
 - `updateTableColumnProperties`
 
-### Additional exclusions (overlay decision, unverified)
+### Additional exclusions — REFUTED (2026-08-02, live API)
 
 The 8 preview comment/suggestion **thread operations** documented above
 (`insertComment`, `addCommentReply`, `updateCommentPost`, `deleteComment`,
 `deleteCommentReply`, `acceptSuggestion`, `rejectSuggestion`,
 `deleteSuggestion`) were also treated as SUGGEST-incompatible: they act on
 threads directly and are not content edits, so SUGGEST write mode does not
-apply to them. This was a codegen-overlay design decision, **not verified
-against the live preview API**.
+apply to them. This was a codegen-overlay design decision, never verified
+against the live preview API — **and it is wrong.** All eight return HTTP 200
+with `commentUpdateState: ALL_SAVED` inside a `writeMode: SUGGEST` batch, and
+they take effect. Only the 8 *officially* unsupported request types listed
+above are refused. `mockdocs` was rejecting batches prod accepts and has been
+fixed; see item 5 under "Open UNCERTAIN items" and
+[`suggest-semantics.md`](findings/suggest-semantics.md).
 
 ### Partial support
 
@@ -435,15 +440,55 @@ Four of the five original items were settled against the live API on
    name one. The **values** are confirmed live: `CommentThread.status`
    OPEN→RESOLVED→OPEN, `SuggestionThread.status` OPEN→ACCEPTED/REJECTED.
    ([`errors-and-discovery.md`](findings/errors-and-discovery.md))
-3. **STILL OPEN: per-project or per-account enrollment.** Needs a second,
-   non-enrolled GCP project with its own OAuth client and an interactive
-   consent grant — a human in a browser. Related but distinct, and now
-   answered: the classifier's marker strings were validated against real
-   proto-parse errors, and a second grammar (`Invalid value at 'P' (TYPE),
-   "V"`) that carried none of them was found falling through to `available`
-   and is now classified `("unknown", "request_not_parsed")`. That validates
-   the markers; it does not establish what a non-enrolled project returns for
-   a recognised-but-ungated request type.
+3. **STILL OPEN: per-project or per-account enrollment.** Two questions under
+   one label, with one experiment each. Neither has been run.
+
+   **A — vary the project, hold the account fixed.** A second, non-enrolled
+   GCP project with its own OAuth client and an interactive consent grant for
+   the same Google account: a human in a browser. Specified step by step in
+   `pending_for_human.md`. `available` ⇒ the project is not the gate;
+   `unavailable` ⇒ it is.
+
+   **B — vary the account, hold the project fixed.** One OAuth client, one GCP
+   project, two Google accounts — one in an enrolled Workspace org, one not,
+   both authenticated into the same credential store and both test users on
+   the consent screen. Run `check_docs_review_capabilities(probe=true,
+   document_id=…)` under each and compare. Decision rule, fixed in advance:
+   **both `available` ⇒ the gate is per-project and the account is irrelevant;
+   one `available` and one `unavailable` ⇒ there is a per-account component.**
+   Any other pair settles nothing; an `unknown` from either probe means it
+   never reached the question and must be re-run, not read.
+
+   **What the public documentation says** (retrieved 2026-08-25): the
+   Classroom preview page gates on the project — "The calling Google Cloud
+   project must be enrolled in the Google Workspace Developer Preview Program
+   and allow listed by Google"
+   (<https://developers.google.com/workspace/classroom/reference/preview>) —
+   while the program page gates on the individual: "If your email address
+   cannot be added to the Google Group, you won't be able to access the
+   dedicated client library, and you won't get access to some of the features"
+   (<https://developers.google.com/workspace/preview>). Neither addresses the
+   two-accounts-one-client case; the Docs-specific preview page was not
+   retrieved. The documentation supports both readings and settles neither, so
+   the repo keys its verdict by `user_google_email` and reports `unknown`
+   until observed — correct under either answer (HANDOVER §3.6).
+
+   **Confound.** The preview request types are absent from the public
+   discovery document and no label restores them (`labels=DEVELOPER_PREVIEW` /
+   `PREVIEW` / `TRUSTED_TESTER` / `LIMITED_AVAILABILITY` all return the
+   byte-identical public document), so a failure can mean not-enrolled *or* a
+   client/payload problem: `insertcomment` is an unknown name, not a
+   case-insensitive match, and a non-enrolled caller and a typo are
+   indistinguishable from the message alone. Probe with a payload already
+   observed to work under an enrolled account.
+
+   Related but distinct, and now answered: the classifier's marker strings
+   were validated against real proto-parse errors, and a second grammar
+   (`Invalid value at 'P' (TYPE), "V"`) that carried none of them was found
+   falling through to `available` and is now classified `("unknown",
+   "request_not_parsed")`. That validates the markers; it does not establish
+   what a non-enrolled project returns for a recognised-but-ungated request
+   type.
    ([`errors-and-discovery.md`](findings/errors-and-discovery.md))
 4. ~~Tab attribution on the thread arrays~~ — **RESOLVED. No thread object
    carries any tab field.** `suggestions[]` keys are exactly `{headPost,

@@ -8,6 +8,7 @@ import sys
 from functools import partial
 from importlib import metadata, import_module
 from dotenv import load_dotenv
+from core.env_flags import parse_bool_env
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
 
 # Prevent any stray startup output on macOS (e.g. platform identifiers) from
@@ -33,7 +34,12 @@ def _load_startup_dependencies():
         install_noisy_log_filters,
     )
     from core.utils import check_credentials_directory_permissions
-    from core.server import server, set_transport_mode, configure_server_for_http
+    from core.server import (
+        server,
+        set_transport_mode,
+        configure_server_for_http,
+        refresh_server_instructions,
+    )
     from core.tool_tier_loader import resolve_tools_from_tier
     from core.tool_registry import (
         set_enabled_tools as set_enabled_tool_names,
@@ -55,6 +61,7 @@ def _load_startup_dependencies():
         server,
         set_transport_mode,
         configure_server_for_http,
+        refresh_server_instructions,
         resolve_tools_from_tier,
         set_enabled_tool_names,
         wrap_server_tool_method,
@@ -76,6 +83,7 @@ def _load_startup_dependencies():
     server,
     set_transport_mode,
     configure_server_for_http,
+    refresh_server_instructions,
     resolve_tools_from_tier,
     set_enabled_tool_names,
     wrap_server_tool_method,
@@ -94,6 +102,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 reload_oauth_config()
+
+# core.server built its instructions string while it was being imported above,
+# which is before load_dotenv() ran. Rebuild it now that .env and the OAuth
+# config are in effect, so a mode flag or credentials directory that lives only
+# in .env reaches the guard deciding whether to name other accounts. This is
+# still long before server.run() opens a transport, so no client can have read
+# the import-time value.
+refresh_server_instructions()
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -306,9 +322,19 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
 
 
 def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
-    """Describe a boolean env var as a (label, value, state) display row."""
+    """Describe a boolean env var as a (label, value, state) display row.
+
+    Parsed with the one shared parser so the banner can never claim a flag is
+    on while the code reading it treats it as off.
+    """
     value = os.getenv(name, "false")
-    if value.strip().lower() not in {"true", "1", "yes"}:
+    try:
+        enabled = parse_bool_env(value)
+    except ValueError:
+        # Neither on nor off. Rendering a typo as "off" is how a flag silently
+        # fails to take effect, which is exactly what this row exists to catch.
+        return name, f"{value} · unrecognised", "warn"
+    if not enabled:
         return name, value, "off"
     return name, value, "warn" if warn_when_true else "on"
 
@@ -688,6 +714,11 @@ def main():
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     tools_removed = filter_server_tools(server)
 
+    # Rebuild the instructions now that tool selection is final. The call at
+    # module scope ran before --tools / --tool-tier were parsed, so it could
+    # still name list_google_accounts in a configuration that just dropped it.
+    refresh_server_instructions()
+
     ui.section("Services")
     ui.grid([(SERVICE_ICONS.get(t, "🔧"), t.title()) for t in loaded])
     ui.blank()
@@ -717,8 +748,9 @@ def main():
 
     # Set global single-user mode flag
     if args.single_user:
-        # Check for incompatible OAuth 2.1 mode
-        if os.getenv("MCP_ENABLE_OAUTH21", "false").lower() == "true":
+        # Check for incompatible OAuth 2.1 mode. Read through the OAuth config
+        # rather than re-parsing the env var, like the two checks below it.
+        if get_oauth_config().is_oauth21_enabled():
             ui.step(
                 "Single-user mode is incompatible with OAuth 2.1 mode", state="fail"
             )

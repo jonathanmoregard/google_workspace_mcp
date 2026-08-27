@@ -52,6 +52,11 @@ from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
+from core.account_directory import (
+    HINT_PREVIEW_UNAVAILABLE,
+    candidate_account_hint,
+    capabilities_tool_available,
+)
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
 from gdocs_preview import preview_status, review_page, suggestion_ledger
@@ -1343,11 +1348,32 @@ async def _execute_preview_batch_update(
             user_google_email=user_google_email,
         )
         if (availability, reason) == ("unavailable", "not_enrolled"):
+            # The verdict just recorded for THIS account is ``unavailable``.
+            # Name the other authenticated accounts as candidates -- and say
+            # that nothing was attempted under them. Empty string unless there
+            # really is another account, so single-account output is unchanged.
+            # State only what was observed. Saying "enrollment for the
+            # authenticated project" resolved by assertion a question that is
+            # genuinely open -- whether Developer Preview enrollment follows the
+            # Cloud project or the account is undocumented for the
+            # two-accounts-one-OAuth-client case -- and it contradicted the
+            # candidate hint appended one line below, which says so.
+            # The verify sentence is conditional for the same reason the
+            # account-directory notes are: check_docs_review_capabilities is
+            # tiered docs_preview:extended, so --tool-tier core drops it while
+            # these write tools stay. No file path either -- an agent on the
+            # other side of MCP cannot read this server's disk.
+            verify = (
+                " Verify with check_docs_review_capabilities(probe=true)."
+                if capabilities_tool_available()
+                else ""
+            )
             raise UserInputError(
-                f"{tool_name} requires Google Workspace Developer Preview "
-                f"enrollment for the authenticated project. Enrollment steps: "
-                f"pending_for_human.md. Verify with "
-                f"check_docs_review_capabilities(probe=true)."
+                f"{tool_name} needs Google Workspace Developer Preview access, and "
+                f"the preview request was rejected as not enrolled for "
+                f"{user_google_email}."
+                + verify
+                + candidate_account_hint(user_google_email, HINT_PREVIEW_UNAVAILABLE)
             ) from error
         raise
     preview_status.record(

@@ -14,6 +14,8 @@ from threading import RLock
 from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
 
+from core.env_flags import parse_bool_env
+
 
 _ASYMMETRIC_JWT_ALGORITHM_FAMILIES = {
     "ES": frozenset({"ES256", "ES256K", "ES384", "ES512", "ES521"}),
@@ -61,16 +63,27 @@ class OAuthConfig:
     """
 
     def __init__(self):
-        # Base server configuration
-        self.base_uri = os.getenv("WORKSPACE_MCP_BASE_URI", "http://localhost")
+        # Base server configuration.
+        #
+        # `or` rather than getenv's default, because a SET-BUT-EMPTY variable is
+        # not an unset one and getenv hands back the "". The Helm chart ships
+        # exactly that (helm-chart/workspace-mcp/values.yaml:100, :104), which
+        # made base_url the nonsense ":8000" — a value with no hostname, so it
+        # contributed nothing to any origin or Host allowlist built from it.
+        self.base_uri = os.getenv("WORKSPACE_MCP_BASE_URI") or "http://localhost"
         if os.getenv("WORKSPACE_MCP_RESOLVED_PORT") == "1":
-            self.port = int(os.getenv("WORKSPACE_MCP_PORT", os.getenv("PORT", "8000")))
+            self.port = int(
+                os.getenv("WORKSPACE_MCP_PORT") or os.getenv("PORT") or "8000"
+            )
         else:
-            self.port = int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", "8000")))
+            self.port = int(
+                os.getenv("PORT") or os.getenv("WORKSPACE_MCP_PORT") or "8000"
+            )
         self.base_url = f"{self.base_uri}:{self.port}"
 
-        # External URL for reverse proxy scenarios
-        self.external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
+        # External URL for reverse proxy scenarios. Same treatment: the chart
+        # ships this empty, and "" must read as absent, not as a configured URL.
+        self.external_url = os.getenv("WORKSPACE_EXTERNAL_URL") or None
 
         # OAuth client configuration
         self.client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
@@ -84,17 +97,15 @@ class OAuthConfig:
         self.brand_website_url = os.getenv("WORKSPACE_MCP_BRAND_WEBSITE_URL")
 
         # OAuth 2.1 configuration
-        self.oauth21_enabled = (
-            os.getenv("MCP_ENABLE_OAUTH21", "false").lower() == "true"
-        )
+        self.oauth21_enabled = parse_bool_env(os.getenv("MCP_ENABLE_OAUTH21"))
         self.pkce_required = self.oauth21_enabled  # PKCE is mandatory in OAuth 2.1
         self.supported_code_challenge_methods = (
             ["S256", "plain"] if not self.oauth21_enabled else ["S256"]
         )
 
         # External OAuth 2.1 provider configuration
-        self.external_oauth21_provider = (
-            os.getenv("EXTERNAL_OAUTH21_PROVIDER", "false").lower() == "true"
+        self.external_oauth21_provider = parse_bool_env(
+            os.getenv("EXTERNAL_OAUTH21_PROVIDER")
         )
         if self.external_oauth21_provider and not self.oauth21_enabled:
             raise ValueError(
@@ -111,8 +122,8 @@ class OAuthConfig:
         # Credentials are still the legacy per-user Google grants (keyed by email); the asserted
         # identity just selects/locks which user's grant a request may use (true per-user isolation).
         # Defaults target Pomerium; override the header/algorithm for other providers.
-        self.trust_gateway_identity = (
-            os.getenv("TRUST_GATEWAY_IDENTITY", "false").lower() == "true"
+        self.trust_gateway_identity = parse_bool_env(
+            os.getenv("TRUST_GATEWAY_IDENTITY")
         )
         self.gateway_identity_jwks_url = (
             os.getenv("GATEWAY_IDENTITY_JWKS_URL", "").strip() or None
@@ -199,9 +210,7 @@ class OAuthConfig:
                 )
 
         # Stateless mode configuration
-        self.stateless_mode = (
-            os.getenv("WORKSPACE_MCP_STATELESS_MODE", "false").lower() == "true"
-        )
+        self.stateless_mode = parse_bool_env(os.getenv("WORKSPACE_MCP_STATELESS_MODE"))
         if self.stateless_mode and not self.oauth21_enabled:
             raise ValueError(
                 "WORKSPACE_MCP_STATELESS_MODE requires MCP_ENABLE_OAUTH21=true"
@@ -317,6 +326,30 @@ class OAuthConfig:
         # Remove duplicates while preserving order
         return list(dict.fromkeys(uris))
 
+    # Origins belonging to browser CLIENTS that may talk to this server. They
+    # are never names this deployment answers ON, so anything asking "which
+    # hostnames do we serve" must not harvest them — see
+    # core.server._configured_hostnames, whose anti-rebinding Host allowlist
+    # accepted `Host: vscode.dev` on every deployment while it did.
+    _CLIENT_ORIGINS = (
+        "vscode-webview://",
+        "https://vscode.dev",
+        "https://github.dev",
+    )
+
+    def get_custom_allowed_origins(self) -> List[str]:
+        """Operator-supplied origins only, from OAUTH_ALLOWED_ORIGINS.
+
+        Separate from :meth:`get_allowed_origins` because these are the only
+        entries an operator can vouch for as this deployment's own names.
+        """
+        custom_origins = os.getenv("OAUTH_ALLOWED_ORIGINS")
+        if not custom_origins:
+            return []
+        return [
+            origin.strip() for origin in custom_origins.split(",") if origin.strip()
+        ]
+
     def get_allowed_origins(self) -> List[str]:
         """
         Get allowed CORS origins for OAuth endpoints.
@@ -324,24 +357,9 @@ class OAuthConfig:
         Returns:
             List of allowed origins for CORS
         """
-        origins = []
-
-        # Server's own origin
-        origins.append(self.base_url)
-
-        # VS Code and development origins
-        origins.extend(
-            [
-                "vscode-webview://",
-                "https://vscode.dev",
-                "https://github.dev",
-            ]
-        )
-
-        # Custom origins from environment
-        custom_origins = os.getenv("OAUTH_ALLOWED_ORIGINS")
-        if custom_origins:
-            origins.extend([origin.strip() for origin in custom_origins.split(",")])
+        origins = [self.base_url]
+        origins.extend(self._CLIENT_ORIGINS)
+        origins.extend(self.get_custom_allowed_origins())
 
         return list(dict.fromkeys(origins))
 

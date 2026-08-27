@@ -11,7 +11,14 @@ permissions:
 jobs:
   check-maintainer-edits:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == true || github.event.pull_request.head.repo.full_name != github.repository
+    # Only "did this PR come from a different repository", which is exactly
+    # what comparing full_name against github.repository answers. The
+    # head.repo.fork clause that used to sit here asked a different question --
+    # "is the repository a fork" -- so on any fork of this project every
+    # INTERNAL pull request tripped a check meant for outside contributors,
+    # and then failed trying to post an advisory comment the default token
+    # cannot write (403 Resource not accessible by integration).
+    if: github.event.pull_request.head.repo.full_name != github.repository
 
     steps:
       - name: Check if maintainer edits are enabled
@@ -45,7 +52,11 @@ jobs:
 
   check-maintainer-edits-internal:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == false && github.event.pull_request.head.repo.full_name == github.repository
+    # The exact complement of the job above, so precisely one of the two runs
+    # on every pull request. It previously also required the repository not to
+    # be a fork, which left both jobs inapplicable to an internal PR on a fork:
+    # this one skipped while the other one ran and failed.
+    if: github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Skip check for internal PRs

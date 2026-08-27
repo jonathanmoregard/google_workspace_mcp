@@ -8,6 +8,18 @@ from starlette.testclient import TestClient
 from auth import oauth_callback_server
 
 
+def _callback_client(server):
+    """A client whose Host is one the deployment answers on.
+
+    This app carries ``OriginValidationMiddleware`` now — stdio mode serves
+    /oauth2callback and /attachments here with no other guard, which left a DNS
+    rebinding path uncovered. TestClient's default "testserver" Host is not a
+    configured hostname, so it would be refused before reaching the route.
+    Google's real redirect arrives on the loopback callback URL.
+    """
+    return TestClient(server.app, base_url="http://localhost:8000")
+
+
 class _DummyMinimalOAuthServer:
     instances = []
 
@@ -284,13 +296,29 @@ def test_oauth_callback_missing_state_fallback_follows_single_user_mode(monkeypa
 
     monkeypatch.delenv("MCP_SINGLE_USER_MODE", raising=False)
     server = oauth_callback_server.MinimalOAuthServer(8000, "http://localhost")
-    response = TestClient(server.app).get("/oauth2callback?code=code123")
+    response = _callback_client(server).get("/oauth2callback?code=code123")
 
     assert response.status_code == 200
     assert calls[-1]["allow_missing_state_fallback"] is False
 
     monkeypatch.setenv("MCP_SINGLE_USER_MODE", "1")
-    response = TestClient(server.app).get("/oauth2callback?code=code123")
+    response = _callback_client(server).get("/oauth2callback?code=code123")
 
     assert response.status_code == 200
     assert calls[-1]["allow_missing_state_fallback"] is True
+
+
+def test_the_stdio_callback_app_refuses_a_rebound_host():
+    """The stdio app is a SEPARATE ASGI app and had no origin guard at all.
+
+    It binds loopback and serves /oauth2callback and /attachments, which is
+    exactly what DNS rebinding targets: the attacker's name resolves to
+    127.0.0.1 and the browser sends that name as the Host.
+    """
+    server = oauth_callback_server.MinimalOAuthServer(8000, "http://localhost")
+
+    response = TestClient(server.app, base_url="http://evil.test").get(
+        "/oauth2callback?code=code123"
+    )
+
+    assert response.status_code == 403

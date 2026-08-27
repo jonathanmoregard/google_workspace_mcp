@@ -32,6 +32,8 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from core.email_identity import fold_email
+
 #: Substrings (lowercased) that mark a proto-parse failure, i.e. the API
 #: rejected the *request field itself* -- the caller is not enrolled in the
 #: Developer Preview, so the field does not exist for them.
@@ -136,13 +138,17 @@ _INITIAL_STATE: dict[str, Any] = {
     "checked_at": None,
 }
 
-#: Callers tracked at once, per process. Eviction is oldest-touched-first,
-#: matching :data:`gdocs_preview.suggestion_ledger.MAX_DOCUMENTS`. An evicted
-#: caller falls back to ``unknown``, i.e. to re-probing -- never to somebody
-#: else's verdict.
+#: Callers tracked at once, per process. Eviction is oldest-RECORDED-first:
+#: :func:`get_status` deliberately does not re-insert, so a read never
+#: reorders. Refreshing on read would make a probe-free capability report
+#: mutate shared state, and the cost of getting it wrong is one extra probe.
+#: (It previously said "oldest-touched-first", which a read is not.) Kept
+#: aligned with :data:`gdocs_preview.suggestion_ledger.MAX_DOCUMENTS`. An
+#: evicted caller falls back to ``unknown``, i.e. to re-probing -- never to
+#: somebody else's verdict.
 MAX_USERS = 64
 
-#: user_google_email -> state. Insertion order is the LRU order.
+#: folded user_google_email -> state. Insertion order is the eviction order.
 _states: dict[str, dict[str, Any]] = {}
 
 
@@ -199,7 +205,20 @@ def record(
     cannot say whose observation this is must not be able to file it where
     another caller will read it back as their own.
     """
-    key = user_google_email or ""
+    # Folded, so that a verdict recorded under one spelling of an address is
+    # found under any other. Two spellings of one address are one caller here,
+    # exactly as they are one account in core/account_directory.py.
+    key = fold_email(user_google_email)
+    if not key:
+        # The evidence embeds this caller's document ids. A call site that
+        # cannot say whose observation this is must not be able to file it
+        # where the next such caller reads it back as their own -- and every
+        # blank address folds to the same key, so "" is exactly that shared
+        # drawer. Refusing is the only answer that keeps the docstring true.
+        raise ValueError(
+            "user_google_email must identify a caller; refusing to record a "
+            "Developer Preview observation under an empty key."
+        )
     state = _states.pop(key, None) or dict(_INITIAL_STATE)
     state.update(
         availability=availability,
@@ -218,7 +237,7 @@ def get_status(user_google_email: str) -> dict[str, Any]:
     A caller nothing has been recorded for gets the initial ``unknown`` --
     not the last verdict some other caller happened to produce.
     """
-    state = _states.get(user_google_email or "")
+    state = _states.get(fold_email(user_google_email))
     status = dict(state) if state is not None else dict(_INITIAL_STATE)
     if status["evidence"] is not None:
         status["evidence"] = dict(status["evidence"])

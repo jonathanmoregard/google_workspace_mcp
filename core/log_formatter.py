@@ -10,6 +10,8 @@ import os
 import re
 import sys
 
+from core.env_flags import parse_bool_env
+
 
 class SuppressStatelessTransportTerminationFilter(logging.Filter):
     """Drop noisy SDK cleanup logs emitted for stateless HTTP transports."""
@@ -210,9 +212,7 @@ def configure_file_logging(logger_name: str | None = None) -> bool:
         bool: True if file logging was configured, False if skipped (stateless mode)
     """
     # Check if stateless mode is enabled
-    stateless_mode = (
-        os.getenv("WORKSPACE_MCP_STATELESS_MODE", "false").lower() == "true"
-    )
+    stateless_mode = parse_bool_env(os.getenv("WORKSPACE_MCP_STATELESS_MODE"))
 
     if stateless_mode:
         logger = logging.getLogger(logger_name)

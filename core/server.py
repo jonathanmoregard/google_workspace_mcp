@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from ipaddress import ip_address
 from typing import List, Optional
 from importlib import metadata
 from urllib.parse import urlparse, ParseResult
@@ -29,6 +30,12 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.scopes import PROTOCOL_AUTH_SCOPES, SCOPES, get_current_scopes  # noqa
+from core.account_directory import (
+    build_server_instructions,
+    render_account_report,
+    resolve_default_account,
+)
+from core.env_flags import parse_bool_env
 from core.config import (
     USER_GOOGLE_EMAIL,
     get_transport_mode,
@@ -70,22 +77,44 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
-def _normalize_parsed(parsed: ParseResult) -> Optional[str]:
-    if not parsed.scheme:
-        return None
-    if not parsed.hostname:
-        return None
+def _parse_url(value: str) -> Optional[ParseResult]:
+    """``urlparse``, with hostile input yielding None instead of ValueError.
+
+    ``urlparse`` is lazy: it accepts ``http://[evil`` without complaint and
+    raises only when ``.hostname`` or ``.port`` is read. Reading both here is
+    what lets every caller treat the result as safe, so an attacker-supplied
+    ``Origin`` or ``Host`` ends in a 403 rather than a 500 traceback.
+    """
     try:
-        port = parsed.port
+        parsed = urlparse(value)
+        _ = parsed.hostname
+        _ = parsed.port
     except ValueError:
         return None
-    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return parsed
+
+
+def _normalize_parsed(parsed: ParseResult) -> Optional[str]:
+    """Reduce a parsed URL to a comparable authority. Takes a _parse_url result."""
+    if not parsed.scheme:
+        return None
+    hostname = parsed.hostname
+    if not hostname:
+        return None
+    port = parsed.port
+    # A browser never spells the default port in an Origin, so an allowlist
+    # entry that does — ``https://x:443`` — would otherwise be permanently
+    # inert, and a legitimate cross-origin client refused for writing it out.
+    if port is not None and port == _DEFAULT_PORTS.get(parsed.scheme):
+        port = None
+    host = f"[{hostname}]" if ":" in hostname else hostname
     netloc = f"{host}:{port}" if port is not None else host
     return f"{parsed.scheme}://{netloc}"
 
 
 def _normalize_origin(origin: str) -> Optional[str]:
-    return _normalize_parsed(urlparse(origin))
+    parsed = _parse_url(origin)
+    return _normalize_parsed(parsed) if parsed is not None else None
 
 
 def _get_allowed_http_origins() -> set[str]:
@@ -105,7 +134,9 @@ def _get_allowed_http_origins() -> set[str]:
 
 
 def _is_origin_allowed(origin: str) -> bool:
-    parsed = urlparse(origin)
+    parsed = _parse_url(origin)
+    if parsed is None:
+        return False
     if parsed.scheme in TRUSTED_ORIGIN_SCHEMES:
         return True
     if parsed.hostname in _LOOPBACK_HOSTS:
@@ -116,51 +147,212 @@ def _is_origin_allowed(origin: str) -> bool:
     return normalized in _get_allowed_http_origins()
 
 
-def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
-    """Return True when the Origin's authority matches the request's Host header.
+def _configured_hostnames() -> set[str]:
+    """DNS names this deployment is configured to answer on.
 
-    A same-origin request is the server's own page calling back to the host that
-    served it, so it is never the cross-site/DNS-rebinding threat this middleware
-    guards against. Matching the Host header lets a single deployment answer on any
-    number of hostnames without enumerating each one in the allowlist.
+    Loopback, plus the host of every allowed origin and of the external URL.
+    This is the allowlist a *name* in the Host header is checked against — an
+    IP literal never reaches it, see :func:`_is_configured_host`.
+    """
+    # Local import, matching _get_allowed_http_origins: the module-level name
+    # is bound at import time, and the config is reloaded after .env is read.
+    from auth.oauth_config import get_oauth_config
+
+    hostnames = {host.lower() for host in _LOOPBACK_HOSTS}
+    config = get_oauth_config()
+    # Deliberately NOT get_allowed_origins(): that answers "which browser
+    # origins may talk to us", and hardcodes https://vscode.dev and
+    # https://github.dev. Those are other people's hosts, never names this
+    # deployment serves on, and harvesting them here put them in the
+    # anti-rebinding Host allowlist — `Host: vscode.dev` passed on every
+    # deployment. This answers the different question "which names do we
+    # answer on", so it takes only the operator-supplied origins.
+    candidates = [config.base_url]
+    if config.external_url:
+        candidates.append(config.external_url)
+    candidates.extend(config.get_custom_allowed_origins())
+    for candidate in candidates:
+        parsed = _parse_url(candidate)
+        if parsed is None:
+            continue
+        hostname = parsed.hostname
+        if hostname:
+            hostnames.add(hostname.lower())
+    return hostnames
+
+
+def _is_configured_host(host_header: Optional[str]) -> bool:
+    """Is this Host header one the deployment may answer? Absent or malformed: no.
+
+    An IP literal is allowed unconditionally; a DNS name must be one this
+    deployment is configured to answer on.
+
+    This is the check that stops DNS rebinding, and it has to run on EVERY
+    request. Rebinding serves the attacker's page from a name that later
+    resolves to this server, so the browser treats its requests back here as
+    same-origin — and per the Fetch standard a browser appends ``Origin`` only
+    for methods other than GET and HEAD. A rebound page's GETs therefore carry
+    no ``Origin`` at all, which is precisely the shape an Origin-gated check
+    never inspects. ``Host`` is present on every HTTP/1.1 request and on every
+    HTTP/2 ``:authority``, so it is the only header that can carry this.
+
+    The IP-literal carve-out is not a convenience: **rebinding requires a
+    name.** The attacker's only lever is a DNS record, and the browser writes
+    the authority it was asked for into ``Host``, so ``Host: 10.42.0.7:8000``
+    means no name was resolved and nothing was rebound. Insisting on the
+    allowlist there refuses only requests that were never the threat — a
+    kubelet dialling the pod IP for ``/health``, a LAN client reaching a server
+    bound to ``0.0.0.0`` by address. Vite reached the same conclusion and
+    allows every IP-literal Host by default (``server.allowedHosts``); Jupyter
+    allows only loopback literals, which is the same idea drawn tighter and is
+    the friction that pushes its users to switch the check off entirely.
+
+    It takes every IP, not just loopback and RFC1918: IPv6 clusters hand pods
+    globally routable addresses. What it does NOT do is condition enforcement
+    on the bind address — reachability is not name authorization, and the bind
+    here defaults to ``0.0.0.0`` (``main.py``), so that design would ship with
+    the guard off.
     """
     if not host_header:
         return False
-    parsed = urlparse(origin)
-    if not parsed.hostname:
+    parsed = _parse_url(f"//{host_header}")
+    if parsed is None or not parsed.hostname:
         return False
-    host = urlparse(f"//{host_header}")
+    hostname = parsed.hostname.lower()
     try:
-        origin_port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
-        host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
+        # urlparse has already stripped the brackets from an IPv6 authority,
+        # and ip_address keeps a zone id (fe80::1%eth0) — still a literal, so
+        # still not something a name could have been rebound to. It is strict
+        # about everything else: 2130706433, 0x7f000001 and 010.0.0.1 all raise
+        # and fall through to the allowlist as the names they are, which is
+        # what keeps the carve-out from becoming a spelling contest.
+        ip_address(hostname)
+        return True
     except ValueError:
+        pass
+    return hostname in _configured_hostnames()
+
+
+def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
+    """Return True when the Origin's authority IS the Host that received it.
+
+    This admits the server's own page calling back on a host that is served but
+    was never enumerated as an *origin* — the OAuth consent form posts to
+    itself, on whatever host served it, and a deployment may only ever have set
+    ``WORKSPACE_EXTERNAL_URL``.
+
+    It carries no part of the rebinding defence. A rebound page sends the
+    attacker's name in BOTH headers, so their authorities match perfectly and
+    this test alone would admit the attack it was written to reject. What
+    refuses that request is :func:`_is_configured_host`, which the middleware
+    has already applied to every request by the time this runs.
+    """
+    if not host_header:
         return False
+    parsed = _parse_url(origin)
+    if parsed is None or not parsed.hostname:
+        return False
+    host = _parse_url(f"//{host_header}")
+    if host is None or not host.hostname:
+        return False
+    origin_port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
+    host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
     return parsed.hostname == host.hostname and origin_port == host_port
 
 
+def _sole_header(
+    raw_headers: List[tuple[bytes, bytes]], name: bytes
+) -> tuple[Optional[str], bool]:
+    """Return ``(first value, was it repeated)`` for one raw ASGI header.
+
+    FIRST, not last, because that is what Starlette's ``request.headers.get``
+    returns — the guard and the application must read the same bytes. The
+    repeat flag is reported rather than resolved: see the caller.
+    """
+    found = [value for key, value in raw_headers if key == name]
+    if not found:
+        return None, False
+    return found[0].decode("latin-1"), len(found) > 1
+
+
+def _refuse_request(
+    origin: Optional[str], host_header: Optional[str]
+) -> Optional[tuple[str, str]]:
+    """Return ``(client_error, operator_log)`` when the request must be refused.
+
+    Two checks, and this used to be only the second:
+
+    * the ``Host`` must be an IP literal, or a DNS name this deployment answers
+      on, on every request — see :func:`_is_configured_host` for why an
+      Origin-gated check cannot cover the requests DNS rebinding actually
+      produces, and why an IP literal is never one of them;
+    * an ``Origin``, when present, must be allowlisted or be the Host itself.
+
+    The two messages differ on purpose. The refusal an operator is most likely
+    to hit is the first one, from a reverse proxy passing through a hostname
+    the server was never told about, and "Origin not allowed" gave them nothing
+    to act on — the request they are debugging may carry no Origin at all.
+    """
+    if not _is_configured_host(host_header):
+        return (
+            "Host not allowed",
+            f"Rejected HTTP request: Host {host_header!r} is not a name this "
+            f"deployment is configured to answer on. If this deployment really "
+            f"serves that name, add it to OAUTH_ALLOWED_ORIGINS or set "
+            f"WORKSPACE_EXTERNAL_URL.",
+        )
+    if origin is None:
+        return None
+    if _is_origin_allowed(origin) or _is_same_origin_as_host(origin, host_header):
+        return None
+    return (
+        # !r on both, as above: these are attacker-controlled strings going into
+        # a log line, and repr is what keeps a newline in one from forging the
+        # next entry.
+        "Origin not allowed",
+        f"Rejected HTTP request from Origin: {origin!r} (Host: {host_header!r})",
+    )
+
+
 class OriginValidationMiddleware:
-    """Reject browser-originated HTTP requests from untrusted origins."""
+    """Reject HTTP requests this deployment is not configured to serve.
+
+    Every request's ``Host`` must be an IP literal or a configured DNS name,
+    and an ``Origin``, when present, must be allowlisted or be the Host itself.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            headers = dict(scope.get("headers") or [])
-            raw_origin = headers.get(b"origin")
-            if raw_origin:
-                origin = raw_origin.decode("latin-1")
-                raw_host = headers.get(b"host")
-                host_header = raw_host.decode("latin-1") if raw_host else None
-                if not _is_origin_allowed(origin) and not _is_same_origin_as_host(
-                    origin, host_header
-                ):
-                    logger.warning("Rejected HTTP request from Origin: %s", origin)
-                    response = JSONResponse(
-                        {"error": "Origin not allowed"}, status_code=403
-                    )
-                    await response(scope, receive, send)
-                    return
+            raw_headers = scope.get("headers") or []
+            origin, origin_dup = _sole_header(raw_headers, b"origin")
+            host_header, host_dup = _sole_header(raw_headers, b"host")
+            if origin_dup or host_dup:
+                # A repeated Origin or Host is never legitimate, and letting one
+                # through is a full bypass rather than a nuisance: dict(headers)
+                # keeps the LAST value while Starlette's request.headers.get
+                # returns the FIRST, so the guard validated one name and the
+                # application consumed another. Measured: Host: evil.test plus
+                # Host: localhost:8000 was admitted as loopback and served to a
+                # route that saw evil.test.
+                logger.warning(
+                    "Rejected HTTP request: repeated %s header",
+                    "Origin" if origin_dup else "Host",
+                )
+                response = JSONResponse(
+                    {"error": "Malformed request headers"}, status_code=400
+                )
+                await response(scope, receive, send)
+                return
+            refusal = _refuse_request(origin, host_header)
+            if refusal:
+                client_error, operator_log = refusal
+                logger.warning("%s", operator_log)
+                response = JSONResponse({"error": client_error}, status_code=403)
+                await response(scope, receive, send)
+                return
 
         await self.app(scope, receive, send)
 
@@ -257,7 +449,14 @@ class SecureFastMCP(FastMCP):
                 schema.update(required=required, properties=properties)
                 patched.append(tool.model_copy(update={"parameters": schema}))
             return patched
-        if not USER_GOOGLE_EMAIL or is_oauth21_enabled():
+        # resolve_default_account(), not the import-frozen core.config constant:
+        # main.py imports this module before load_dotenv(), so a default living
+        # only in .env is invisible to that constant. The instructions were
+        # moved onto the live value; leaving the SCHEMA on the frozen one would
+        # tell the agent "do not ask the user for their email address" while
+        # still marking the parameter required and never injecting it.
+        default_account = resolve_default_account()
+        if not default_account or is_oauth21_enabled():
             return tools
         patched = []
         for tool in tools:
@@ -267,12 +466,34 @@ class SecureFastMCP(FastMCP):
                 required = [r for r in required if r != "user_google_email"]
                 props = {k: dict(v) for k, v in schema.get("properties", {}).items()}
                 if "user_google_email" in props:
-                    props["user_google_email"]["default"] = USER_GOOGLE_EMAIL
+                    props["user_google_email"]["default"] = default_account
                 schema = dict(schema, required=required, properties=props)
                 patched.append(tool.model_copy(update={"parameters": schema}))
             else:
                 patched.append(tool)
         return patched
+
+    def _tool_takes_user_email(self, name: str) -> bool:
+        """Whether the registered tool actually has a user_google_email parameter.
+
+        Injecting the default into a tool that does not accept it is a pydantic
+        ``unexpected_keyword_argument`` error, so account-level tools that take no
+        arguments at all (``list_google_accounts``) would be uncallable whenever
+        USER_GOOGLE_EMAIL is configured. Unknown tools answer True so that an
+        unregistered name still fails the way FastMCP makes it fail.
+        """
+        from core.tool_registry import get_tool_components
+
+        try:
+            tool = get_tool_components(self).get(name)
+            if tool is None:
+                return True
+            properties = (getattr(tool, "parameters", None) or {}).get("properties")
+        except Exception:  # pragma: no cover - defensive
+            return True
+        if not isinstance(properties, dict):
+            return True
+        return "user_google_email" in properties
 
     async def call_tool(self, name: str, arguments: Optional[dict], *args, **kwargs):
         """Inject user_google_email before pydantic validates the call arguments.
@@ -293,23 +514,32 @@ class SecureFastMCP(FastMCP):
                 for key, value in arguments.items()
                 if key != "user_google_email"
             }
-        elif (
-            not is_oauth21_enabled()
-            and USER_GOOGLE_EMAIL
-            and "user_google_email" not in arguments
-        ):
-            arguments = {**arguments, "user_google_email": USER_GOOGLE_EMAIL}
+        elif "user_google_email" not in arguments and self._tool_takes_user_email(name):
+            # Live value, for the same reason list_tools patches the schema from
+            # one: the import-time constant cannot see a default set in .env,
+            # and a schema that says "optional, defaults to X" must be backed by
+            # an injection that actually supplies X.
+            default_account = resolve_default_account()
+            if default_account:
+                arguments = {**arguments, "user_google_email": default_account}
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
 # Build server instructions with user email context for single-user mode.
 # Skipped in trusted-gateway mode: the verified principal supersedes the configured
 # default, and user_google_email is no longer a tool parameter clients can pass.
-_server_instructions = None
-if USER_GOOGLE_EMAIL and not is_trust_gateway_identity():
-    _server_instructions = f"""Connected Google account: {USER_GOOGLE_EMAIL}
-
-When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user_google_email` parameter. Do not ask the user for their email address."""
+#
+# Deliberately built WITHOUT enumerating the credential store. main.py imports
+# this module before it calls load_dotenv(), so anything configured only in .env
+# — the identity mode and the credentials directory included — is invisible here.
+# The value below therefore names nothing but the configured default, which is
+# safe under every configuration; refresh_server_instructions() rebuilds it once
+# configuration is final and is what may name other accounts. See
+# core/account_directory.py.
+_server_instructions = build_server_instructions(
+    USER_GOOGLE_EMAIL, enumerate_store=False
+)
+if _server_instructions:
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
 # Branding for the OAuth consent page: FastMCP's OAuth proxy renders the server's
@@ -332,9 +562,35 @@ auth_info_middleware = AuthInfoMiddleware()
 server.add_middleware(auth_info_middleware)
 
 
-def _parse_bool_env(value: str) -> bool:
-    """Parse environment variable string to boolean."""
-    return value.lower() in ("1", "true", "yes", "on")
+def refresh_server_instructions() -> Optional[str]:
+    """Rebuild the ``instructions`` string from the environment as it stands now.
+
+    Entry points import this module and only afterwards load ``.env`` and
+    reload the OAuth config, so the string built at import cannot see any
+    setting that lives only in ``.env``. Each entry point calls this once
+    configuration is final; the effective default account is re-derived too,
+    because ``core.config.USER_GOOGLE_EMAIL`` froze at import as well.
+
+    There is no window in which the import-time value can be served: FastMCP
+    reads ``instructions`` when it answers ``initialize``, which cannot happen
+    before ``server.run()`` opens a transport, and every caller of this function
+    runs before that.
+    """
+    instructions = build_server_instructions(resolve_default_account())
+    if instructions != server.instructions:
+        logger.debug(
+            "Server instructions rebuilt after configuration was loaded (was %s, "
+            "now %s characters).",
+            "empty" if not server.instructions else len(server.instructions),
+            "empty" if not instructions else len(instructions),
+        )
+    server.instructions = instructions
+    return instructions
+
+
+#: The one shared parser (``core.env_flags``), kept under the historical name
+#: so callers in this module read unchanged.
+_parse_bool_env = parse_bool_env
 
 
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
@@ -820,6 +1076,50 @@ async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
 
 
 @server.tool(
+    title="List Google Accounts",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def list_google_accounts() -> str:
+    """
+    List the Google accounts this server holds credentials for.
+
+    Answers from the credential store and already-cached state only: it makes NO
+    API calls and never probes an account, so it is safe to call at any time.
+
+    Reports, per account: the email address, whether it is the configured default
+    (USER_GOOGLE_EMAIL), and the last known Google Docs Developer Preview verdict
+    (available / unavailable / unknown) with its source and timestamp. "unknown"
+    means nothing has been observed for that account yet — it is not a capability
+    miss. Where `check_docs_review_capabilities` is available, running it against
+    an account is what settles the verdict; the `notes` in this tool's own output
+    say whether it is, since this description is static text that cannot know
+    which tools a given server was started with.
+
+    Use this to see which accounts exist before asking the user which one to use.
+    Seeing an account here is NOT permission to use it: keep using the default
+    account unless the user explicitly names another one, and never retry a failed
+    call under a different account on your own.
+
+    Returns:
+        str: JSON report: identity_mode, default_account, accounts
+            [{email, is_default, docs_preview {availability, source, checked_at}}],
+            accounts_enumerated, store_status, store_detail, docs_preview_loaded,
+            probed, notes.
+    """
+    # resolve_default_account(), not core.config.USER_GOOGLE_EMAIL: that constant
+    # froze while this module was being imported, which in main.py is before
+    # load_dotenv() runs. A default configured only in .env would otherwise be
+    # reported as "no default" here while the refreshed instructions name it —
+    # and an agent told there is no default has been invited to pick one.
+    return render_account_report(resolve_default_account())
+
+
+@server.tool(
     title="Start Google Auth",
     annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -829,7 +1129,7 @@ async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
     ),
 )
 async def start_google_auth(
-    service_name: str, user_google_email: str = USER_GOOGLE_EMAIL
+    service_name: str, user_google_email: Optional[str] = None
 ) -> str:
     """
     Manually initiate Google OAuth authentication flow.
@@ -859,6 +1159,15 @@ async def start_google_auth(
 
     if is_trust_gateway_identity():
         user_google_email = await get_verified_gateway_principal()
+
+    # Resolved here rather than bound as a default argument. A default is
+    # evaluated once, while this module is being imported — which in main.py is
+    # before load_dotenv() — so a default account configured only in .env was
+    # baked in as None AND advertised as None in the tool's schema, which
+    # list_tools does not re-patch because the parameter is optional rather
+    # than required. The rest of the server re-derives this value; so does this.
+    if not user_google_email:
+        user_google_email = resolve_default_account()
 
     if not user_google_email:
         raise ValueError("user_google_email must be provided.")

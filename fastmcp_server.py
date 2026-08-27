@@ -20,7 +20,12 @@ from core.log_formatter import (
     install_noisy_log_filters,
 )
 from core.utils import check_credentials_directory_permissions
-from core.server import server, set_transport_mode, configure_server_for_http
+from core.server import (
+    server,
+    set_transport_mode,
+    configure_server_for_http,
+    refresh_server_instructions,
+)
 from core.tool_registry import (
     set_enabled_tools as set_enabled_tool_names,
     wrap_server_tool_method,
@@ -69,6 +74,12 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Reload OAuth configuration after env vars loaded
 reload_oauth_config()
+
+# core.server built its instructions string during the imports above, which is
+# before enforce_fastmcp_cloud_defaults() forced OAuth 2.1 on. Rebuild it now
+# that the config is final: in OAuth 2.1 mode the credential store is shared
+# across principals, so it must not be enumerated into the handshake.
+refresh_server_instructions()
 
 # Configure basic logging
 logging.basicConfig(

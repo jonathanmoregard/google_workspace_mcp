@@ -33,7 +33,12 @@ def _load_startup_dependencies():
         install_noisy_log_filters,
     )
     from core.utils import check_credentials_directory_permissions
-    from core.server import server, set_transport_mode, configure_server_for_http
+    from core.server import (
+        server,
+        set_transport_mode,
+        configure_server_for_http,
+        refresh_server_instructions,
+    )
     from core.tool_tier_loader import resolve_tools_from_tier
     from core.tool_registry import (
         set_enabled_tools as set_enabled_tool_names,
@@ -55,6 +60,7 @@ def _load_startup_dependencies():
         server,
         set_transport_mode,
         configure_server_for_http,
+        refresh_server_instructions,
         resolve_tools_from_tier,
         set_enabled_tool_names,
         wrap_server_tool_method,
@@ -76,6 +82,7 @@ def _load_startup_dependencies():
     server,
     set_transport_mode,
     configure_server_for_http,
+    refresh_server_instructions,
     resolve_tools_from_tier,
     set_enabled_tool_names,
     wrap_server_tool_method,
@@ -94,6 +101,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 reload_oauth_config()
+
+# core.server built its instructions string while it was being imported above,
+# which is before load_dotenv() ran. Rebuild it now that .env and the OAuth
+# config are in effect, so a mode flag or credentials directory that lives only
+# in .env reaches the guard deciding whether to name other accounts. This is
+# still long before server.run() opens a transport, so no client can have read
+# the import-time value.
+refresh_server_instructions()
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"

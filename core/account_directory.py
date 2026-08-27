@@ -360,30 +360,54 @@ Switch to another account only on an explicit instruction from the user, or when
 `list_google_accounts` reports the authenticated accounts and their cached Google Docs Developer Preview status without making any API call."""
 
 
-def build_server_instructions(user_google_email: Optional[str]) -> Optional[str]:
+def resolve_default_account() -> Optional[str]:
+    """The configured default account, read from the environment right now.
+
+    ``core.config.USER_GOOGLE_EMAIL`` applies the same rule but freezes the
+    answer at import, which in ``main.py`` is before ``load_dotenv()`` runs.
+    Anything rebuilt after configuration is final must re-derive it instead, or
+    a ``MCP_ENABLE_OAUTH21`` that lives only in ``.env`` still yields the
+    single-user answer.
+    """
+    if is_oauth21_enabled():
+        return None
+    return os.getenv("USER_GOOGLE_EMAIL") or None
+
+
+def build_server_instructions(
+    user_google_email: Optional[str], *, enumerate_store: bool = True
+) -> Optional[str]:
     """Build the FastMCP ``instructions`` string for the configured default.
 
     Returns ``None`` when there is no configured default, and in trusted-gateway
     mode where the verified principal supersedes it.
 
-    Called at import time (FastMCP's constructor needs the value), so the
-    multi-account lookup is wrapped: any credential-store failure falls back to
-    the single-account string. A GCS deployment must not fail to start because
-    of this feature.
+    ``enumerate_store=False`` produces the single-account string without reading
+    the credential store at all. That is what :mod:`core.server` uses for the
+    value it hands FastMCP's constructor: at import time the environment may
+    still be missing everything ``.env`` configures — the identity mode and the
+    credentials directory included — so an enumeration there could name accounts
+    out of a store the server never uses, or out of a store that is shared
+    across principals. See :func:`core.server.refresh_server_instructions`.
+
+    The multi-account lookup is wrapped: any credential-store failure falls back
+    to the single-account string. A GCS deployment must not fail to start
+    because of this feature.
     """
     if not user_google_email or is_trust_gateway_identity():
         return None
 
-    try:
-        directory = enumerate_accounts()
-        if directory.enumerated and len(directory.emails) > 1:
-            return _multi_account_instructions(user_google_email, directory.emails)
-    except Exception as exc:  # pragma: no cover - enumerate_accounts absorbs these
-        logger.warning(
-            "Could not inspect the credential store for multi-account server "
-            "instructions (%s); using the single-account instructions.",
-            exc,
-        )
+    if enumerate_store:
+        try:
+            directory = enumerate_accounts()
+            if directory.enumerated and len(directory.emails) > 1:
+                return _multi_account_instructions(user_google_email, directory.emails)
+        except Exception as exc:  # pragma: no cover - enumerate_accounts absorbs these
+            logger.warning(
+                "Could not inspect the credential store for multi-account server "
+                "instructions (%s); using the single-account instructions.",
+                exc,
+            )
 
     return _single_account_instructions(user_google_email)
 

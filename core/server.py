@@ -29,7 +29,11 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.scopes import PROTOCOL_AUTH_SCOPES, SCOPES, get_current_scopes  # noqa
-from core.account_directory import build_server_instructions, render_account_report
+from core.account_directory import (
+    build_server_instructions,
+    render_account_report,
+    resolve_default_account,
+)
 from core.config import (
     USER_GOOGLE_EMAIL,
     get_transport_mode,
@@ -329,11 +333,17 @@ class SecureFastMCP(FastMCP):
 # Build server instructions with user email context for single-user mode.
 # Skipped in trusted-gateway mode: the verified principal supersedes the configured
 # default, and user_google_email is no longer a tool parameter clients can pass.
-# When the credential store holds more than one account the builder names the
-# alternatives and the routing rule; with one account (or none, or on any store
-# failure) it returns the single-account string unchanged. See
+#
+# Deliberately built WITHOUT enumerating the credential store. main.py imports
+# this module before it calls load_dotenv(), so anything configured only in .env
+# — the identity mode and the credentials directory included — is invisible here.
+# The value below therefore names nothing but the configured default, which is
+# safe under every configuration; refresh_server_instructions() rebuilds it once
+# configuration is final and is what may name other accounts. See
 # core/account_directory.py.
-_server_instructions = build_server_instructions(USER_GOOGLE_EMAIL)
+_server_instructions = build_server_instructions(
+    USER_GOOGLE_EMAIL, enumerate_store=False
+)
 if _server_instructions:
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
@@ -355,6 +365,32 @@ server = SecureFastMCP(
 # Add the AuthInfo middleware to inject authentication into FastMCP context
 auth_info_middleware = AuthInfoMiddleware()
 server.add_middleware(auth_info_middleware)
+
+
+def refresh_server_instructions() -> Optional[str]:
+    """Rebuild the ``instructions`` string from the environment as it stands now.
+
+    Entry points import this module and only afterwards load ``.env`` and
+    reload the OAuth config, so the string built at import cannot see any
+    setting that lives only in ``.env``. Each entry point calls this once
+    configuration is final; the effective default account is re-derived too,
+    because ``core.config.USER_GOOGLE_EMAIL`` froze at import as well.
+
+    There is no window in which the import-time value can be served: FastMCP
+    reads ``instructions`` when it answers ``initialize``, which cannot happen
+    before ``server.run()`` opens a transport, and every caller of this function
+    runs before that.
+    """
+    instructions = build_server_instructions(resolve_default_account())
+    if instructions != server.instructions:
+        logger.debug(
+            "Server instructions rebuilt after configuration was loaded (was %s, "
+            "now %s characters).",
+            "empty" if not server.instructions else len(server.instructions),
+            "empty" if not instructions else len(instructions),
+        )
+    server.instructions = instructions
+    return instructions
 
 
 def _parse_bool_env(value: str) -> bool:

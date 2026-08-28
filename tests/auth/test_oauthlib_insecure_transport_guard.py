@@ -41,6 +41,7 @@ from core.env_flags import (
     insecure_transport_explicitly_declined,
     insecure_transport_rejected_value,
     normalize_insecure_transport_env,
+    normalize_relax_token_scope_env,
     reset_insecure_transport_decision,
 )
 
@@ -511,11 +512,12 @@ async def test_callback_relaxes_scope_despite_an_empty_passthrough(
     assert not _partial_scope_grant_raises()
 
 
+@pytest.mark.parametrize("value", _TRUTHY_VALUES)
 @pytest.mark.asyncio
-async def test_callback_leaves_an_explicit_relax_scope_value_alone(
-    patched_oauth, monkeypatch
+async def test_callback_keeps_relax_scope_on_for_a_truthy_value(
+    value, patched_oauth, monkeypatch
 ):
-    monkeypatch.setenv(_RELAX_VAR, "yes")
+    monkeypatch.setenv(_RELAX_VAR, value)
 
     await handle_auth_callback(
         scopes=["scope.a"],
@@ -524,7 +526,59 @@ async def test_callback_leaves_an_explicit_relax_scope_value_alone(
         session_id="session-1",
     )
 
-    assert os.environ[_RELAX_VAR] == "yes"
+    assert os.environ[_RELAX_VAR] == "1"
+    assert not _partial_scope_grant_raises()
+
+
+@pytest.mark.parametrize("value", _FALSEY_VALUES)
+@pytest.mark.asyncio
+async def test_callback_honours_a_falsey_relax_scope_value(
+    value, patched_oauth, monkeypatch, caplog
+):
+    """Fifth instance of the class: "0" meant off and was read as on.
+
+    oauthlib tests the raw string, so every falsey value an operator might
+    write left scope relaxation ON. Two states are enough here — the value is
+    obeyed, and there is no veto to record because nothing consults intent
+    beyond the value.
+    """
+    monkeypatch.setenv(_RELAX_VAR, value)
+
+    with caplog.at_level("WARNING"):
+        await handle_auth_callback(
+            scopes=["scope.a"],
+            authorization_response=(
+                "http://localhost:8000/oauth2callback?state=abc&code=c"
+            ),
+            redirect_uri="http://localhost:8000/oauth2callback",
+            session_id="session-1",
+        )
+
+    assert _RELAX_VAR not in os.environ
+    assert _partial_scope_grant_raises()
+    assert any(
+        "a user grants only some of the requested scopes" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_relax_scope_keeps_the_default_on_an_unrecognised_value(monkeypatch, caplog):
+    """No safe direction here, so the shipped default stands and it is loud."""
+    monkeypatch.setenv(_RELAX_VAR, "ture")
+
+    with caplog.at_level("ERROR"):
+        assert normalize_relax_token_scope_env(default_enabled=True) is True
+
+    assert os.environ[_RELAX_VAR] == "1"
+    assert any("ture" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("value", _EMPTY_VALUES)
+def test_relax_scope_treats_an_empty_value_as_no_choice(value, monkeypatch):
+    monkeypatch.setenv(_RELAX_VAR, value)
+
+    assert normalize_relax_token_scope_env(default_enabled=True) is True
+    assert os.environ[_RELAX_VAR] == "1"
 
 
 # --------------------------------------------------------------------------

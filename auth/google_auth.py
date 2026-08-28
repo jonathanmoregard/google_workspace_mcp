@@ -35,8 +35,10 @@ from core.config import (
 )
 from core.env_flags import (
     INSECURE_TRANSPORT_ENV_VAR,
+    RELAX_TOKEN_SCOPE_ENV_VAR,
     insecure_transport_explicitly_declined,
     normalize_insecure_transport_env,
+    normalize_relax_token_scope_env,
 )
 from core.context import get_fastmcp_session_id
 
@@ -756,18 +758,22 @@ async def handle_auth_callback(
         # oauthlib's HTTPS requirement — see the helper's docstring.
         _allow_insecure_transport_for_local_redirect(redirect_uri)
 
-        # Allow partial scope grants without raising an exception.
-        # When users decline some scopes on Google's consent screen,
-        # oauthlib raises because the granted scopes differ from requested.
+        # Allow partial scope grants without raising an exception, unless the
+        # operator has asked otherwise. When users decline some scopes on
+        # Google's consent screen, oauthlib raises because the granted scopes
+        # differ from requested.
         #
-        # Tested by value, not by presence. oauthlib reads this one the same
-        # way it reads OAUTHLIB_INSECURE_TRANSPORT — raw truthiness, at
-        # oauth2/rfc6749/parameters.py's validate_token_parameters — so a
-        # variable passed through empty is present but OFF. A presence check
-        # therefore skipped the assignment and left partial-scope callbacks
-        # raising. An operator's own non-empty value is still left alone.
-        if not os.environ.get("OAUTHLIB_RELAX_TOKEN_SCOPE", "").strip():
-            os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+        # Settled by value rather than by presence, for the same reason as the
+        # transport flag above: oauthlib reads this one by raw truthiness too,
+        # so a variable passed through empty was present but OFF, and a "0"
+        # meaning off read as ON. Two states, no veto — nothing here needs to
+        # know why the operator chose what they chose.
+        if not normalize_relax_token_scope_env(default_enabled=True):
+            logger.warning(
+                "%s is set to a value meaning off, so oauthlib will raise when "
+                "a user grants only some of the requested scopes.",
+                RELAX_TOKEN_SCOPE_ENV_VAR,
+            )
 
         store = get_oauth21_session_store()
         parsed_response = urlparse(authorization_response)

@@ -163,6 +163,59 @@ def normalize_insecure_transport_env() -> bool:
     return False
 
 
+#: The sibling flag oauthlib also reads by raw truthiness, in
+#: ``validate_token_parameters`` (``oauth2/rfc6749/parameters.py``, 3.3.1).
+#: Two states only, deliberately: nothing consults an operator's intent for
+#: this one beyond the value itself, so it needs no "declined" state and none
+#: of the veto machinery the transport flag carries.
+RELAX_TOKEN_SCOPE_ENV_VAR = "OAUTHLIB_RELAX_TOKEN_SCOPE"
+
+
+def normalize_relax_token_scope_env(*, default_enabled: bool) -> bool:
+    """Make ``OAUTHLIB_RELAX_TOKEN_SCOPE`` mean what its value says.
+
+    Same rule, same trap as the transport flag: oauthlib tests the raw string,
+    so ``"0"``, ``"false"``, ``"no"`` and ``"off"`` each left scope relaxation
+    ON while the operator plainly meant off. Parsed here with the one strict
+    parser and written back in the form oauthlib reads — ``"1"`` when on, and
+    removed when off, since only absence or emptiness reads as off.
+
+    Absent or empty takes ``default_enabled``: an empty value is the absence of
+    a value, not a choice, so it cannot turn the flag off by accident.
+
+    An unrecognised value keeps ``default_enabled`` and logs at ERROR. Unlike
+    the transport flag there is no safe direction to fail towards here — this
+    controls whether a partial scope grant raises, and a typo silently making
+    consent screens start failing would be its own bug — so the shipped default
+    stands and the mistake is made loud instead.
+
+    Returns True when relaxation is left enabled.
+    """
+    raw = os.environ.get(RELAX_TOKEN_SCOPE_ENV_VAR)
+
+    if raw is None or not raw.strip():
+        enabled = default_enabled
+    else:
+        try:
+            enabled = parse_bool_env(raw)
+        except ValueError:
+            logger.error(
+                "%s=%r is not a recognised boolean. Keeping the default (%s) "
+                "rather than letting an unreadable value decide how partial "
+                "scope grants are handled.",
+                RELAX_TOKEN_SCOPE_ENV_VAR,
+                raw,
+                default_enabled,
+            )
+            enabled = default_enabled
+
+    if enabled:
+        os.environ[RELAX_TOKEN_SCOPE_ENV_VAR] = "1"
+    else:
+        os.environ.pop(RELAX_TOKEN_SCOPE_ENV_VAR, None)
+    return enabled
+
+
 def insecure_transport_explicitly_declined() -> bool:
     """Whether an operator asked for the HTTPS requirement to stand.
 

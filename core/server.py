@@ -702,18 +702,36 @@ def _import_disk_store_factory():
 _VALID_STORAGE_BACKENDS = frozenset({"valkey", "disk", "memory"})
 
 
-def _apply_glide_tls(glide_config, use_tls: bool) -> bool:
-    """Set TLS on the Glide client config; report whether it actually took.
+def _apply_glide_setting(glide_config, name: str, value) -> bool:
+    """Set one Glide client-config field; report whether it actually took.
 
-    Assigning to a renamed attribute on a plain Python object silently succeeds
-    and creates a dead field, so presence is checked first; the value is then
-    read back, which also catches a config that ignores writes. A TLS setting
-    that did not take effect must never be reported as though it had.
+    Used for every field this code writes, so the detection is identical
+    whatever the consequence of failure. Three ways a write can fail to mean
+    what it says:
+
+    * the field was renamed — assigning on a plain object silently succeeds and
+      creates a dead attribute, so presence is checked first;
+    * the write raises — a read-only property, a frozen dataclass, or
+      ``__slots__`` without the field. That must be caught here rather than
+      escaping and aborting startup, because the caller decides whether this
+      particular field is worth refusing to start over;
+    * the write is accepted and discarded — caught by reading the value back.
+
+    What the read-back proves and what it does not: it establishes that the
+    value stuck on *this* config object in memory. It does not establish that
+    ``ValkeyStore`` or Glide reads this object at connect time — a client that
+    copies or rebuilds its configuration could still connect with different
+    settings. Closing that gap would mean driving a real connection, which is
+    out of proportion here; this catches the failure modes that are local and
+    silent, and the rest is out of reach without an integration test.
     """
-    if not hasattr(glide_config, "use_tls"):
+    if not hasattr(glide_config, name):
         return False
-    glide_config.use_tls = use_tls
-    return getattr(glide_config, "use_tls", None) == use_tls
+    try:
+        setattr(glide_config, name, value)
+    except (AttributeError, TypeError):
+        return False
+    return getattr(glide_config, name, None) == value
 
 
 def _valkey_int_env(name: str, default: int) -> int:
@@ -955,7 +973,9 @@ def configure_server_for_http():
                             "this ValkeyStore does not expose the Glide client configuration "
                             "(_client_config) that carries the TLS setting"
                         )
-                    elif not _apply_glide_tls(glide_config, valkey_use_tls):
+                    elif not _apply_glide_setting(
+                        glide_config, "use_tls", valkey_use_tls
+                    ):
                         # Setting a renamed attribute on a plain object succeeds
                         # and does nothing, so "the assignment ran" is not
                         # evidence that TLS is on.
@@ -993,8 +1013,24 @@ def configure_server_for_http():
                         ):
                             # Glide defaults to 250ms if unset; increase for remote/TLS endpoints.
                             valkey_request_timeout_ms = 5000
-                        if valkey_request_timeout_ms is not None:
-                            glide_config.request_timeout = valkey_request_timeout_ms
+                        # Same detection as the TLS guard above; only the
+                        # consequence differs. A timeout that did not take
+                        # effect costs performance, not confidentiality, so it
+                        # warns rather than refusing — but it must never be
+                        # logged as applied.
+                        if valkey_request_timeout_ms is not None and not (
+                            _apply_glide_setting(
+                                glide_config,
+                                "request_timeout",
+                                valkey_request_timeout_ms,
+                            )
+                        ):
+                            logger.warning(
+                                "OAuth 2.1: the Glide client configuration has no writable "
+                                "'request_timeout' setting, so the Valkey request timeout was "
+                                "not applied and Glide's own default is used."
+                            )
+                            valkey_request_timeout_ms = None
 
                         if valkey_connection_timeout_ms is None and (
                             valkey_use_tls or is_remote_host
@@ -1006,12 +1042,19 @@ def configure_server_for_http():
                                 # symbol must not cost the operator the shared
                                 # store they asked for.
                                 valkey_connection_timeout_ms = None
-                            else:
-                                glide_config.advanced_config = (
-                                    glide_advanced_config_cls(
-                                        connection_timeout=valkey_connection_timeout_ms
-                                    )
+                            elif not _apply_glide_setting(
+                                glide_config,
+                                "advanced_config",
+                                glide_advanced_config_cls(
+                                    connection_timeout=valkey_connection_timeout_ms
+                                ),
+                            ):
+                                logger.warning(
+                                    "OAuth 2.1: the Glide client configuration has no writable "
+                                    "'advanced_config' setting, so the Valkey connection timeout "
+                                    "was not applied and Glide's own default is used."
                                 )
+                                valkey_connection_timeout_ms = None
 
                     client_storage = FernetEncryptionWrapper(
                         key_value=valkey_store,

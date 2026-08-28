@@ -339,6 +339,112 @@ def test_use_tls_that_does_not_stick_aborts_when_tls_was_requested(
     assert "client_storage" not in captured
 
 
+def test_read_only_use_tls_without_tls_requested_warns_instead_of_crashing(
+    monkeypatch, captured, caplog
+):
+    """``hasattr`` passing does not mean the assignment will succeed.
+
+    A read-only property, a frozen dataclass or ``__slots__`` all raise on the
+    write. That must not escape and abort startup on the path whose contract is
+    warn-and-continue: TLS was never requested here, so nothing security-
+    relevant is lost.
+    """
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+    class ConfigWithReadOnlyTls:
+        def __init__(self):
+            self.request_timeout = None
+            self.advanced_config = None
+
+        @property
+        def use_tls(self):
+            return False
+
+    class StoreWithReadOnlyTls(FakeValkeyStore):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._client_config = ConfigWithReadOnlyTls()
+
+    _install_fake_valkey(monkeypatch, store_cls=StoreWithReadOnlyTls)
+    _select_valkey(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert isinstance(captured["client_storage"], FernetEncryptionWrapper)
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "tls=False" in messages
+
+
+def test_read_only_use_tls_still_aborts_when_tls_was_requested(monkeypatch, captured):
+    """The other half of the contract stays intact."""
+
+    class ConfigWithReadOnlyTls:
+        def __init__(self):
+            self.request_timeout = None
+            self.advanced_config = None
+
+        @property
+        def use_tls(self):
+            return False
+
+    class StoreWithReadOnlyTls(FakeValkeyStore):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._client_config = ConfigWithReadOnlyTls()
+
+    _install_fake_valkey(monkeypatch, store_cls=StoreWithReadOnlyTls)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "true")
+
+    with pytest.raises(RuntimeError, match="would be made in cleartext"):
+        server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+
+
+def test_unapplied_timeouts_are_not_logged_as_applied(monkeypatch, captured, caplog):
+    """Same detection as the TLS guard, one line down.
+
+    ``request_timeout`` and ``advanced_config`` were assigned with no presence
+    check and no read-back, so a renamed field created a dead attribute while
+    the startup log still reported the timeout as set. The outcome differs from
+    TLS — a dead timeout warns rather than refusing — but the detection must not.
+    """
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+    class ConfigWithRenamedTimeouts:
+        """Only ``use_tls`` survives under its old name."""
+
+        def __init__(self):
+            self.use_tls = False
+            self.req_timeout = None  # was request_timeout
+            self.advanced = None  # was advanced_config
+
+    class StoreWithRenamedTimeouts(FakeValkeyStore):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._client_config = ConfigWithRenamedTimeouts()
+
+    _install_fake_valkey(monkeypatch, store_cls=StoreWithRenamedTimeouts)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_REQUEST_TIMEOUT_MS", "1234")
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_CONNECTION_TIMEOUT_MS", "4321")
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        server_module.configure_server_for_http()
+
+    assert isinstance(captured["client_storage"], FernetEncryptionWrapper), (
+        "a dead timeout field must not cost the store, only the timeout"
+    )
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "timeout set to" not in messages, (
+        "a timeout that did not take effect must not be reported as applied"
+    )
+    assert "request_timeout" in messages
+    assert "advanced_config" in messages
+
+
 @pytest.mark.parametrize("backend", ["valkeyy", "redis", "file", "diskk"])
 def test_unknown_storage_backend_aborts_and_names_the_variable(
     monkeypatch, captured, backend

@@ -697,6 +697,25 @@ def _import_disk_store_factory():
 # `_valkey_bool_env` already worked this way; the int helpers now match it.
 
 
+#: The client-storage backends this server knows how to build. Anything else is
+#: a typo, and a typo here silently drops replicas onto per-instance stores.
+_VALID_STORAGE_BACKENDS = frozenset({"valkey", "disk", "memory"})
+
+
+def _apply_glide_tls(glide_config, use_tls: bool) -> bool:
+    """Set TLS on the Glide client config; report whether it actually took.
+
+    Assigning to a renamed attribute on a plain Python object silently succeeds
+    and creates a dead field, so presence is checked first; the value is then
+    read back, which also catches a config that ignores writes. A TLS setting
+    that did not take effect must never be reported as though it had.
+    """
+    if not hasattr(glide_config, "use_tls"):
+        return False
+    glide_config.use_tls = use_tls
+    return getattr(glide_config, "use_tls", None) == use_tls
+
+
 def _valkey_int_env(name: str, default: int) -> int:
     """Read an integer Valkey setting, naming the variable when it is malformed.
 
@@ -829,6 +848,17 @@ def configure_server_for_http():
             )
             valkey_host = os.getenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", "").strip()
 
+            # Same rule as every other setting in this block: blank means unset,
+            # and a non-empty unrecognised value is a typo, not a silent
+            # fallback. `valkeyy` used to match no branch at all, which quietly
+            # put every replica on its own per-instance store.
+            if storage_backend and storage_backend not in _VALID_STORAGE_BACKENDS:
+                raise ValueError(
+                    "WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND must be one of "
+                    f"{sorted(_VALID_STORAGE_BACKENDS)}, got {storage_backend!r}. "
+                    "Unset it to use FastMCP's default client storage."
+                )
+
             # Determine storage backend: valkey, disk, memory (default)
             use_valkey = storage_backend == "valkey" or bool(valkey_host)
             use_disk = storage_backend == "disk"
@@ -921,30 +951,42 @@ def configure_server_for_http():
                     # ValkeyStore currently doesn't expose these settings directly.
                     glide_config = getattr(valkey_store, "_client_config", None)
                     if glide_config is None:
-                        # The private attribute this code reaches through is
-                        # gone. Timeouts are tuning and can be dropped with a
-                        # warning; TLS is not. Silently opening a cleartext
-                        # connection while the startup log says tls=True is the
-                        # exact shape of bug this whole change exists to remove.
+                        tls_problem = (
+                            "this ValkeyStore does not expose the Glide client configuration "
+                            "(_client_config) that carries the TLS setting"
+                        )
+                    elif not _apply_glide_tls(glide_config, valkey_use_tls):
+                        # Setting a renamed attribute on a plain object succeeds
+                        # and does nothing, so "the assignment ran" is not
+                        # evidence that TLS is on.
+                        tls_problem = (
+                            "this Glide client configuration has no writable 'use_tls' setting, "
+                            "so the requested TLS mode could not be confirmed"
+                        )
+                    else:
+                        tls_problem = None
+
+                    if tls_problem is not None:
+                        # Timeouts are tuning and can be dropped with a warning;
+                        # TLS is not. Silently opening a cleartext connection
+                        # while the startup log says tls=True is the exact shape
+                        # of bug this whole change exists to remove.
                         if valkey_use_tls:
                             raise RuntimeError(
                                 "OAuth 2.1: TLS was requested for the Valkey client_storage "
-                                "(WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS, or port 6380), but this "
-                                "ValkeyStore does not expose the Glide client configuration "
-                                "(_client_config) that carries the TLS setting, so the connection "
-                                "would be made in cleartext. Refusing to start."
+                                "(WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS, or port 6380), but "
+                                f"{tls_problem}, so the connection would be made in cleartext. "
+                                "Refusing to start."
                             )
                         logger.warning(
-                            "OAuth 2.1: ValkeyStore does not expose _client_config, so the Valkey "
-                            "request and connection timeouts cannot be applied and Glide's own "
-                            "defaults are used. TLS was not requested, so the connection itself is "
-                            "unaffected."
+                            "OAuth 2.1: %s, so the Valkey request and connection timeouts cannot "
+                            "be applied either and Glide's own defaults are used. TLS was not "
+                            "requested, so the connection itself is unaffected.",
+                            tls_problem,
                         )
                         valkey_request_timeout_ms = None
                         valkey_connection_timeout_ms = None
                     else:
-                        glide_config.use_tls = valkey_use_tls
-
                         is_remote_host = valkey_host not in {"localhost", "127.0.0.1"}
                         if valkey_request_timeout_ms is None and (
                             valkey_use_tls or is_remote_host

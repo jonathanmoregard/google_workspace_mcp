@@ -247,22 +247,132 @@ def test_missing_glide_config_aborts_when_tls_was_requested(
 def test_missing_glide_config_without_tls_warns_and_drops_only_timeouts(
     monkeypatch, captured, caplog
 ):
-    """With no TLS requested, the same condition costs only the tuning knobs."""
+    """With no TLS requested, the same condition costs only the tuning knobs.
+
+    The timeouts are set explicitly here so the nulling in the server actually
+    has something to null: with both variables unset the "timeout set to"
+    assertion below would pass even if those lines were deleted.
+    """
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
     _install_fake_valkey(monkeypatch, store_cls=FakeValkeyStoreWithoutGlideConfig)
     _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_REQUEST_TIMEOUT_MS", "1234")
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_CONNECTION_TIMEOUT_MS", "4321")
 
     with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
         server_module.configure_server_for_http()
 
     assert isinstance(captured["client_storage"], FernetEncryptionWrapper)
     messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "does not expose _client_config" in messages
+    assert "_client_config" in messages
     assert "tls=False" in messages
     assert "timeout set to" not in messages, (
         "a timeout that was not applied must not be logged as if it were"
     )
+
+
+def test_unwritable_use_tls_aborts_when_tls_was_requested(
+    monkeypatch, captured, caplog
+):
+    """A renamed ``use_tls`` must fail loudly, not create a dead attribute.
+
+    ``glide_config.use_tls = True`` succeeds on any plain object, so the
+    assignment running is not evidence that TLS is on. Without the presence
+    check the connection would be cleartext while the line below reports
+    ``tls=True``.
+    """
+
+    class ConfigWithRenamedTlsField:
+        def __init__(self):
+            self.tls_enabled = False  # the hypothetical new name
+            self.request_timeout = None
+            self.advanced_config = None
+
+    class StoreWithRenamedTlsField(FakeValkeyStore):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._client_config = ConfigWithRenamedTlsField()
+
+    _install_fake_valkey(monkeypatch, store_cls=StoreWithRenamedTlsField)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "true")
+
+    with caplog.at_level(logging.DEBUG, logger=server_module.logger.name):
+        with pytest.raises(RuntimeError, match="would be made in cleartext"):
+            server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+    assert "tls=True" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_use_tls_that_does_not_stick_aborts_when_tls_was_requested(
+    monkeypatch, captured
+):
+    """The read-back also catches a config that accepts writes and ignores them."""
+
+    class ConfigThatIgnoresTlsWrites:
+        def __init__(self):
+            self.request_timeout = None
+            self.advanced_config = None
+
+        @property
+        def use_tls(self):
+            return False
+
+        @use_tls.setter
+        def use_tls(self, value):  # accepts, discards
+            pass
+
+    class StoreThatIgnoresTlsWrites(FakeValkeyStore):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._client_config = ConfigThatIgnoresTlsWrites()
+
+    _install_fake_valkey(monkeypatch, store_cls=StoreThatIgnoresTlsWrites)
+    _select_valkey(monkeypatch)
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS", "true")
+
+    with pytest.raises(RuntimeError, match="would be made in cleartext"):
+        server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+
+
+@pytest.mark.parametrize("backend", ["valkeyy", "redis", "file", "diskk"])
+def test_unknown_storage_backend_aborts_and_names_the_variable(
+    monkeypatch, captured, backend
+):
+    """A typo'd backend used to match no branch and fall through silently.
+
+    That put every replica on its own per-instance store while the operator
+    believed they had configured a shared one — the same silent downgrade the
+    rest of this block now refuses.
+    """
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", backend)
+
+    with pytest.raises(
+        ValueError, match="WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND must be one of"
+    ):
+        server_module.configure_server_for_http()
+
+    assert "client_storage" not in captured
+
+
+def test_storage_backend_is_trimmed_and_case_insensitive(
+    monkeypatch, captured, tmp_path
+):
+    """Validation must not reject what the existing normalisation accepts."""
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "  DISK ")
+    monkeypatch.setenv(
+        "WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY", str(tmp_path / "proxy")
+    )
+
+    server_module.configure_server_for_http()
+
+    assert isinstance(captured["client_storage"], FernetEncryptionWrapper)
 
 
 def test_rejected_encryption_key_does_not_leave_an_unencrypted_valkey_store(
@@ -333,6 +443,9 @@ def test_missing_glide_config_degrades_without_losing_the_store(
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "AdvancedGlideClientConfiguration is unavailable" in messages
     assert "connection timeout cannot be applied" in messages
+    assert "connection timeout set to" not in messages, (
+        "a connection timeout that was not applied must not be logged as if it were"
+    )
 
 
 def test_missing_valkey_dependency_falls_back_without_a_store(

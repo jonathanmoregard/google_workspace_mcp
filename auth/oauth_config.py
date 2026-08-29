@@ -75,7 +75,20 @@ class OAuthConfig:
         # exactly that (helm-chart/workspace-mcp/values.yaml:100, :104), which
         # made base_url the nonsense ":8000" — a value with no hostname, so it
         # contributed nothing to any origin or Host allowlist built from it.
-        self.base_uri = os.getenv("WORKSPACE_MCP_BASE_URI") or "http://localhost"
+        #
+        # `.strip()` extends that to whitespace, which is equally nobody's
+        # deliberate choice and which `or` alone reads as truthy: "   " made
+        # base_url "   :8000" and the redirect URI "   :8000/oauth2callback",
+        # and it silently dropped this deployment's OWN origin from the CORS
+        # allowlist, since the garbage value normalises to nothing. It also
+        # trims a stray newline off a real value, which urlparse tolerated in
+        # the Host allowlist but which landed inside the redirect URI verbatim.
+        # Measured: the anti-rebinding Host allowlist is unchanged either way —
+        # "   :8000" has no hostname to contribute, and the stripped value's
+        # "localhost" is already in the loopback set.
+        self.base_uri = (
+            os.getenv("WORKSPACE_MCP_BASE_URI", "").strip() or "http://localhost"
+        )
         if os.getenv("WORKSPACE_MCP_RESOLVED_PORT") == "1":
             self.port = int(
                 os.getenv("WORKSPACE_MCP_PORT") or os.getenv("PORT") or "8000"

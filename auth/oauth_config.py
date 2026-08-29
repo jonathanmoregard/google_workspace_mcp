@@ -17,6 +17,11 @@ from typing import List, Optional, Dict, Any
 from core.env_flags import parse_bool_env
 
 
+#: The callback path this server serves when no explicit
+#: ``GOOGLE_OAUTH_REDIRECT_URI`` is configured.
+DEFAULT_REDIRECT_PATH = "/oauth2callback"
+
+
 _ASYMMETRIC_JWT_ALGORITHM_FAMILIES = {
     "ES": frozenset({"ES256", "ES256K", "ES384", "ES512", "ES521"}),
     "EdDSA": frozenset({"EdDSA"}),
@@ -247,33 +252,79 @@ class OAuthConfig:
 
         # Redirect URI configuration
         self.redirect_uri = self._get_redirect_uri()
-        self.redirect_path = self._get_redirect_path(self.redirect_uri)
+        # Only an explicitly configured URI may move the path. A derived one is
+        # already `oauth base + DEFAULT_REDIRECT_PATH`, and parsing the path
+        # back out of it would re-apply any path prefix carried by
+        # WORKSPACE_EXTERNAL_URL: FastMCP composes its own callback as
+        # `str(base_url).rstrip("/") + redirect_path`
+        # (fastmcp/server/auth/oauth_proxy/proxy.py), so an external URL of
+        # https://example.com/mcp would come back out as
+        # https://example.com/mcp/mcp/oauth2callback.
+        self.redirect_path = (
+            self._get_redirect_path(self.redirect_uri)
+            if self._explicit_redirect_uri()
+            else DEFAULT_REDIRECT_PATH
+        )
 
         # Ensure FastMCP's Google provider picks up our existing configuration
         self._apply_fastmcp_google_env()
+
+    @staticmethod
+    def _explicit_redirect_uri() -> Optional[str]:
+        """The operator's ``GOOGLE_OAUTH_REDIRECT_URI``, if they set one.
+
+        ``or None`` rather than getenv's default, for the same reason
+        ``external_url`` gets it: a set-but-empty variable is the absence of a
+        value, not an override of one.
+        """
+        return os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or None
 
     def _get_redirect_uri(self) -> str:
         """
         Get the OAuth redirect URI, supporting reverse proxy configurations.
 
+        Precedence, highest first:
+
+        1. ``GOOGLE_OAUTH_REDIRECT_URI`` — the operator's explicit override.
+           It stays on top because the callback has to byte-match a URI
+           registered on the Google OAuth client, and only the operator knows
+           what that registration says.
+        2. ``WORKSPACE_EXTERNAL_URL`` — the reverse-proxy / ingress case.
+        3. ``WORKSPACE_MCP_BASE_URI`` + port — plain local or in-cluster.
+
+        2 and 3 are not ranked here. The derived branch asks
+        :meth:`get_oauth_base_url` instead, which is the single place this
+        server decides what to call itself, so the redirect URI cannot drift
+        from the rest of its self-reported URLs. It used to: this built on
+        ``base_url`` alone, so a deployment with ``WORKSPACE_EXTERNAL_URL`` set
+        published ``https://mcp.example.com`` in its OAuth metadata and then
+        handed Google ``http://localhost:8000/oauth2callback`` — a callback no
+        public OAuth client can have registered, and one that also looks like
+        loopback to the auto-grant in :mod:`auth.google_auth`, which lifts
+        oauthlib's HTTPS requirement process-wide for it.
+
         Returns:
             The configured redirect URI
         """
-        explicit_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
+        explicit_uri = self._explicit_redirect_uri()
         if explicit_uri:
             return explicit_uri
-        return f"{self.base_url}/oauth2callback"
+        # rstrip here rather than in get_oauth_base_url: a trailing slash on
+        # WORKSPACE_EXTERNAL_URL must not produce a `//oauth2callback`, but
+        # normalising the shared accessor would change what three other call
+        # sites publish.
+        return f"{self.get_oauth_base_url().rstrip('/')}{DEFAULT_REDIRECT_PATH}"
 
     @staticmethod
     def _get_redirect_path(uri: str) -> str:
         """Extract the redirect path from a full redirect URI."""
         parsed = urlparse(uri)
         if parsed.scheme or parsed.netloc:
-            path = parsed.path or "/oauth2callback"
+            path = parsed.path or DEFAULT_REDIRECT_PATH
         else:
             # If the value was already a path, ensure it starts with '/'
             path = uri if uri.startswith("/") else f"/{uri}"
-        return path or "/oauth2callback"
+        return path or DEFAULT_REDIRECT_PATH
 
     def _apply_fastmcp_google_env(self) -> None:
         """Mirror legacy GOOGLE_* env vars into FastMCP Google provider settings."""

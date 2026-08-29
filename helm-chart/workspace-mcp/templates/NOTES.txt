@@ -49,7 +49,8 @@
 4. Important Notes:
    - Make sure you have configured your Google OAuth credentials in the secret
    - The application requires internet access to reach Google APIs
-   - OAuth callback URL: {{ if .Values.env.WORKSPACE_EXTERNAL_URL }}{{ .Values.env.WORKSPACE_EXTERNAL_URL }}{{ else }}{{ default "http://localhost" .Values.env.WORKSPACE_MCP_BASE_URI }}:{{ .Values.env.WORKSPACE_MCP_PORT }}{{ end }}/oauth2callback
+   - OAuth callback URL: {{ include "workspace-mcp.oauthCallbackUrl" . }}
+     Register exactly this URI on your Google OAuth client.
 
 For more information about the Google Workspace MCP Server, visit:
 https://github.com/taylorwilsdon/google_workspace_mcp

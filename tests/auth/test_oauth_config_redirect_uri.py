@@ -7,9 +7,17 @@ alone, so a deployment behind a reverse proxy reported one identity everywhere
 and a different one in the single URL it hands to Google.
 """
 
+import os
+
 import pytest
 
-from auth.oauth_config import DEFAULT_REDIRECT_PATH, OAuthConfig
+from auth.oauth_config import OAuthConfig
+
+# Spelled out rather than imported from the module under test: a test that
+# asserts against the same constant the code uses cannot catch that constant
+# changing, and importing it would stop this file collecting on any commit
+# that predates it.
+CALLBACK_PATH = "/oauth2callback"
 
 
 # Everything OAuthConfig reads that can move the redirect URI. Cleared for
@@ -22,6 +30,10 @@ _REDIRECT_INPUTS = (
     "WORKSPACE_MCP_PORT",
     "WORKSPACE_MCP_RESOLVED_PORT",
     "PORT",
+    # get_redirect_uris() appends these, so an ambient value would fail the
+    # list assertions for a reason that has nothing to do with the fix.
+    "OAUTH_CUSTOM_REDIRECT_URIS",
+    "OAUTH_ALLOWED_ORIGINS",
     # Keeps _apply_fastmcp_google_env from writing FASTMCP_* into os.environ.
     "GOOGLE_OAUTH_CLIENT_ID",
     "GOOGLE_OAUTH_CLIENT_SECRET",
@@ -75,7 +87,7 @@ def test_redirect_uri_matches_fastmcp_composition_with_a_path_prefix(clean_env):
 
     config = OAuthConfig()
 
-    assert config.redirect_path == DEFAULT_REDIRECT_PATH
+    assert config.redirect_path == CALLBACK_PATH
     assert config.redirect_uri == "https://example.com/mcp/oauth2callback"
     assert (
         config.get_oauth_base_url().rstrip("/") + config.redirect_path
@@ -184,7 +196,73 @@ def test_empty_explicit_redirect_uri_is_not_an_override(clean_env):
     assert config.redirect_uri == "https://mcp.example.com/oauth2callback"
 
 
-def test_external_url_deployment_no_longer_trips_the_loopback_grant(clean_env):
+# --- whitespace is the absence of a value, not a choice ---------------------
+
+
+@pytest.mark.parametrize("blank", ["   ", "\t", "\n", " \t "])
+def test_whitespace_external_url_reads_as_absent(clean_env, blank):
+    """`WORKSPACE_EXTERNAL_URL="   "` used to yield `'   /oauth2callback'`."""
+    clean_env.setenv("WORKSPACE_EXTERNAL_URL", blank)
+
+    config = OAuthConfig()
+
+    assert config.external_url is None
+    assert config.redirect_uri == "http://localhost:8000/oauth2callback"
+
+
+@pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+def test_whitespace_explicit_redirect_uri_is_not_an_override(clean_env, blank):
+    """It used to become the redirect URI verbatim, path `'/   '` and all."""
+    clean_env.setenv("GOOGLE_OAUTH_REDIRECT_URI", blank)
+    clean_env.setenv("WORKSPACE_EXTERNAL_URL", "https://mcp.example.com")
+
+    config = OAuthConfig()
+
+    assert config.redirect_uri == "https://mcp.example.com/oauth2callback"
+    assert config.redirect_path == CALLBACK_PATH
+
+
+def test_surrounding_whitespace_is_trimmed_from_a_real_value(clean_env):
+    """A stray newline from a Kubernetes secret or a .env file is not part of
+    the URL the operator meant."""
+    clean_env.setenv("WORKSPACE_EXTERNAL_URL", "  https://mcp.example.com\n")
+
+    assert OAuthConfig().redirect_uri == "https://mcp.example.com/oauth2callback"
+
+
+# --- the security claim, pinned ---------------------------------------------
+
+
+@pytest.fixture
+def insecure_transport_isolated():
+    """Undo anything the loopback grant writes, even when an assert fails.
+
+    ``_allow_insecure_transport_for_local_redirect`` writes
+    ``os.environ`` directly, and monkeypatch cannot restore a variable it never
+    saw. Without this teardown a failing assertion below would leave
+    ``OAUTHLIB_INSECURE_TRANSPORT=1`` set for the rest of the session and
+    silently disarm every later test of the same guard.
+    """
+    from core.env_flags import (
+        INSECURE_TRANSPORT_ENV_VAR,
+        reset_insecure_transport_decision,
+    )
+
+    previous = os.environ.get(INSECURE_TRANSPORT_ENV_VAR)
+    os.environ.pop(INSECURE_TRANSPORT_ENV_VAR, None)
+    reset_insecure_transport_decision()
+    try:
+        yield
+    finally:
+        os.environ.pop(INSECURE_TRANSPORT_ENV_VAR, None)
+        if previous is not None:
+            os.environ[INSECURE_TRANSPORT_ENV_VAR] = previous
+        reset_insecure_transport_decision()
+
+
+def test_external_url_deployment_no_longer_trips_the_loopback_grant(
+    clean_env, insecure_transport_isolated
+):
     """Why this is a security fix and not only a correctness one.
 
     ``auth.google_auth`` lifts oauthlib's process-wide HTTPS requirement when
@@ -196,18 +274,11 @@ def test_external_url_deployment_no_longer_trips_the_loopback_grant(clean_env):
     structurally: the grant never fires because the URI is not loopback.
     """
     from auth.google_auth import _allow_insecure_transport_for_local_redirect
-    from core.env_flags import (
-        INSECURE_TRANSPORT_ENV_VAR,
-        insecure_transport_bypass_active,
-        reset_insecure_transport_decision,
-    )
+    from core.env_flags import insecure_transport_bypass_active
 
-    clean_env.delenv(INSECURE_TRANSPORT_ENV_VAR, raising=False)
-    reset_insecure_transport_decision()
     clean_env.setenv("WORKSPACE_EXTERNAL_URL", "https://mcp.example.com")
 
     config = OAuthConfig()
     _allow_insecure_transport_for_local_redirect(config.redirect_uri)
 
     assert insecure_transport_bypass_active() is False
-    reset_insecure_transport_decision()

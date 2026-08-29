@@ -77,9 +77,21 @@ WORKSPACE_EXTERNAL_URL=https://<ingress host>.
 {{- end -}}
 {{- end -}}
 {{- if not $base -}}
+{{- /*
+  Port precedence mirrors OAuthConfig.__init__: PORT normally wins over
+  WORKSPACE_MCP_PORT, and the two swap once WORKSPACE_MCP_RESOLVED_PORT=1 says
+  the port has already been resolved. Reading WORKSPACE_MCP_PORT alone printed
+  the wrong port for any deployment that sets env.PORT.
+*/ -}}
+{{- $port := "" -}}
+{{- if eq (.Values.env.WORKSPACE_MCP_RESOLVED_PORT | toString) "1" -}}
+{{- $port = .Values.env.WORKSPACE_MCP_PORT | default .Values.env.PORT | default "8000" -}}
+{{- else -}}
+{{- $port = .Values.env.PORT | default .Values.env.WORKSPACE_MCP_PORT | default "8000" -}}
+{{- end -}}
 {{- $base = printf "%s:%v"
       (.Values.env.WORKSPACE_MCP_BASE_URI | default "http://localhost")
-      (.Values.env.WORKSPACE_MCP_PORT | default "8000") -}}
+      $port -}}
 {{- end -}}
 {{- printf "%s/oauth2callback" (trimSuffix "/" $base) -}}
 {{- end -}}

@@ -88,7 +88,10 @@ class OAuthConfig:
 
         # External URL for reverse proxy scenarios. Same treatment: the chart
         # ships this empty, and "" must read as absent, not as a configured URL.
-        self.external_url = os.getenv("WORKSPACE_EXTERNAL_URL") or None
+        # `.strip()` for the same reason and one step further — a whitespace-only
+        # value is nobody's deliberate choice either. It read as truthy here and
+        # produced the redirect URI "   /oauth2callback".
+        self.external_url = os.getenv("WORKSPACE_EXTERNAL_URL", "").strip() or None
 
         # OAuth client configuration
         self.client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
@@ -273,11 +276,12 @@ class OAuthConfig:
     def _explicit_redirect_uri() -> Optional[str]:
         """The operator's ``GOOGLE_OAUTH_REDIRECT_URI``, if they set one.
 
-        ``or None`` rather than getenv's default, for the same reason
-        ``external_url`` gets it: a set-but-empty variable is the absence of a
-        value, not an override of one.
+        Stripped and coerced to None for the same reason ``external_url`` is: a
+        variable that is empty, or holds only whitespace, is the absence of a
+        value rather than an override of one. Untrimmed it became the redirect
+        URI verbatim, and ``"   "`` produced the redirect path ``"/   "``.
         """
-        return os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or None
+        return os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip() or None
 
     def _get_redirect_uri(self) -> str:
         """
@@ -286,11 +290,21 @@ class OAuthConfig:
         Precedence, highest first:
 
         1. ``GOOGLE_OAUTH_REDIRECT_URI`` — the operator's explicit override.
-           It stays on top because the callback has to byte-match a URI
-           registered on the Google OAuth client, and only the operator knows
-           what that registration says.
+           It stays on top because a deployment that set it did so to match a
+           URI registered on its Google OAuth client, and taking that away
+           would break the flow it was set to make work.
         2. ``WORKSPACE_EXTERNAL_URL`` — the reverse-proxy / ingress case.
         3. ``WORKSPACE_MCP_BASE_URI`` + port — plain local or in-cluster.
+
+        The override governs THIS value, which is the legacy OAuth 2.0
+        callback. It does not fully govern the OAuth 2.1 one: ``core.server``
+        hands FastMCP ``get_oauth_base_url()`` and :attr:`redirect_path`
+        separately, and FastMCP composes ``str(base_url).rstrip("/") +
+        redirect_path`` (``fastmcp/server/auth/oauth_proxy/proxy.py:2268``), so
+        in OAuth 2.1 mode only the override's PATH survives — its scheme and
+        host are the external URL's. That split is pre-existing and is not
+        changed here, but it is why this docstring does not claim the override
+        pins the whole callback.
 
         2 and 3 are not ranked here. The derived branch asks
         :meth:`get_oauth_base_url` instead, which is the single place this

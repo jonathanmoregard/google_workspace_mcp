@@ -7,7 +7,7 @@ import os
 from ipaddress import ip_address
 from typing import List, Optional
 from importlib import metadata
-from urllib.parse import urlparse, ParseResult
+from urllib.parse import urlparse, urlsplit, urlunsplit, ParseResult
 
 from core.warning_filters import install_startup_warning_filters
 
@@ -1314,6 +1314,33 @@ async def serve_attachment(request: Request):
     )
 
 
+def _authorization_response_url(request: Request, redirect_uri: str) -> str:
+    """Rebuild Google's authorization response on the server's own identity.
+
+    oauthlib refuses to parse an authorization response that is not HTTPS
+    (``parse_authorization_code_response`` -> ``InsecureTransportError``), and
+    the only way past it is ``OAUTHLIB_INSECURE_TRANSPORT``, which lifts the
+    requirement for every OAuth exchange in the process.
+
+    A reverse proxy that terminates TLS forwards plain HTTP upstream, and
+    nothing in this server reads ``X-Forwarded-Proto``, so ``request.url`` is
+    ``http://...`` on exactly the deployments whose callback is HTTPS. Passing
+    it through would make a TLS-terminated legacy OAuth 2.0 login fail, and the
+    only thing that used to hide that was the loopback bypass firing on a
+    redirect URI that wrongly read ``localhost``.
+
+    So the scheme, host and path come from the redirect URI this server told
+    Google to use — the same self-identity every other URL is built on — and
+    only the query, which is Google's actual response, comes from the request.
+    Trusting a forwarded-proto header instead would mean trusting whoever can
+    reach the port; this needs no trust at all. A query string on the redirect
+    URI itself is dropped: Google rejects those at registration, and the
+    response's own parameters are the ones that matter.
+    """
+    parts = urlsplit(redirect_uri)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, request.url.query, ""))
+
+
 async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
     state = request.query_params.get("state")
     code = request.query_params.get("code")
@@ -1342,10 +1369,11 @@ async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
         if hasattr(request, "state") and hasattr(request.state, "session_id"):
             mcp_session_id = request.state.session_id
 
+        redirect_uri = get_oauth_redirect_uri_for_current_mode()
         verified_user_id, credentials = await handle_auth_callback(
             scopes=get_current_scopes(),
-            authorization_response=str(request.url),
-            redirect_uri=get_oauth_redirect_uri_for_current_mode(),
+            authorization_response=_authorization_response_url(request, redirect_uri),
+            redirect_uri=redirect_uri,
             session_id=mcp_session_id,
         )
 

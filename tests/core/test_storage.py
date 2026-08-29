@@ -217,12 +217,30 @@ class TestConsistency:
         assert "HybridSanitizationStrategy" not in source
 
     def test_server_references_shared_factory(self):
-        """core.server must use make_sanitized_file_store, not inline config."""
+        """core.server must use make_sanitized_file_store, not inline config.
+
+        Checked against the whole module rather than
+        ``configure_server_for_http`` alone: the import now lives in
+        ``_import_disk_store_factory``, which is guarded so that an
+        ``ImportError`` cannot leave an unencrypted store bound.
+
+        Scoping to the module widened what counts as "uses the factory", so the
+        two bypasses that matters are excluded explicitly: inlining the
+        sanitization config, and constructing ``FileTreeStore`` directly. The
+        behavioural half — that the store the server actually hands to the
+        provider carries the factory's strategy — is asserted in
+        ``test_oauth_proxy_client_storage.py``.
+        """
         import inspect
 
         import core.server as server_module
 
-        source = inspect.getsource(server_module.configure_server_for_http)
+        source = inspect.getsource(server_module)
         assert "make_sanitized_file_store" in source
+        assert "make_sanitized_file_store" in inspect.getsource(
+            server_module._import_disk_store_factory
+        )
         # Must NOT contain the old inline pattern
         assert "HybridSanitizationStrategy" not in source
+        # Must NOT bypass the factory with a direct construction
+        assert "FileTreeStore(" not in source

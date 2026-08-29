@@ -8,7 +8,14 @@ import sys
 from functools import partial
 from importlib import metadata, import_module
 from dotenv import load_dotenv
-from core.env_flags import parse_bool_env
+from core.env_flags import (
+    INSECURE_TRANSPORT_ENV_VAR,
+    insecure_transport_bypass_active,
+    insecure_transport_explicitly_declined,
+    insecure_transport_rejected_value,
+    normalize_insecure_transport_env,
+    parse_bool_env,
+)
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
 
 # Prevent any stray startup output on macOS (e.g. platform identifiers) from
@@ -118,6 +125,18 @@ logger = logging.getLogger(__name__)
 
 install_noisy_log_filters()
 configure_file_logging()
+
+# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
+# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
+# Settle the value once .env has been read and long before any OAuth flow or
+# the startup banner, so what the operator wrote is what oauthlib does.
+#
+# Deliberately after configure_file_logging(): rejecting an unparseable value
+# logs at ERROR, and run any earlier that record predates the file handler and
+# never appears in mcp_server_debug.log — measured, with the operator's only
+# durable record of their typo missing. Nothing between load_dotenv() and here
+# reads the variable or starts an OAuth flow.
+normalize_insecure_transport_env()
 
 
 def resolve_stdio_callback_port() -> None:
@@ -321,7 +340,7 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
     return name, collapse_home(os.path.expanduser(value)) if path else value, "on"
 
 
-def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
+def _flag_field(name: str) -> tuple[str, str, str]:
     """Describe a boolean env var as a (label, value, state) display row.
 
     Parsed with the one shared parser so the banner can never claim a flag is
@@ -334,9 +353,48 @@ def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, s
         # Neither on nor off. Rendering a typo as "off" is how a flag silently
         # fails to take effect, which is exactly what this row exists to catch.
         return name, f"{value} · unrecognised", "warn"
-    if not enabled:
-        return name, value, "off"
-    return name, value, "warn" if warn_when_true else "on"
+    return name, value, "on" if enabled else "off"
+
+
+def _insecure_transport_field() -> tuple[str, str, str]:
+    """Describe OAUTHLIB_INSECURE_TRANSPORT the way oauthlib itself reads it.
+
+    This is the one flag the shared parser must not describe. oauthlib checks
+    the truthiness of the raw string, so every non-empty value lifts its HTTPS
+    requirement; rendering the row through ``parse_bool_env`` printed "off" for
+    ``OAUTHLIB_INSECURE_TRANSPORT=0`` while OAuth token exchange over plain HTTP
+    was in fact being accepted. Startup normalisation means the banner should
+    only ever see "1" or an absent variable, but the row states oauthlib's rule
+    directly so it stays true regardless of who set the variable, or when.
+
+    Normalisation removes the variable when it is off, so the three ways it can
+    be absent — never set, declined, and rejected as unparseable — have to be
+    told apart here. A typo is the case that most needs saying: it is the one
+    the operator did not intend, and the row is where they would notice.
+    """
+    name = INSECURE_TRANSPORT_ENV_VAR
+    # oauthlib's rule comes first, always. The row must never claim the HTTPS
+    # requirement is being enforced when it is not — and a value set out of
+    # band after normalisation ran can lift it while our recorded decision
+    # still says "declined" or "rejected". Whichever the process state holds,
+    # what oauthlib does now is the true answer, so it wins here. A
+    # whitespace-only string lands here too: empty to a reader, but non-empty
+    # and therefore ON to oauthlib.
+    if insecure_transport_bypass_active():
+        value = os.environ[name]
+        return name, f"{value} · HTTPS NOT enforced for OAuth", "warn"
+    # Enforcement is genuinely on. Now say which of the three absences it is.
+    rejected = insecure_transport_rejected_value()
+    if rejected is not None:
+        # A rejected value is also a decline, and the decline is the stronger
+        # statement: it vetoes the loopback grant too. Say both, rather than
+        # letting "treated as off" imply the milder of the two.
+        return name, f"{rejected} · unrecognised · off, loopback included", "warn"
+    if insecure_transport_explicitly_declined():
+        return name, "off · HTTPS enforced, loopback included", "off"
+    # Present-but-empty lands here and reads as unset, because that is what
+    # normalisation makes of it.
+    return name, "not set", "off"
 
 
 def _client_secret_field() -> tuple[str, str, str]:
@@ -380,7 +438,7 @@ def describe_mode_config() -> list[tuple[str, str, str]]:
         _flag_field("MCP_SINGLE_USER_MODE"),
         _flag_field("MCP_ENABLE_OAUTH21"),
         _flag_field("WORKSPACE_MCP_STATELESS_MODE"),
-        _flag_field("OAUTHLIB_INSECURE_TRANSPORT", warn_when_true=True),
+        _insecure_transport_field(),
     ]
 
 

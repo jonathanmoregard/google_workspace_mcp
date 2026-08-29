@@ -33,6 +33,13 @@ from core.config import (
     get_transport_mode,
     get_oauth_redirect_uri,
 )
+from core.env_flags import (
+    INSECURE_TRANSPORT_ENV_VAR,
+    RELAX_TOKEN_SCOPE_ENV_VAR,
+    insecure_transport_explicitly_declined,
+    normalize_insecure_transport_env,
+    normalize_relax_token_scope_env,
+)
 from core.context import get_fastmcp_session_id
 
 # Try to import FastMCP dependencies (may not be available in all environments)
@@ -62,15 +69,34 @@ def _allow_insecure_transport_for_local_redirect(redirect_uri: str) -> None:
     deployment must keep the HTTPS requirement intact. Every site that sets the
     variable goes through this helper so the two OAuth halves (starting the flow
     and handling the callback) cannot drift apart.
+
+    The operator's explicit setting wins in both directions, and wins by what
+    the value *means* rather than by the variable merely being present:
+    normalising first is what stops an explicit ``"0"`` from reading as "off"
+    to the operator and as "on" to oauthlib. A decline vetoes this grant too,
+    because the loopback test below is a substring match on a redirect URI that
+    a public deployment can still produce — declining is the only way to say
+    "never lift the requirement, not even for something that looks local".
+    Nothing this repo ships sets a falsey value, so that veto only ever comes
+    from an operator typing one.
     """
-    if "OAUTHLIB_INSECURE_TRANSPORT" in os.environ:
+    if normalize_insecure_transport_env():
         return
     if not ("localhost" in redirect_uri or "127.0.0.1" in redirect_uri):
+        return
+    if insecure_transport_explicitly_declined():
+        logger.warning(
+            "%s was set to a value meaning off, so oauthlib's HTTPS requirement "
+            "is left in place for the loopback redirect %s. This OAuth flow will "
+            "fail against a plain-HTTP callback; unset the variable to allow it.",
+            INSECURE_TRANSPORT_ENV_VAR,
+            redirect_uri,
+        )
         return
     logger.warning(
         "OAUTHLIB_INSECURE_TRANSPORT not set. Setting it for localhost/local development."
     )
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+    os.environ[INSECURE_TRANSPORT_ENV_VAR] = "1"
 
 
 # Constants
@@ -732,11 +758,22 @@ async def handle_auth_callback(
         # oauthlib's HTTPS requirement — see the helper's docstring.
         _allow_insecure_transport_for_local_redirect(redirect_uri)
 
-        # Allow partial scope grants without raising an exception.
-        # When users decline some scopes on Google's consent screen,
-        # oauthlib raises because the granted scopes differ from requested.
-        if "OAUTHLIB_RELAX_TOKEN_SCOPE" not in os.environ:
-            os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+        # Allow partial scope grants without raising an exception, unless the
+        # operator has asked otherwise. When users decline some scopes on
+        # Google's consent screen, oauthlib raises because the granted scopes
+        # differ from requested.
+        #
+        # Settled by value rather than by presence, for the same reason as the
+        # transport flag above: oauthlib reads this one by raw truthiness too,
+        # so a variable passed through empty was present but OFF, and a "0"
+        # meaning off read as ON. Two states, no veto — nothing here needs to
+        # know why the operator chose what they chose.
+        if not normalize_relax_token_scope_env(default_enabled=True):
+            logger.warning(
+                "%s is set to a value meaning off, so oauthlib will raise when "
+                "a user grants only some of the requested scopes.",
+                RELAX_TOKEN_SCOPE_ENV_VAR,
+            )
 
         store = get_oauth21_session_store()
         parsed_response = urlparse(authorization_response)

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
+from core.env_flags import normalize_insecure_transport_env
 from auth.oauth_config import reload_oauth_config, is_stateless_mode
 from core.log_formatter import (
     EnhancedLogFormatter,
@@ -88,6 +89,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 install_noisy_log_filters()
+
+# oauthlib reads OAUTHLIB_INSECURE_TRANSPORT itself and only tests whether the
+# string is non-empty, so "0" and "false" turned its HTTPS requirement off.
+# This entry point is HTTPS-hosted; settle the value before anything can start
+# an OAuth flow against it. After logging is set up, so that rejecting an
+# unparseable value is logged where the operator will actually find it.
+normalize_insecure_transport_env()
 
 if _fastmcp_cloud_overrides:
     for key, previous, new_value in _fastmcp_cloud_overrides:

@@ -60,7 +60,31 @@ BLANKS = ["   ", "\t", "\n", " \t "]
 
 
 @pytest.fixture
-def clean_env(monkeypatch):
+def singleton_restored():
+    """Assert, after `clean_env` has torn down, that the singleton is pristine.
+
+    `clean_env` REQUESTS this fixture, which is what puts the check in the
+    right place: teardown is LIFO over setup order, so requesting it first
+    means its teardown runs last — after `clean_env`'s reload. That makes the
+    guard per-test and independent of declaration order, rather than a pair of
+    tests where the second only means anything if the first ran before it. A
+    probe whose value depends on collection order stops guarding the moment
+    someone adds parallel or randomised execution.
+    """
+    oauth_config = importlib.import_module("auth.oauth_config")
+    # Built from the pristine environment, so it is what the singleton must
+    # look like once this test has finished with it.
+    expected = oauth_config.OAuthConfig().base_url
+    yield
+    actual = importlib.import_module("auth.oauth_config").get_oauth_config().base_url
+    assert actual == expected, (
+        f"clean_env left the config singleton holding {actual!r} instead of "
+        f"{expected!r}: it reloaded before restoring the environment."
+    )
+
+
+@pytest.fixture
+def clean_env(monkeypatch, singleton_restored):
     """Clear the redirect inputs, and leave the config singleton pristine.
 
     The teardown restores the environment ITSELF before reloading, rather than
@@ -170,22 +194,20 @@ def test_no_third_party_origin_is_introduced(clean_env, blank):
 # --- the fixture must not leak its own config, either --------------------
 
 
-def test_leak_probe_sets_a_distinctive_base_uri(clean_env):
-    """Paired with the test below; this one only has to run first."""
+def test_the_fixture_does_not_leak_a_distinctive_value(clean_env):
+    """Self-contained: the `singleton_restored` guard checks the aftermath.
+
+    A `clean_env` that reloads the config after its `yield` runs BEFORE
+    monkeypatch restores the environment, rebuilding the process-wide
+    singleton from the *test's* variables and handing it to everything that
+    follows. A fixture that claims to restore a singleton and leaks instead is
+    worse than none, because it reads as covered.
+
+    Nothing here asserts that directly — the guard fixture does, after this
+    test's teardown, which is the only moment the question can be answered.
+    The distinctive value just makes a leak unmistakable in the failure
+    message.
+    """
     clean_env.setenv("WORKSPACE_MCP_BASE_URI", "http://leak-probe.invalid")
 
     assert reload_oauth_config().base_url == "http://leak-probe.invalid:8000"
-
-
-def test_the_fixture_leaves_the_singleton_pristine():
-    """Deliberately takes no fixture: it inspects what the previous one left.
-
-    Fixture teardown is LIFO, so a `clean_env` that reloads the config after
-    its `yield` runs BEFORE monkeypatch restores the environment — rebuilding
-    the process-wide singleton from the *test's* variables and leaving it for
-    everything that follows. A fixture that claims to restore a singleton and
-    leaks instead is worse than none, because it reads as covered.
-    """
-    config = importlib.import_module("auth.oauth_config").get_oauth_config()
-
-    assert "leak-probe.invalid" not in config.base_url

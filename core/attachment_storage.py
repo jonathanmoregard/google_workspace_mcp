@@ -302,8 +302,11 @@ def get_attachment_url(file_id: str) -> str:
             error_msg,
         )
 
-    # Use external URL if set (for reverse proxy scenarios)
-    external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
+    # Use external URL if set (for reverse proxy scenarios).
+    # `.strip() or None` matches auth.oauth_config: a variable that is empty or
+    # holds only whitespace is the absence of a value, not a configured URL.
+    # Untrimmed, "   " was truthy here and produced "   /attachments/<id>".
+    external_url = os.getenv("WORKSPACE_EXTERNAL_URL", "").strip() or None
     if external_url:
         base_url = external_url.rstrip("/")
     else:

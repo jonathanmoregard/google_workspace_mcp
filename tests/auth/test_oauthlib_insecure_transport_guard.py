@@ -305,11 +305,16 @@ def test_an_unrecognised_value_does_not_lift_https_on_a_public_redirect(monkeypa
 def test_public_deployment_with_a_loopback_looking_redirect_can_be_vetoed(monkeypatch):
     """The case the veto exists for.
 
-    ``auth/oauth_config.py`` builds its redirect URI from ``base_url``, which
-    ignores ``WORKSPACE_EXTERNAL_URL`` and defaults to ``http://localhost``. A
-    genuinely public deployment therefore reaches this guard with a redirect
-    URI that looks like loopback, and the grant fires. Without a veto there is
-    no environment value that stops it.
+    ``auth/oauth_config.py`` used to build its redirect URI from ``base_url``
+    alone, ignoring ``WORKSPACE_EXTERNAL_URL``, so a genuinely public
+    deployment reached this guard with a loopback-looking redirect URI and the
+    grant fired. That specific route is now closed — the redirect URI follows
+    ``get_oauth_base_url()`` — but the veto is still what this test pins, and
+    it is still needed: the guard's test is a substring match, so a public URI
+    merely CONTAINING ``localhost`` or ``127.0.0.1`` (``localhost.example.com``,
+    ``127.0.0.1.nip.io``, a ``?next=http://localhost`` query) reaches it too,
+    as does any deployment that configures neither an external URL nor a base
+    URI. Without a veto there is no environment value that stops those.
     """
     public_deployment_redirect = "http://localhost:8000/oauth2callback"
 

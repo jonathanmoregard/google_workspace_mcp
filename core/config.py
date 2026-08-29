@@ -24,8 +24,14 @@ from auth.oauth_config import (
 # resolver (auth.port_resolver.resolve_port); consumers that do
 # `from core.config import WORKSPACE_MCP_PORT` inside a function will see the
 # late-bound port instead of a frozen-at-module-import 8000.
-WORKSPACE_MCP_BASE_URI = os.getenv("WORKSPACE_MCP_BASE_URI", "http://localhost")
-WORKSPACE_EXTERNAL_URL = os.getenv("WORKSPACE_EXTERNAL_URL")
+# Stripped, and empty coerced to the default / to None, matching
+# auth.oauth_config. These two feed the attachment URL builder and gmail's
+# trusted-origin set; a whitespace-only value was truthy and produced
+# "   /attachments/<id>".
+WORKSPACE_MCP_BASE_URI = (
+    os.getenv("WORKSPACE_MCP_BASE_URI", "").strip() or "http://localhost"
+)
+WORKSPACE_EXTERNAL_URL = os.getenv("WORKSPACE_EXTERNAL_URL", "").strip() or None
 
 if TYPE_CHECKING:
     WORKSPACE_MCP_PORT: int

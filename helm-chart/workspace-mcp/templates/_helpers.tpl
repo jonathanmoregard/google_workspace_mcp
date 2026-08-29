@@ -78,20 +78,21 @@ WORKSPACE_EXTERNAL_URL=https://<ingress host>.
 {{- end -}}
 {{- if not $base -}}
 {{- /*
-  Port precedence mirrors OAuthConfig.__init__: PORT normally wins over
-  WORKSPACE_MCP_PORT, and the two swap once WORKSPACE_MCP_RESOLVED_PORT=1 says
-  the port has already been resolved. Reading WORKSPACE_MCP_PORT alone printed
-  the wrong port for any deployment that sets env.PORT.
+  PORT wins over WORKSPACE_MCP_PORT, matching OAuthConfig.__init__. Reading
+  WORKSPACE_MCP_PORT alone printed the wrong port whenever env.PORT was set.
+
+  OAuthConfig swaps that precedence when WORKSPACE_MCP_RESOLVED_PORT=1, and
+  this helper deliberately does NOT mirror that branch: the chart always runs
+  --transport streamable-http (deployment.yaml), and for any non-stdio
+  transport main.py's resolve_callback_port_for_transport POPS
+  WORKSPACE_MCP_RESOLVED_PORT before the config is built. Setting it in
+  .Values.env therefore cannot affect the running process, so honouring it
+  here could only ever print a port the process does not use — the exact
+  failure this helper exists to prevent.
 */ -}}
-{{- $port := "" -}}
-{{- if eq (.Values.env.WORKSPACE_MCP_RESOLVED_PORT | toString) "1" -}}
-{{- $port = .Values.env.WORKSPACE_MCP_PORT | default .Values.env.PORT | default "8000" -}}
-{{- else -}}
-{{- $port = .Values.env.PORT | default .Values.env.WORKSPACE_MCP_PORT | default "8000" -}}
-{{- end -}}
 {{- $base = printf "%s:%v"
       (.Values.env.WORKSPACE_MCP_BASE_URI | default "http://localhost")
-      $port -}}
+      (.Values.env.PORT | default .Values.env.WORKSPACE_MCP_PORT | default "8000") -}}
 {{- end -}}
 {{- printf "%s/oauth2callback" (trimSuffix "/" $base) -}}
 {{- end -}}

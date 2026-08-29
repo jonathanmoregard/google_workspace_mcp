@@ -12,6 +12,7 @@ so the allowlist is byte-identical before and after.
 """
 
 import importlib
+import os
 
 import pytest
 
@@ -60,11 +61,31 @@ BLANKS = ["   ", "\t", "\n", " \t "]
 
 @pytest.fixture
 def clean_env(monkeypatch):
+    """Clear the redirect inputs, and leave the config singleton pristine.
+
+    The teardown restores the environment ITSELF before reloading, rather than
+    leaving that to monkeypatch. Fixture teardown is LIFO: monkeypatch is set
+    up first, so its undo runs LAST — after this block. Reloading here without
+    restoring first would rebuild the process-wide singleton from the test's
+    own variables and hand it to every test that follows, which is how a
+    fixture written to prove isolation comes to break it.
+
+    monkeypatch's later undo is then a no-op for these names, because they
+    already hold their original values. Every variable the tests in this file
+    touch is in `_INPUTS`, which is what makes that true.
+    """
+    snapshot = {name: os.environ.get(name) for name in _INPUTS}
     for name in _INPUTS:
         monkeypatch.delenv(name, raising=False)
-    yield monkeypatch
-    # The config is a process-wide singleton; leave it as this suite found it.
-    reload_oauth_config()
+    try:
+        yield monkeypatch
+    finally:
+        for name, value in snapshot.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        reload_oauth_config()
 
 
 @pytest.mark.parametrize("blank", BLANKS)
@@ -144,3 +165,27 @@ def test_no_third_party_origin_is_introduced(clean_env, blank):
     reload_oauth_config()
 
     assert _get_allowed_http_origins() == baseline
+
+
+# --- the fixture must not leak its own config, either --------------------
+
+
+def test_leak_probe_sets_a_distinctive_base_uri(clean_env):
+    """Paired with the test below; this one only has to run first."""
+    clean_env.setenv("WORKSPACE_MCP_BASE_URI", "http://leak-probe.invalid")
+
+    assert reload_oauth_config().base_url == "http://leak-probe.invalid:8000"
+
+
+def test_the_fixture_leaves_the_singleton_pristine():
+    """Deliberately takes no fixture: it inspects what the previous one left.
+
+    Fixture teardown is LIFO, so a `clean_env` that reloads the config after
+    its `yield` runs BEFORE monkeypatch restores the environment — rebuilding
+    the process-wide singleton from the *test's* variables and leaving it for
+    everything that follows. A fixture that claims to restore a singleton and
+    leaks instead is worse than none, because it reads as covered.
+    """
+    config = importlib.import_module("auth.oauth_config").get_oauth_config()
+
+    assert "leak-probe.invalid" not in config.base_url

@@ -118,3 +118,35 @@ def test_oauthlib_accepts_the_rebuilt_url_and_rejects_the_proxied_one(https_requ
     parsed = parse_authorization_code_response(rebuilt, state="abc")
 
     assert parsed["code"] == "xyz"
+
+
+def test_a_public_http_redirect_uri_is_still_refused(https_required):
+    """The other half of the fix, and the one worth guarding hardest.
+
+    The helper must not become a blanket bypass. It upgrades nothing: it
+    copies whatever scheme the configured redirect URI has, so a deployment
+    that genuinely serves plain HTTP on a public name still hits oauthlib's
+    transport check. If a future refactor made this pass, the HTTPS
+    requirement would be unreachable for every deployment rather than
+    satisfied by one.
+    """
+    from oauthlib.oauth2.rfc6749.parameters import parse_authorization_code_response
+
+    rebuilt = _authorization_response_url(
+        _request(TLS_TERMINATED), "http://mcp.example.com/oauth2callback"
+    )
+
+    assert rebuilt.startswith("http://")
+    with pytest.raises(InsecureTransportError):
+        parse_authorization_code_response(rebuilt, state="abc")
+
+
+def test_the_scheme_is_copied_never_upgraded(https_required):
+    """No implicit https:// promotion anywhere in the helper."""
+    for redirect_uri, expected_scheme in (
+        ("https://mcp.example.com/oauth2callback", "https"),
+        ("http://mcp.example.com/oauth2callback", "http"),
+        ("http://localhost:8000/oauth2callback", "http"),
+    ):
+        rebuilt = _authorization_response_url(_request(TLS_TERMINATED), redirect_uri)
+        assert rebuilt.split("://", 1)[0] == expected_scheme

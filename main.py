@@ -644,9 +644,12 @@ def main():
         port = int(os.getenv("WORKSPACE_MCP_PORT", os.getenv("PORT", "8000")))
     else:
         port = int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", "8000")))
-    base_uri = os.getenv("WORKSPACE_MCP_BASE_URI", "http://localhost")
+    # Both stripped, matching auth.oauth_config: an empty or whitespace-only
+    # value is nobody's configured choice. Untrimmed, the startup banner
+    # announced the server at "   " or at ":8000".
+    base_uri = os.getenv("WORKSPACE_MCP_BASE_URI", "").strip() or "http://localhost"
     host = resolve_bind_host_for_transport(args.transport)
-    external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
+    external_url = os.getenv("WORKSPACE_EXTERNAL_URL", "").strip() or None
     display_url = external_url if external_url else f"{base_uri}:{port}"
 
     try:

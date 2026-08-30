@@ -453,8 +453,17 @@ def ensure_stdio_oauth_callback_available() -> tuple[bool, str]:
     spawns that do neither never occupy a port in the fallback range (issue #832).
 
     No-op (returns success) outside stdio transport, where the main HTTP server
-    already serves these routes. Uses the active OAuth config so the listener
-    binds the same port the redirect and attachment URLs are composed from.
+    already serves these routes.
+
+    Binds ``base_uri``/``port`` from the active OAuth config, which is NOT
+    always where the redirect URI points. An explicitly set
+    ``GOOGLE_OAUTH_REDIRECT_URI`` has always been able to point elsewhere, and
+    ``WORKSPACE_EXTERNAL_URL`` now can too. Neither is realigned here on
+    purpose: both name a public endpoint that this process cannot bind, and in
+    stdio mode the callback has to arrive on the loopback listener the local
+    browser can actually reach. Setting either variable for a stdio deployment
+    therefore sends Google to an address this listener does not answer on —
+    they are reverse-proxy settings, and stdio has no reverse proxy.
     """
     if get_transport_mode() != "stdio":
         return True, ""
